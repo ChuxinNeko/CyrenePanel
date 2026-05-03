@@ -36,7 +36,10 @@ import {
   FileArchive,
   Film,
   Music,
-  X, // 1. 修复：添加缺失的 X 图标导入
+  X,
+  ChevronDown,
+  PanelLeftClose,
+  PanelLeft,
 } from "lucide-react";
 
 interface FileEntry {
@@ -194,6 +197,107 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
   );
 }
 
+interface TreeNode {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  children?: TreeNode[];
+  loaded: boolean;
+}
+
+function FileTreeNode({
+  node,
+  depth,
+  expandedPaths,
+  activePath,
+  onToggle,
+  onFileClick,
+  onLoadChildren,
+}: {
+  node: TreeNode;
+  depth: number;
+  expandedPaths: Set<string>;
+  activePath: string | null;
+  onToggle: (path: string) => void;
+  onFileClick: (path: string) => void;
+  onLoadChildren: (path: string) => void;
+}) {
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const isExpanded = expandedPaths.has(node.path);
+  const isActive = activePath === node.path;
+
+  useEffect(() => {
+    if (isActive && nodeRef.current) {
+      nodeRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [isActive]);
+
+  if (!node.isDirectory) {
+    const entry: FileEntry = { name: node.name, path: node.path, isDirectory: false, size: 0, modified: 0, extension: node.name.includes(".") ? "." + node.name.split(".").pop() : "", mimeType: false };
+    return (
+      <div
+        ref={nodeRef}
+        className={`flex items-center gap-1.5 py-0.5 px-1 rounded cursor-pointer text-xs hover:bg-muted/80 transition-colors ${
+          isActive ? "bg-muted text-foreground font-medium" : "text-muted-foreground"
+        }`}
+        style={{ paddingLeft: `${depth * 14 + 4}px` }}
+        title={node.path}
+        onClick={() => onFileClick(node.path)}
+      >
+        <span className="shrink-0">{getFileIcon(entry)}</span>
+        <span className="truncate">{node.name}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div
+        ref={nodeRef}
+        className={`flex items-center gap-1 py-0.5 px-1 rounded cursor-pointer text-xs hover:bg-muted/80 transition-colors ${
+          isActive ? "bg-muted text-foreground font-medium" : "text-muted-foreground"
+        }`}
+        style={{ paddingLeft: `${depth * 14 + 4}px` }}
+        onClick={() => {
+          if (!node.loaded) onLoadChildren(node.path);
+          onToggle(node.path);
+        }}
+      >
+        <ChevronDown
+          className={`h-3 w-3 shrink-0 transition-transform ${
+            isExpanded ? "" : "-rotate-90"
+          }`}
+        />
+        <span className="shrink-0">
+          <FolderOpen className={`h-3.5 w-3.5 ${isExpanded ? "text-yellow-500" : "text-yellow-500/70"}`} />
+        </span>
+        <span className="truncate">{node.name}</span>
+      </div>
+      {isExpanded && node.children && (
+        <div>
+          {node.children
+            .sort((a, b) => {
+              if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+              return a.name.localeCompare(b.name, "zh-CN", { sensitivity: "base" });
+            })
+            .map((child) => (
+              <FileTreeNode
+                key={child.path}
+                node={child}
+                depth={depth + 1}
+                expandedPaths={expandedPaths}
+                activePath={activePath}
+                onToggle={onToggle}
+                onFileClick={onFileClick}
+                onLoadChildren={onLoadChildren}
+              />
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function FilesPage() {
   const router = useRouter();
   const { resolvedTheme } = useTheme();
@@ -221,9 +325,131 @@ export default function FilesPage() {
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
+  // File tree state for editor sidebar
+  const [treeSidebarOpen, setTreeSidebarOpen] = useState(true);
+  const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+
   const showToast = useCallback((message: string, type: "success" | "error") => {
     setToast({ message, type });
   }, []);
+
+  // Initialize tree root from virtual root (drives on Windows, "/" on Linux)
+  const initTreeRoot = useCallback(async () => {
+    try {
+      const data = await fileFetch<{
+        success: boolean;
+        entries?: FileEntry[];
+        root?: string;
+      }>(`/api/files?path=${encodeURIComponent("")}`);
+      if (data.success && data.entries) {
+        const children: TreeNode[] = data.entries
+          .map((e) => ({
+            name: e.name,
+            path: e.path,
+            isDirectory: e.isDirectory,
+            loaded: false,
+          }));
+        setTreeRoot({
+          name: "/",
+          path: "",
+          isDirectory: true,
+          children,
+          loaded: true,
+        });
+        setExpandedPaths(new Set([""]));
+      }
+    } catch {
+      // silent
+    }
+  }, []);
+
+  const loadTreeChildren = useCallback(async (dirPath: string) => {
+    try {
+      const data = await fileFetch<{
+        success: boolean;
+        entries?: FileEntry[];
+      }>(`/api/files?path=${encodeURIComponent(dirPath)}`);
+      if (data.success && data.entries) {
+        const children: TreeNode[] = data.entries
+          .map((e) => ({
+            name: e.name,
+            path: e.path,
+            isDirectory: e.isDirectory,
+            loaded: false,
+          }));
+        setTreeRoot((prev) => {
+          if (!prev) return prev;
+          const update = (node: TreeNode): TreeNode => {
+            if (node.path === dirPath) {
+              return { ...node, children, loaded: true };
+            }
+            if (node.children) {
+              return { ...node, children: node.children.map(update) };
+            }
+            return node;
+          };
+          return update(prev);
+        });
+      }
+    } catch {
+      // silent
+    }
+  }, []);
+
+  const handleTreeToggle = useCallback((path: string) => {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const handleTreeFileClick = useCallback(async (filePath: string) => {
+    setFileLoading(true);
+    setOpenFile(filePath);
+    try {
+      const data = await fileFetch<FileReadResult>(
+        `/api/files/read?path=${encodeURIComponent(filePath)}`
+      );
+      if (data.success && data.content !== undefined) {
+        setFileContent(data.content);
+        setOriginalContent(data.content);
+        setFileMeta({ extension: data.extension || "", size: data.size || 0 });
+      } else {
+        showToast(data.message || "无法读取文件", "error");
+        setOpenFile(null);
+      }
+    } catch {
+      showToast("读取文件失败", "error");
+      setOpenFile(null);
+    } finally {
+      setFileLoading(false);
+    }
+  }, [showToast]);
+
+  // Build tree path chain for a given file path to auto-expand and load children
+  const expandTreeToPath = useCallback(async (filePath: string) => {
+    const parts = filePath.split("/");
+    const dirsToLoad: string[] = [];
+    let current = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      current = current ? `${current}/${parts[i]}` : parts[i];
+      dirsToLoad.push(current);
+    }
+    // Set all parent paths as expanded immediately
+    const pathSet = new Set(["", ...dirsToLoad]);
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      pathSet.forEach((p) => next.add(p));
+      return next;
+    });
+    // Load children for each directory level sequentially
+    for (const dir of dirsToLoad) {
+      await loadTreeChildren(dir);
+    }
+  }, [loadTreeChildren]);
 
   const fetchDir = useCallback(async (path: string) => {
     setFetching(true);
@@ -280,6 +506,12 @@ export default function FilesPage() {
   };
 
   const handleOpenFile = async (entry: { path: string }) => {
+    // Initialize tree and expand to the file's directory
+    if (!treeRoot) {
+      await initTreeRoot();
+    }
+    await expandTreeToPath(entry.path);
+
     setFileLoading(true);
     setOpenFile(entry.path);
     try {
@@ -635,7 +867,7 @@ export default function FilesPage() {
       {/* 3. 修复：这里原本多出一个闭合 div 标签，已移除 */}
 
       <Dialog open={!!openFile} onOpenChange={(v) => { if (!v) handleCloseFile(); }}>
-        <DialogContent className="sm:max-w-[95vw] w-[95vw] h-[85vh] flex flex-col p-0 gap-0">
+        <DialogContent showCloseButton={false} className="sm:max-w-[95vw] w-[95vw] h-[85vh] flex flex-col p-0 gap-0">
           <DialogHeader className="sr-only">
             <DialogTitle>编辑文件 - {openFile ? openFile.split("/").pop() : ""}</DialogTitle>
           </DialogHeader>
@@ -652,15 +884,49 @@ export default function FilesPage() {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1 shrink-0">
               <Button
-                variant="outline"
-                size="sm"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title={treeSidebarOpen ? "隐藏文件树" : "显示文件树"}
+                onClick={() => setTreeSidebarOpen(!treeSidebarOpen)}
+              >
+                {treeSidebarOpen ? (
+                  <PanelLeftClose className="h-4 w-4" />
+                ) : (
+                  <PanelLeft className="h-4 w-4" />
+                )}
+              </Button>
+              {openFile && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  title="下载"
+                  onClick={() => handleDownload({ name: openFile.split("/").pop() || "", path: openFile, isDirectory: false, size: fileMeta?.size || 0, modified: 0, extension: fileMeta?.extension || "", mimeType: false })}
+                >
+                  <Download className="h-4 w-4" />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="保存"
                 onClick={handleSave}
                 disabled={!isModified || saving}
               >
-                <Save className={`h-4 w-4 mr-2 ${saving ? "animate-pulse" : ""}`} />
-                保存
+                <Save className={`h-4 w-4 ${saving ? "animate-pulse" : ""}`} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="关闭"
+                onClick={handleCloseFile}
+              >
+                <X className="h-4 w-4" />
               </Button>
             </div>
           </div>
@@ -741,39 +1007,61 @@ export default function FilesPage() {
               </div>
             </div>
           </div>
-          <div className="flex-1 min-h-0">
-            {fileLoading ? (
-              <div className="flex items-center justify-center h-full">
-                <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                  <RefreshCw className="h-6 w-6 animate-spin" />
-                  <span className="text-sm">加载中...</span>
+          <div className="flex-1 min-h-0 flex">
+            {/* Tree sidebar */}
+            {treeSidebarOpen && treeRoot && (
+              <div className="w-64 border-r shrink-0 flex flex-col bg-muted/10">
+                <div className="p-2 text-xs font-medium text-muted-foreground border-b">
+                  文件浏览器
+                </div>
+                <div className="flex-1 overflow-auto p-1">
+                  <FileTreeNode
+                    node={treeRoot}
+                    depth={0}
+                    expandedPaths={expandedPaths}
+                    activePath={openFile}
+                    onToggle={handleTreeToggle}
+                    onFileClick={handleTreeFileClick}
+                    onLoadChildren={loadTreeChildren}
+                  />
                 </div>
               </div>
-            ) : (
-              <Editor
-                height="100%"
-                language={getMonacoLanguage(fileMeta?.extension || "")}
-                value={fileContent}
-                onChange={(value) => setFileContent(value || "")}
-                theme={resolvedTheme === "dark" ? "vs-dark" : "light"}
-                options={{
-                  minimap: { enabled: true },
-                  fontSize: 14,
-                  lineNumbers: "on",
-                  scrollBeyondLastLine: false,
-                  wordWrap: "on",
-                  automaticLayout: true,
-                  tabSize: 2,
-                  padding: { top: 8, bottom: 8 },
-                }}
-                onMount={(editor, monaco) => {
-                  editorInstanceRef.current = editor;
-                  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-                    handleSave();
-                  });
-                }}
-              />
             )}
+            {/* Editor */}
+            <div className="flex-1 min-h-0">
+              {fileLoading ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                    <RefreshCw className="h-6 w-6 animate-spin" />
+                    <span className="text-sm">加载中...</span>
+                  </div>
+                </div>
+              ) : (
+                <Editor
+                  height="100%"
+                  language={getMonacoLanguage(fileMeta?.extension || "")}
+                  value={fileContent}
+                  onChange={(value) => setFileContent(value || "")}
+                  theme={resolvedTheme === "dark" ? "vs-dark" : "light"}
+                  options={{
+                    minimap: { enabled: true },
+                    fontSize: 14,
+                    lineNumbers: "on",
+                    scrollBeyondLastLine: false,
+                    wordWrap: "on",
+                    automaticLayout: true,
+                    tabSize: 2,
+                    padding: { top: 8, bottom: 8 },
+                  }}
+                  onMount={(editor, monaco) => {
+                    editorInstanceRef.current = editor;
+                    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+                      handleSave();
+                    });
+                  }}
+                />
+              )}
+            </div>
           </div>
         </DialogContent>
       </Dialog>

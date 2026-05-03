@@ -12,8 +12,8 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Home, Server, Users, Settings, LogOut, LayoutDashboard, FolderOpen } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { Server, Users, Settings, LogOut, LayoutDashboard, FolderOpen, Box } from "lucide-react";
+import { useRouter, usePathname } from "next/navigation";
 
 const items = [
   {
@@ -25,6 +25,11 @@ const items = [
     title: "服务器节点",
     url: "/dashboard/nodes",
     icon: Server,
+  },
+  {
+    title: "实例管理",
+    url: "/dashboard/instances",
+    icon: Box,
   },
   {
     title: "文件管理",
@@ -45,6 +50,12 @@ const items = [
 
 export function AppSidebar() {
   const router = useRouter();
+  const pathname = usePathname();
+
+  const isActive = (url: string) => {
+    if (url === "/dashboard") return pathname === "/dashboard";
+    return pathname.startsWith(url);
+  };
 
   return (
     <Sidebar>
@@ -58,7 +69,7 @@ export function AppSidebar() {
             <SidebarMenu>
               {items.map((item) => (
                 <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild>
+                  <SidebarMenuButton asChild isActive={isActive(item.url)}>
                     <a href={item.url}>
                       <item.icon />
                       <span>{item.title}</span>
