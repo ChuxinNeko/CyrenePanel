@@ -4,7 +4,8 @@ import { jwt } from "@elysiajs/jwt";
 import { randomBytes } from "crypto";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { logger, setLogLevel, getLogLevel, statusBadge } from "./logger";
+import { logger, setLogLevel, getLogLevel, statusBadge } from "./logger/index";
+import { accountRoutes } from "./account/index";
 
 const configPath = join(process.cwd(), "config.json");
 
@@ -14,7 +15,7 @@ interface Config {
   logLevel: string;
 }
 
-let config: Config = {
+export let config: Config = {
   username: "admin",
   password: "",
   logLevel: "INFO",
@@ -38,8 +39,8 @@ const requestTimings = new WeakMap<Request, number>();
 export const app = new Elysia()
   .use(cors({
     origin: [
-      'http://localhost:3000', 
-      'http://127.0.0.1:3000', 
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
       process.env.FRONTEND_URL || ''
     ].filter(Boolean),
     credentials: true,
@@ -53,9 +54,8 @@ export const app = new Elysia()
   .onRequest(({ request }) => {
     requestTimings.set(request, performance.now());
   })
-  // @ts-expect-error Elysia internal overload mismatch on onAfterHandle
-  .onAfterHandle(async (ctx: any, response: any) => {
-    const { request, set, server, body: reqBody } = ctx;
+  .onAfterHandle(async (ctx: any) => {
+    const { request, set, server, body: reqBody, response } = ctx;
     const method = request.method;
     const url = new URL(request.url);
     const status = (set as any).status ?? 200;
@@ -89,35 +89,7 @@ export const app = new Elysia()
       logger.info(`${method} ${url.pathname} | ${statusBadge(status)} | ${ms}ms`);
     }
   })
-  .post(
-    "/api/login",
-    async ({ body, jwt, cookie: { auth } }) => {
-      if (body.username === config.username && body.password === config.password) {
-        const token = await jwt.sign({ username: body.username });
-        auth.set({
-          value: token,
-          httpOnly: true,
-          maxAge: 7 * 86400,
-          path: '/',
-        });
-        return { success: true, message: "Login successful" };
-      }
-      return { success: false, message: "Invalid credentials" };
-    },
-    {
-      body: t.Object({
-        username: t.String(),
-        password: t.String()
-      })
-    }
-  )
-  .get("/api/me", async ({ jwt, cookie: { auth } }) => {
-    const profile = await jwt.verify(auth.value as string | undefined);
-    if (!profile) {
-      return { success: false, message: "Unauthorized" };
-    }
-    return { success: true, profile };
-  })
+  .use(accountRoutes)
   .listen(5676);
 
 export type App = typeof app;

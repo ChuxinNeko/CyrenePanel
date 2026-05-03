@@ -31,57 +31,43 @@ export default function DashboardPage() {
   }, [router]);
 
   if (loading) {
-    return <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-white">Loading...</div>;
+    return <div className="flex min-h-[50vh] items-center justify-center">加载中...</div>;
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 p-8 text-zinc-100">
-      <div className="max-w-4xl mx-auto space-y-6">
-        <header className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <div className="flex items-center gap-4">
-            <span>Welcome, {profile?.username}</span>
-            <Button 
-              variant="outline" 
-              className="text-zinc-900"
-              onClick={() => {
-                // Here we simply redirect to login. In a real app, you'd want an explicit logout API endpoint to clear the HTTP-only cookie.
-                router.push("/login");
-              }}
-            >
-              Logout
-            </Button>
-          </div>
-        </header>
+    <div className="space-y-6 max-w-6xl mx-auto w-full">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold tracking-tight">概览</h1>
+        <div className="text-sm text-muted-foreground">欢迎回来，{profile?.username}</div>
+      </div>
+      
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">在线节点</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-500">0</div>
+          </CardContent>
+        </Card>
         
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card className="bg-zinc-900/50 border-zinc-800 text-zinc-100">
-            <CardHeader>
-              <CardTitle>Servers Online</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-4xl font-bold text-green-500">0</div>
-            </CardContent>
-          </Card>
-          
-          <Card className="bg-zinc-900/50 border-zinc-800 text-zinc-100">
-            <CardHeader>
-              <CardTitle>CPU Usage</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-4xl font-bold text-blue-500">12%</div>
-            </CardContent>
-          </Card>
-          
-          <Card className="bg-zinc-900/50 border-zinc-800 text-zinc-100">
-            <CardHeader>
-              <CardTitle>Memory Usage</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-4xl font-bold text-yellow-500">2.4 GB</div>
-            </CardContent>
-          </Card>
-        </div>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">总 CPU 使用率</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-500">12%</div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">总内存使用量</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-yellow-500">2.4 GB</div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
