@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@elysiajs/eden": "^1.4.9",
+    "@monaco-editor/react": "^4.7.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.14.0",
