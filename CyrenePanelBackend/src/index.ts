@@ -7,6 +7,7 @@ import { join } from "path";
 import { logger, setLogLevel, getLogLevel, statusBadge } from "./logger/index";
 import { accountRoutes } from "./account/index";
 import { systemRoutes } from "./system/index";
+import { fileRoutes } from "./files/index";
 
 const configPath = join(process.cwd(), "config.json");
 
@@ -93,6 +94,7 @@ export const app = new Elysia()
   })
   .use(accountRoutes)
   .use(systemRoutes)
+  .use(fileRoutes)
   .listen(5676);
 
 export type App = typeof app;

@@ -12,7 +12,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Home, Server, Users, Settings, LogOut, LayoutDashboard } from "lucide-react";
+import { Home, Server, Users, Settings, LogOut, LayoutDashboard, FolderOpen } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 const items = [
@@ -25,6 +25,11 @@ const items = [
     title: "服务器节点",
     url: "/dashboard/nodes",
     icon: Server,
+  },
+  {
+    title: "文件管理",
+    url: "/dashboard/files",
+    icon: FolderOpen,
   },
   {
     title: "用户管理",
