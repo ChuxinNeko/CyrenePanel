@@ -4,25 +4,36 @@ import { jwt } from "@elysiajs/jwt";
 import { randomBytes } from "crypto";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { logger, setLogLevel, getLogLevel, statusBadge } from "./logger";
 
 const configPath = join(process.cwd(), "config.json");
 
-let config = {
+interface Config {
+  username: string;
+  password: string;
+  logLevel: string;
+}
+
+let config: Config = {
   username: "admin",
-  password: ""
+  password: "",
+  logLevel: "INFO",
 };
 
 if (!existsSync(configPath)) {
   config.password = randomBytes(4).toString("hex"); // 8位随机密码
   writeFileSync(configPath, JSON.stringify(config, null, 2));
-  console.log(`\n======================================`);
-  console.log(`[INIT] 初始密码已生成并保存到 config.json`);
-  console.log(`[INIT] 默认账号: ${config.username}`);
-  console.log(`[INIT] 初始密码: ${config.password}`);
-  console.log(`======================================\n`);
+  logger.info("初始密码已生成并保存到 config.json");
+  logger.info(`默认账号: ${config.username}`);
+  logger.warn(`初始密码: ${config.password}`);
 } else {
-  config = JSON.parse(readFileSync(configPath, "utf-8"));
+  config = { ...config, ...JSON.parse(readFileSync(configPath, "utf-8")) };
 }
+
+setLogLevel(config.logLevel);
+logger.info(`日志级别: ${config.logLevel}`);
+
+const requestTimings = new WeakMap<Request, number>();
 
 export const app = new Elysia()
   .use(cors({
@@ -39,6 +50,45 @@ export const app = new Elysia()
       secret: 'super_secret_key_for_cyrene_panel_dev' // In production, use process.env.JWT_SECRET
     })
   )
+  .onRequest(({ request }) => {
+    requestTimings.set(request, performance.now());
+  })
+  // @ts-expect-error Elysia internal overload mismatch on onAfterHandle
+  .onAfterHandle(async (ctx: any, response: any) => {
+    const { request, set, server, body: reqBody } = ctx;
+    const method = request.method;
+    const url = new URL(request.url);
+    const status = (set as any).status ?? 200;
+    const start = requestTimings.get(request) ?? performance.now();
+    const ms = (performance.now() - start).toFixed(1);
+    requestTimings.delete(request);
+
+    if (getLogLevel() === "DEBUG") {
+      // IP: 依次尝试多种来源
+      const ip = server?.requestIP(request)?.address
+        || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+        || request.headers.get("x-real-ip")
+        || request.socket?.remoteAddress
+        || url.hostname
+        || "unknown";
+      const req = reqBody !== undefined ? JSON.stringify(reqBody) : "(none)";
+      // 响应体: 从 Response 或普通对象中读取
+      let resStr = "(empty)";
+      if (response instanceof Response) {
+        const cloned = response.clone();
+        try {
+          const text = await cloned.text();
+          resStr = text.length > 500 ? text.slice(0, 500) + "..." : (text || "(empty)");
+        } catch { resStr = "(unreadable)"; }
+      } else if (response !== undefined && response !== null) {
+        const s = JSON.stringify(response);
+        resStr = s.length > 500 ? s.slice(0, 500) + "..." : s;
+      }
+      logger.debug(`${method} ${url.pathname} | ${statusBadge(status)} | ${ms}ms | IP: ${ip} | Body: ${req} | Res: ${resStr}`);
+    } else {
+      logger.info(`${method} ${url.pathname} | ${statusBadge(status)} | ${ms}ms`);
+    }
+  })
   .post(
     "/api/login",
     async ({ body, jwt, cookie: { auth } }) => {
@@ -62,7 +112,7 @@ export const app = new Elysia()
     }
   )
   .get("/api/me", async ({ jwt, cookie: { auth } }) => {
-    const profile = await jwt.verify(auth.value);
+    const profile = await jwt.verify(auth.value as string | undefined);
     if (!profile) {
       return { success: false, message: "Unauthorized" };
     }
@@ -72,6 +122,4 @@ export const app = new Elysia()
 
 export type App = typeof app;
 
-console.log(
-  `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`
-);
+logger.info(`Elysia is running at ${String(app.server?.hostname)}:${String(app.server?.port)}`);

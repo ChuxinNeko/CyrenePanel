@@ -1,4 +1,5 @@
 {
   "username": "admin",
-  "password": "be6ecfb1"
+  "password": "be6ecfb1",
+  "logLevel": "DEBUG"
 }
