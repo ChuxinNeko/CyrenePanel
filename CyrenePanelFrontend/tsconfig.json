@@ -20,7 +20,8 @@
     ],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@backend/*": ["../CyrenePanelBackend/src/*"]
     }
   },
   "include": [
