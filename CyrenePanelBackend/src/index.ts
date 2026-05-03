@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { logger, setLogLevel, getLogLevel, statusBadge } from "./logger/index";
 import { accountRoutes } from "./account/index";
+import { systemRoutes } from "./system/index";
 
 const configPath = join(process.cwd(), "config.json");
 
@@ -38,23 +39,28 @@ const requestTimings = new WeakMap<Request, number>();
 
 export const app = new Elysia()
   .use(cors({
-    origin: [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      process.env.FRONTEND_URL || ''
-    ].filter(Boolean),
-    credentials: true,
+    origin: (request) => {
+      const origin = request.headers.get('origin');
+      if (!origin) return true;
+      const allowedOrigins = [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        process.env.FRONTEND_URL
+      ].filter(Boolean);
+      return allowedOrigins.includes(origin);
+    },
+    allowedHeaders: ['content-type', 'authorization'],
   }))
   .use(
     jwt({
       name: 'jwt',
-      secret: 'super_secret_key_for_cyrene_panel_dev' // In production, use process.env.JWT_SECRET
+      secret: process.env.JWT_SECRET || 'super_secret_key_for_cyrene_panel_dev'
     })
   )
   .onRequest(({ request }) => {
     requestTimings.set(request, performance.now());
   })
-  .onAfterHandle(async (ctx: any) => {
+  .onAfterHandle((ctx: any) => {
     const { request, set, server, body: reqBody, response } = ctx;
     const method = request.method;
     const url = new URL(request.url);
@@ -64,32 +70,29 @@ export const app = new Elysia()
     requestTimings.delete(request);
 
     if (getLogLevel() === "DEBUG") {
-      // IP: 依次尝试多种来源
       const ip = server?.requestIP(request)?.address
         || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
         || request.headers.get("x-real-ip")
-        || request.socket?.remoteAddress
-        || url.hostname
         || "unknown";
+      
       const req = reqBody !== undefined ? JSON.stringify(reqBody) : "(none)";
-      // 响应体: 从 Response 或普通对象中读取
-      let resStr = "(empty)";
-      if (response instanceof Response) {
-        const cloned = response.clone();
+      
+      // 避免异步读取 response，防止干扰 Cookie
+      let resStr = "(body hidden in logs to prevent issues)";
+      if (typeof response === 'object' && response !== null) {
         try {
-          const text = await cloned.text();
-          resStr = text.length > 500 ? text.slice(0, 500) + "..." : (text || "(empty)");
-        } catch { resStr = "(unreadable)"; }
-      } else if (response !== undefined && response !== null) {
-        const s = JSON.stringify(response);
-        resStr = s.length > 500 ? s.slice(0, 500) + "..." : s;
+          const s = JSON.stringify(response);
+          resStr = s.length > 200 ? s.slice(0, 200) + "..." : s;
+        } catch { resStr = "(unserializable)"; }
       }
+
       logger.debug(`${method} ${url.pathname} | ${statusBadge(status)} | ${ms}ms | IP: ${ip} | Body: ${req} | Res: ${resStr}`);
     } else {
       logger.info(`${method} ${url.pathname} | ${statusBadge(status)} | ${ms}ms`);
     }
   })
   .use(accountRoutes)
+  .use(systemRoutes)
   .listen(5676);
 
 export type App = typeof app;

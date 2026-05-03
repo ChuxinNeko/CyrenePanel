@@ -32,9 +32,9 @@ export default function LoginPage() {
         return;
       }
 
-      if (data?.success) {
+      if (data?.success && data.token) {
+        localStorage.setItem("token", data.token);
         toast.success("登录成功");
-        // 登录成功，跳转到仪表盘
         router.push("/dashboard");
       } else {
         toast.error(data?.message || "凭据无效");

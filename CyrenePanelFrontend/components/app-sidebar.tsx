@@ -70,7 +70,7 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton 
               onClick={() => {
-                // 登出逻辑
+                localStorage.removeItem("token");
                 router.push("/login");
               }}
               className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
