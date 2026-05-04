@@ -11,6 +11,27 @@ import {
 } from "../db";
 import { logger } from "../logger/index";
 
+// ── 用 API Key 在远端节点换取 JWT token ────────────────────────────
+
+async function exchangeApiKeyForToken(
+  address: string,
+  apiKey: string
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${address}/api/auth/key`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: apiKey }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json()) as any;
+    if (data?.success && data.token) return data.token;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 export const nodeRoutes = new Elysia()
   // ── JWT 鉴权辅助 ──────────────────────────────────────────────────
   .derive(async ({ jwt, request }: any) => {
@@ -64,10 +85,14 @@ export const nodeRoutes = new Elysia()
       const { name, address, apiKey } = body;
       const normalizedAddress = address.replace(/\/+$/, "");
 
-      // 验证子节点连通性：调用对方的 /api/me
+      // 验证子节点连通性：先换 JWT，再调 /api/me
       try {
+        const token = await exchangeApiKeyForToken(normalizedAddress, apiKey);
+        if (!token) {
+          return { success: false, message: "连接失败：API Key 无效或节点不可达" };
+        }
         const res = await fetch(`${normalizedAddress}/api/me`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
+          headers: { Authorization: `Bearer ${token}` },
           signal: AbortSignal.timeout(5000),
         });
         const data = await res.json() as any;
@@ -122,8 +147,10 @@ export const nodeRoutes = new Elysia()
     }
 
     try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: true, online: false };
       const res = await fetch(`${node.address}/api/me`, {
-        headers: { Authorization: `Bearer ${node.apiKey}` },
+        headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(3000),
       });
       const data = await res.json() as any;

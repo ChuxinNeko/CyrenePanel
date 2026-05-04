@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
 import { compare } from "bcryptjs";
-import { dbGetUser } from "../db";
+import { dbGetUser, getConfig } from "../db";
 import { logger } from "../logger/index";
 
 export const accountRoutes = new Elysia()
@@ -47,4 +47,24 @@ export const accountRoutes = new Elysia()
 
     logger.debug(`GET /api/me | 鉴权成功: ${profile.username}`);
     return { success: true, profile };
-  });
+  })
+  // ── 通过 API Key 换取 JWT token ────────────────────────────────
+  .post(
+    "/api/auth/key",
+    async ({ body, jwt }: any) => {
+      const apiKey = getConfig("api_key");
+      if (!apiKey || apiKey !== body.key) {
+        logger.warn("POST /api/auth/key | API Key 验证失败");
+        return { success: false, message: "API Key 无效" };
+      }
+
+      const token = await jwt.sign({ username: "__api_node__", role: "admin" });
+      logger.debug("POST /api/auth/key | 已颁发节点 Token");
+      return { success: true, token };
+    },
+    {
+      body: t.Object({
+        key: t.String(),
+      }),
+    }
+  );
