@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Icon } from "@iconify/react";
 
 import { Loader2, Plus, Trash2, CheckCircle2, XCircle, ArrowDown } from "lucide-react";
 
@@ -54,6 +55,13 @@ interface DeployConfig {
   env: { name: string; value: string }[];
   restart: string;
   networkMode: string;
+}
+
+function AppIcon({ icon, className = "" }: { icon: string; className?: string }) {
+  if (icon.includes(":")) {
+    return <Icon icon={icon} className={className} />;
+  }
+  return <span className={className}>{icon}</span>;
 }
 
 export function DeployAppDialog({
@@ -179,7 +187,7 @@ export function DeployAppDialog({
       <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <span>{app.icon}</span>
+            <AppIcon icon={app.icon} className="w-5 h-5" />
             部署 {app.name}
           </DialogTitle>
           <DialogDescription>

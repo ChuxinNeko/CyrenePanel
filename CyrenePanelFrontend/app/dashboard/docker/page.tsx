@@ -24,7 +24,9 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
+import { Icon } from "@iconify/react";
 import {
   Container,
   Play,
@@ -159,6 +161,15 @@ function formatTime(ts: string) {
   }
 }
 
+// ── 图标组件 ───────────────────────────────────────────────────────
+
+function AppIcon({ icon, className = "" }: { icon: string; className?: string }) {
+  if (icon.includes(":")) {
+    return <Icon icon={icon} className={className} />;
+  }
+  return <span className={className}>{icon}</span>;
+}
+
 // ── 主页面 ───────────────────────────────────────────────────────────
 
 export default function DockerPage() {
@@ -202,6 +213,11 @@ export default function DockerPage() {
   // 删除确认
   const [deleteTarget, setDeleteTarget] = useState<DockerContainer | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [alsoDeleteImage, setAlsoDeleteImage] = useState(false);
+
+  // 镜像删除
+  const [deleteImageTarget, setDeleteImageTarget] = useState<DockerImage | null>(null);
+  const [deletingImage, setDeletingImage] = useState(false);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const isRemoteNode = selectedNodeId !== "__main__";
@@ -315,7 +331,7 @@ export default function DockerPage() {
   };
 
   // 删除容器
-  const containerDelete = async (id: string, force: boolean) => {
+  const containerDelete = async (id: string, force: boolean, alsoDelete: boolean = false) => {
     if (!selectedNodeId) return;
     setDeleting(true);
 
@@ -324,10 +340,10 @@ export default function DockerPage() {
       : "/api/docker";
 
     try {
-      const qs = force ? "?force=true" : "";
-      const res = await apiGet<{ success: boolean; message?: string }>(
-        `${basePath}/containers/${id}${qs}`
-      );
+      const qsParts: string[] = [];
+      if (force) qsParts.push("force=true");
+      if (alsoDelete) qsParts.push("alsoDeleteImage=true");
+      const qs = qsParts.length > 0 ? `?${qsParts.join("&")}` : "";
       // DELETE 请求需要单独处理
       const delRes = await fetch(`${API_BASE}${basePath}/containers/${id}${qs}`, {
         method: "DELETE",
@@ -335,8 +351,9 @@ export default function DockerPage() {
       });
       const data = await delRes.json();
       if (data.success) {
-        toast.success("容器已删除");
+        toast.success(alsoDelete ? "容器及镜像已删除" : "容器已删除");
         setDeleteTarget(null);
+        setAlsoDeleteImage(false);
         await fetchDockerData();
       } else {
         toast.error(data.message || "删除失败");
@@ -345,6 +362,35 @@ export default function DockerPage() {
       toast.error(e.message || "请求失败");
     } finally {
       setDeleting(false);
+    }
+  };
+
+  // 删除镜像
+  const imageDelete = async (id: string) => {
+    if (!selectedNodeId) return;
+    setDeletingImage(true);
+
+    const basePath = isRemoteNode
+      ? `/api/nodes/${selectedNodeId}/docker`
+      : "/api/docker";
+
+    try {
+      const delRes = await fetch(`${API_BASE}${basePath}/images/${id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      const data = await delRes.json();
+      if (data.success) {
+        toast.success("镜像已删除");
+        setDeleteImageTarget(null);
+        await fetchDockerData();
+      } else {
+        toast.error(data.message || "删除失败");
+      }
+    } catch (e: any) {
+      toast.error(e.message || "请求失败");
+    } finally {
+      setDeletingImage(false);
     }
   };
 
@@ -887,6 +933,7 @@ export default function DockerPage() {
                         <th className="text-left p-3 font-medium">标签</th>
                         <th className="text-left p-3 font-medium">ID</th>
                         <th className="text-right p-3 font-medium">大小</th>
+                        <th className="text-right p-3 font-medium">操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -908,6 +955,23 @@ export default function DockerPage() {
                             {img.ID?.slice(7, 19) || img.ID}
                           </td>
                           <td className="p-3 text-xs text-right">{img.Size}</td>
+                          <td className="p-3">
+                            <div className="flex items-center justify-end">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-destructive hover:text-destructive"
+                                onClick={() => setDeleteImageTarget(img)}
+                                disabled={deletingImage}
+                              >
+                                {deletingImage ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1040,8 +1104,8 @@ export default function DockerPage() {
                   >
                     <CardContent className="p-4">
                       <div className="flex items-start gap-3">
-                        <div className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-xl">
-                          {app.icon}
+                        <div className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-xl overflow-hidden">
+                          <AppIcon icon={app.icon} className="w-6 h-6" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <h3 className="font-medium text-sm truncate">{app.name}</h3>
@@ -1148,7 +1212,7 @@ export default function DockerPage() {
       <Dialog
         open={!!deleteTarget}
         onOpenChange={(v) => {
-          if (!v) setDeleteTarget(null);
+          if (!v) { setDeleteTarget(null); setAlsoDeleteImage(false); }
         }}
       >
         <DialogContent className="max-w-sm">
@@ -1161,13 +1225,27 @@ export default function DockerPage() {
               确定要删除容器 <strong>{deleteTarget?.name}</strong> 吗？此操作不可撤销。
             </DialogDescription>
           </DialogHeader>
+          <div className="flex items-center gap-2 py-1">
+            <Checkbox
+              id="alsoDeleteImage"
+              checked={alsoDeleteImage}
+              onChange={(e) => setAlsoDeleteImage(e.target.checked)}
+              disabled={deleting}
+            />
+            <label
+              htmlFor="alsoDeleteImage"
+              className="text-sm text-muted-foreground cursor-pointer select-none"
+            >
+              同时删除镜像
+            </label>
+          </div>
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+            <Button variant="outline" onClick={() => { setDeleteTarget(null); setAlsoDeleteImage(false); }} disabled={deleting}>
               取消
             </Button>
             <Button
               variant="destructive"
-              onClick={() => deleteTarget && containerDelete(deleteTarget.id, false)}
+              onClick={() => deleteTarget && containerDelete(deleteTarget.id, false, alsoDeleteImage)}
               disabled={deleting}
             >
               {deleting && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
@@ -1176,13 +1254,46 @@ export default function DockerPage() {
             {deleteTarget?.state === "running" && (
               <Button
                 variant="destructive"
-                onClick={() => deleteTarget && containerDelete(deleteTarget.id, true)}
+                onClick={() => deleteTarget && containerDelete(deleteTarget.id, true, alsoDeleteImage)}
                 disabled={deleting}
               >
                 {deleting && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
                 强制删除
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 镜像删除确认对话框 */}
+      <Dialog
+        open={!!deleteImageTarget}
+        onOpenChange={(v) => {
+          if (!v) setDeleteImageTarget(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-destructive" />
+              删除镜像
+            </DialogTitle>
+            <DialogDescription>
+              确定要删除镜像 <strong>{deleteImageTarget?.Repository === "<none>" ? "<none>" : deleteImageTarget?.Repository}:{deleteImageTarget?.Tag || "latest"}</strong> 吗？此操作不可撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDeleteImageTarget(null)} disabled={deletingImage}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteImageTarget && imageDelete(deleteImageTarget.ID)}
+              disabled={deletingImage}
+            >
+              {deletingImage && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              删除
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

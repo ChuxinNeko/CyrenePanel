@@ -279,8 +279,31 @@ export const dockerRoutes = new Elysia()
     if (!profile) return { success: false, message: "未授权" };
     try {
       const force = query?.force === "true";
+      const alsoDeleteImage = query?.alsoDeleteImage === "true";
+
+      // 如果需要连镜像一起删，先获取容器镜像信息
+      let imageId: string | null = null;
+      if (alsoDeleteImage) {
+        try {
+          const info = await inspectContainer(params.id);
+          imageId = info.image;
+        } catch {
+          // 容器可能已不存在，忽略
+        }
+      }
+
       const args = force ? ["rm", "-f", params.id] : ["rm", params.id];
       await docker(args);
+
+      // 删除完成后，如果指定了同时删除镜像
+      if (alsoDeleteImage && imageId) {
+        try {
+          await docker(["rmi", imageId]);
+        } catch {
+          // 镜像可能被其他容器使用，忽略错误
+        }
+      }
+
       return { success: true, message: "容器已删除" };
     } catch (e: any) {
       return { success: false, message: e.message };
@@ -308,6 +331,19 @@ export const dockerRoutes = new Elysia()
     try {
       const images = await listImages();
       return { success: true, images };
+    } catch (e: any) {
+      return { success: false, message: e.message };
+    }
+  })
+
+  // ── 删除镜像 ──────────────────────────────────────────────────────
+  .delete("/api/docker/images/:id", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      const force = query?.force === "true";
+      const args = force ? ["rmi", "-f", params.id] : ["rmi", params.id];
+      await docker(args);
+      return { success: true, message: "镜像已删除" };
     } catch (e: any) {
       return { success: false, message: e.message };
     }

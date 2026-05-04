@@ -729,8 +729,11 @@ export const nodeRoutes = new Elysia()
     try {
       const token = await exchangeApiKeyForToken(node.address, node.apiKey);
       if (!token) return { success: false, message: "子节点不可达" };
-      const force = query?.force === "true" ? "?force=true" : "";
-      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}${force}`, {
+      const qsParts: string[] = [];
+      if (query?.force === "true") qsParts.push("force=true");
+      if (query?.alsoDeleteImage === "true") qsParts.push("alsoDeleteImage=true");
+      const qs = qsParts.length > 0 ? `?${qsParts.join("&")}` : "";
+      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}${qs}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(30000),
@@ -776,6 +779,26 @@ export const nodeRoutes = new Elysia()
       return await res.json();
     } catch (e: any) {
       logger.err(`子节点 Docker 镜像列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .delete("/api/nodes/:id/docker/images/:iid", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const qs = query?.force === "true" ? "?force=true" : "";
+      const res = await fetch(`${node.address}/api/docker/images/${params.iid}${qs}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 删除镜像代理失败: ${e.message}`);
       return { success: false, message: `子节点请求失败: ${e.message}` };
     }
   })

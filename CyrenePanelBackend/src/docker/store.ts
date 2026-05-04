@@ -42,7 +42,7 @@ export const storeApps: StoreApp[] = [
     name: "Nginx",
     description: "高性能 HTTP 和反向代理服务器",
     category: "Web 服务器",
-    icon: "🌐",
+    icon: "material-icon-theme:nginx",
     image: "nginx:latest",
     defaultPorts: [
       { container: 80, host: 8080, protocol: "tcp", label: "HTTP" },
@@ -59,7 +59,7 @@ export const storeApps: StoreApp[] = [
     name: "Nginx Proxy Manager",
     description: "带 Web UI 的反向代理管理器，支持 SSL 证书自动申请",
     category: "Web 服务器",
-    icon: "🔀",
+    icon: "material-symbols:router",
     image: "jc21/nginx-proxy-manager:latest",
     defaultPorts: [
       { container: 80, host: 80, protocol: "tcp", label: "HTTP" },
@@ -79,7 +79,7 @@ export const storeApps: StoreApp[] = [
     name: "MySQL",
     description: "世界上最流行的开源关系型数据库",
     category: "数据库",
-    icon: "🐬",
+    icon: "logos:mysql",
     image: "mysql:8.0",
     defaultPorts: [{ container: 3306, host: 3306, protocol: "tcp", label: "MySQL" }],
     defaultVolumes: [
@@ -97,7 +97,7 @@ export const storeApps: StoreApp[] = [
     name: "PostgreSQL",
     description: "功能强大的开源对象关系型数据库",
     category: "数据库",
-    icon: "🐘",
+    icon: "logos:postgresql",
     image: "postgres:16-alpine",
     defaultPorts: [{ container: 5432, host: 5432, protocol: "tcp", label: "PostgreSQL" }],
     defaultVolumes: [
@@ -114,7 +114,7 @@ export const storeApps: StoreApp[] = [
     name: "Redis",
     description: "高性能内存键值存储，常用于缓存和消息队列",
     category: "数据库",
-    icon: "🔴",
+    icon: "logos:redis",
     image: "redis:7-alpine",
     defaultPorts: [{ container: 6379, host: 6379, protocol: "tcp", label: "Redis" }],
     defaultVolumes: [
@@ -127,7 +127,7 @@ export const storeApps: StoreApp[] = [
     name: "MongoDB",
     description: "面向文档的 NoSQL 数据库",
     category: "数据库",
-    icon: "🍃",
+    icon: "material-icon-theme:mongodb",
     image: "mongo:7",
     defaultPorts: [{ container: 27017, host: 27017, protocol: "tcp", label: "MongoDB" }],
     defaultVolumes: [
@@ -145,7 +145,7 @@ export const storeApps: StoreApp[] = [
     name: "Plex",
     description: "全功能媒体服务器，整理和串流你的电影、音乐和照片",
     category: "媒体服务",
-    icon: "🎬",
+    icon: "logos:plex",
     image: "linuxserver/plex:latest",
     defaultPorts: [{ container: 32400, host: 32400, protocol: "tcp", label: "Web UI" }],
     defaultVolumes: [
@@ -164,7 +164,7 @@ export const storeApps: StoreApp[] = [
     name: "Jellyfin",
     description: "免费开源的媒体系统，Plex/Emby 的替代方案",
     category: "媒体服务",
-    icon: "🎥",
+    icon: "logos:jellyfin",
     image: "linuxserver/jellyfin:latest",
     defaultPorts: [{ container: 8096, host: 8096, protocol: "tcp", label: "Web UI" }],
     defaultVolumes: [
@@ -185,7 +185,7 @@ export const storeApps: StoreApp[] = [
     name: "Nextcloud",
     description: "自托管的文件同步与协作平台",
     category: "文件与同步",
-    icon: "☁️",
+    icon: "logos:nextcloud",
     image: "linuxserver/nextcloud:latest",
     defaultPorts: [{ container: 443, host: 8443, protocol: "tcp", label: "HTTPS" }],
     defaultVolumes: [
@@ -203,7 +203,7 @@ export const storeApps: StoreApp[] = [
     name: "Syncthing",
     description: "去中心化的文件同步工具",
     category: "文件与同步",
-    icon: "🔄",
+    icon: "logos:syncthing",
     image: "linuxserver/syncthing:latest",
     defaultPorts: [
       { container: 8384, host: 8384, protocol: "tcp", label: "Web UI" },
@@ -226,7 +226,7 @@ export const storeApps: StoreApp[] = [
     name: "Gitea",
     description: "轻量级自托管 Git 服务，GitHub 的替代方案",
     category: "开发者工具",
-    icon: "🛠️",
+    icon: "logos:gitea",
     image: "gitea/gitea:latest",
     defaultPorts: [
       { container: 3000, host: 3000, protocol: "tcp", label: "Web UI" },
@@ -242,7 +242,7 @@ export const storeApps: StoreApp[] = [
     name: "Portainer",
     description: "强大的 Docker 容器管理 Web UI",
     category: "开发者工具",
-    icon: "🐳",
+    icon: "logos:portainer",
     image: "portainer/portainer-ce:latest",
     defaultPorts: [
       { container: 9000, host: 9000, protocol: "tcp", label: "Web UI" },
@@ -259,7 +259,7 @@ export const storeApps: StoreApp[] = [
     name: "Uptime Kuma",
     description: "自托管的网站状态监控工具，支持多种通知方式",
     category: "开发者工具",
-    icon: "📊",
+    icon: "logos:uptime-kuma",
     image: "louislam/uptime-kuma:latest",
     defaultPorts: [{ container: 3001, host: 3001, protocol: "tcp", label: "Web UI" }],
     defaultVolumes: [
@@ -292,7 +292,7 @@ export const storeApps: StoreApp[] = [
     name: "AdGuard Home",
     description: "全网广告拦截与跟踪保护 DNS 服务器",
     category: "网络安全",
-    icon: "🛡️",
+    icon: "simple-icons:adguard",
     image: "adguard/adguardhome:latest",
     defaultPorts: [
       { container: 53, host: 53, protocol: "tcp", label: "DNS TCP" },
@@ -312,7 +312,7 @@ export const storeApps: StoreApp[] = [
     name: "Vaultwarden",
     description: "轻量级 Bitwarden 兼容密码管理器服务端",
     category: "密码管理",
-    icon: "🔐",
+    icon: "logos:bitwarden-icon",
     image: "vaultwarden/server:latest",
     defaultPorts: [{ container: 80, host: 8088, protocol: "tcp", label: "Web UI" }],
     defaultVolumes: [
@@ -327,7 +327,7 @@ export const storeApps: StoreApp[] = [
     name: "WordPress",
     description: "世界上最流行的内容管理系统 (CMS)",
     category: "内容管理",
-    icon: "📝",
+    icon: "logos:wordpress-icon",
     image: "wordpress:latest",
     defaultPorts: [{ container: 80, host: 8080, protocol: "tcp", label: "Web" }],
     defaultVolumes: [
@@ -347,7 +347,7 @@ export const storeApps: StoreApp[] = [
     name: "Home Assistant",
     description: "开源智能家居自动化平台",
     category: "智能家居",
-    icon: "🏠",
+    icon: "logos:homeassistant",
     image: "homeassistant/home-assistant:stable",
     defaultPorts: [{ container: 8123, host: 8123, protocol: "tcp", label: "Web UI" }],
     defaultVolumes: [
@@ -365,7 +365,7 @@ export const storeApps: StoreApp[] = [
     name: "Alpine Linux",
     description: "最小化的 Linux 发行版，适合作为基础系统容器",
     category: "其他",
-    icon: "🐧",
+    icon: "logos:alpine",
     image: "alpine:latest",
     defaultPorts: [],
     defaultVolumes: [],
