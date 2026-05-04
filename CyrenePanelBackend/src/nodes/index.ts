@@ -13,7 +13,7 @@ import { logger } from "../logger/index";
 
 // ── 用 API Key 在远端节点换取 JWT token ────────────────────────────
 
-async function exchangeApiKeyForToken(
+export async function exchangeApiKeyForToken(
   address: string,
   apiKey: string
 ): Promise<string | null> {
@@ -30,6 +30,32 @@ async function exchangeApiKeyForToken(
     // ignore
   }
   return null;
+}
+
+export async function getOnlineNodesCount() {
+  const nodes = dbGetAllNodes();
+  const checks = nodes.map(async (node) => {
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return false;
+      const res = await fetch(`${node.address}/api/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(2000), // 缩短超时时间
+      });
+      const data = await res.json() as any;
+      return !!data?.success;
+    } catch {
+      return false;
+    }
+  });
+  
+  const results = await Promise.all(checks);
+  const onlineCount = results.filter(Boolean).length;
+  
+  return {
+    total: nodes.length + 1, // 主节点 + 子节点
+    online: onlineCount + 1, // 主节点始终在线 + 在线子节点
+  };
 }
 
 export const nodeRoutes = new Elysia()
@@ -157,5 +183,188 @@ export const nodeRoutes = new Elysia()
       return { success: true, online: !!data?.success };
     } catch {
       return { success: true, online: false };
+    }
+  })
+
+  // ── 子节点文件代理：辅助函数 ─────────────────────────────────────
+  .derive(async ({ params, profile }: any) => {
+    // 为子节点文件代理提供通用的节点认证辅助
+    return {};
+  })
+
+  // ── 子节点文件代理：列出目录 ─────────────────────────────────────
+  .get("/api/nodes/:id/files", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+
+      const pathParam = (query.path as string) || "";
+      const url = `${node.address}/api/files?path=${encodeURIComponent(pathParam)}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点文件列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点文件代理：读取文件 ─────────────────────────────────────
+  .get("/api/nodes/:id/files/read", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+
+      const pathParam = query.path as string;
+      if (!pathParam) return { success: false, message: "缺少 path 参数" };
+
+      const url = `${node.address}/api/files/read?path=${encodeURIComponent(pathParam)}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点文件读取代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点文件代理：写入文件 ─────────────────────────────────────
+  .put("/api/nodes/:id/files/write", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+
+      const res = await fetch(`${node.address}/api/files/write`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点文件写入代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点文件代理：创建目录 ─────────────────────────────────────
+  .post("/api/nodes/:id/files/mkdir", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+
+      const res = await fetch(`${node.address}/api/files/mkdir`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点创建目录代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点文件代理：删除文件/目录 ────────────────────────────────
+  .delete("/api/nodes/:id/files", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+
+      const res = await fetch(`${node.address}/api/files`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点删除文件代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点文件代理：重命名 ───────────────────────────────────────
+  .patch("/api/nodes/:id/files/rename", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+
+      const res = await fetch(`${node.address}/api/files/rename`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点重命名代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点文件代理：下载文件 ─────────────────────────────────────
+  .get("/api/nodes/:id/files/download", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+
+      const pathParam = query.path as string;
+      if (!pathParam) return { success: false, message: "缺少 path 参数" };
+
+      const url = `${node.address}/api/files/download?path=${encodeURIComponent(pathParam)}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点文件下载代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
     }
   });

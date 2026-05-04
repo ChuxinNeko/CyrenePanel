@@ -40,6 +40,9 @@ import {
   ChevronDown,
   PanelLeftClose,
   PanelLeft,
+  Server,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 
 interface FileEntry {
@@ -64,6 +67,15 @@ interface FileReadResult {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5676";
 
+interface NodeInfo {
+  id: string;
+  name: string;
+  address: string;
+  apiKey: string;
+  isMain: number;
+  createdAt: number;
+}
+
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("token");
@@ -78,6 +90,12 @@ async function fileFetch<T>(url: string, init?: RequestInit): Promise<T> {
   };
   const res = await fetch(`${API_BASE}${url}`, { ...init, headers });
   return res.json();
+}
+
+/** 根据选中的节点构建 API 路径前缀 */
+function getNodeApiPrefix(nodeId: string | null): string {
+  if (!nodeId) return "/api";
+  return `/api/nodes/${nodeId}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -330,18 +348,57 @@ export default function FilesPage() {
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
 
+  // 节点选择状态
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [nodes, setNodes] = useState<NodeInfo[]>([]);
+  const [nodeStatus, setNodeStatus] = useState<Record<string, boolean>>({});
+
   const showToast = useCallback((message: string, type: "success" | "error") => {
     setToast({ message, type });
   }, []);
 
+  // 获取子节点列表
+  const fetchNodes = useCallback(async () => {
+    try {
+      const data = await fileFetch<{
+        success: boolean;
+        nodes?: NodeInfo[];
+      }>("/api/nodes");
+      if (data.success && data.nodes) {
+        setNodes(data.nodes);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // 获取子节点在线状态
+  const fetchNodeStatuses = useCallback(async () => {
+    for (const node of nodes) {
+      try {
+        const data = await fileFetch<{
+          success: boolean;
+          online?: boolean;
+        }>(`/api/nodes/${node.id}/status`);
+        setNodeStatus((prev) => ({
+          ...prev,
+          [node.id]: data.success && !!data.online,
+        }));
+      } catch {
+        setNodeStatus((prev) => ({ ...prev, [node.id]: false }));
+      }
+    }
+  }, [nodes]);
+
   // Initialize tree root from virtual root (drives on Windows, "/" on Linux)
   const initTreeRoot = useCallback(async () => {
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{
         success: boolean;
         entries?: FileEntry[];
         root?: string;
-      }>(`/api/files?path=${encodeURIComponent("")}`);
+      }>(`${prefix}/files?path=${encodeURIComponent("")}`);
       if (data.success && data.entries) {
         const children: TreeNode[] = data.entries
           .map((e) => ({
@@ -362,14 +419,15 @@ export default function FilesPage() {
     } catch {
       // silent
     }
-  }, []);
+  }, [selectedNodeId]);
 
   const loadTreeChildren = useCallback(async (dirPath: string) => {
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{
         success: boolean;
         entries?: FileEntry[];
-      }>(`/api/files?path=${encodeURIComponent(dirPath)}`);
+      }>(`${prefix}/files?path=${encodeURIComponent(dirPath)}`);
       if (data.success && data.entries) {
         const children: TreeNode[] = data.entries
           .map((e) => ({
@@ -395,7 +453,7 @@ export default function FilesPage() {
     } catch {
       // silent
     }
-  }, []);
+  }, [selectedNodeId]);
 
   const handleTreeToggle = useCallback((path: string) => {
     setExpandedPaths((prev) => {
@@ -410,8 +468,9 @@ export default function FilesPage() {
     setFileLoading(true);
     setOpenFile(filePath);
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<FileReadResult>(
-        `/api/files/read?path=${encodeURIComponent(filePath)}`
+        `${prefix}/files/read?path=${encodeURIComponent(filePath)}`
       );
       if (data.success && data.content !== undefined) {
         setFileContent(data.content);
@@ -427,7 +486,7 @@ export default function FilesPage() {
     } finally {
       setFileLoading(false);
     }
-  }, [showToast]);
+  }, [showToast, selectedNodeId]);
 
   // Build tree path chain for a given file path to auto-expand and load children
   const expandTreeToPath = useCallback(async (filePath: string) => {
@@ -454,12 +513,13 @@ export default function FilesPage() {
   const fetchDir = useCallback(async (path: string) => {
     setFetching(true);
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{
         success: boolean;
         entries?: FileEntry[];
         root?: string;
         message?: string;
-      }>(`/api/files?path=${encodeURIComponent(path)}`);
+      }>(`${prefix}/files?path=${encodeURIComponent(path)}`);
       if (data.success && data.entries) {
         setEntries(data.entries);
         if (data.root) setRootPath(data.root);
@@ -471,7 +531,7 @@ export default function FilesPage() {
     } finally {
       setFetching(false);
     }
-  }, [showToast]);
+  }, [showToast, selectedNodeId]);
 
   const navigateTo = useCallback((path: string) => {
     setCurrentPath(path);
@@ -480,6 +540,26 @@ export default function FilesPage() {
     setOriginalContent("");
     fetchDir(path);
   }, [fetchDir]);
+
+  // 切换节点时重置状态
+  const handleNodeChange = useCallback((nodeId: string | null) => {
+    setSelectedNodeId(nodeId);
+    setCurrentPath("");
+    setOpenFile(null);
+    setFileContent("");
+    setOriginalContent("");
+    setFileMeta(null);
+    setTreeRoot(null);
+    setExpandedPaths(new Set());
+    setSearchTerm("");
+  }, []);
+
+  // selectedNodeId 变化时重新加载目录（跳过首次，由 init 处理）
+  const isFirstLoad = useRef(true);
+  useEffect(() => {
+    if (isFirstLoad.current) return;
+    fetchDir("");
+  }, [selectedNodeId, fetchDir]);
 
   useEffect(() => {
     const init = async () => {
@@ -491,15 +571,24 @@ export default function FilesPage() {
           router.push("/login");
           return;
         }
-        await fetchDir("");
+        await Promise.all([fetchDir(""), fetchNodes()]);
       } catch {
         router.push("/login");
       } finally {
         setLoading(false);
+        isFirstLoad.current = false;
       }
     };
     init();
-  }, [router, fetchDir]);
+  }, [router, fetchDir, fetchNodes]);
+
+  // 每 30 秒刷新节点状态
+  useEffect(() => {
+    if (nodes.length === 0) return;
+    fetchNodeStatuses();
+    const timer = setInterval(fetchNodeStatuses, 30000);
+    return () => clearInterval(timer);
+  }, [nodes, fetchNodeStatuses]);
 
   const handleOpenDir = (entry: FileEntry) => {
     navigateTo(entry.path);
@@ -515,8 +604,9 @@ export default function FilesPage() {
     setFileLoading(true);
     setOpenFile(entry.path);
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<FileReadResult>(
-        `/api/files/read?path=${encodeURIComponent(entry.path)}`
+        `${prefix}/files/read?path=${encodeURIComponent(entry.path)}`
       );
       if (data.success && data.content !== undefined) {
         setFileContent(data.content);
@@ -538,8 +628,9 @@ export default function FilesPage() {
     if (!openFile) return;
     setSaving(true);
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{ success: boolean; message?: string }>(
-        "/api/files/write",
+        `${prefix}/files/write`,
         {
           method: "PUT",
           body: JSON.stringify({ path: openFile, content: fileContent }),
@@ -572,8 +663,9 @@ export default function FilesPage() {
     if (!mkdirName.trim()) return;
     const dirPath = currentPath ? `${currentPath}/${mkdirName}` : mkdirName;
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{ success: boolean; message?: string }>(
-        "/api/files/mkdir",
+        `${prefix}/files/mkdir`,
         {
           method: "POST",
           body: JSON.stringify({ path: dirPath }),
@@ -599,8 +691,9 @@ export default function FilesPage() {
       : "";
     const newPath = parentDir ? `${parentDir}/${renameName}` : renameName;
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{ success: boolean; message?: string }>(
-        "/api/files/rename",
+        `${prefix}/files/rename`,
         {
           method: "PATCH",
           body: JSON.stringify({ from: renameTarget.path, to: newPath }),
@@ -622,8 +715,9 @@ export default function FilesPage() {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{ success: boolean; message?: string }>(
-        "/api/files",
+        `${prefix}/files`,
         {
           method: "DELETE",
           body: JSON.stringify({ path: deleteTarget.path }),
@@ -648,13 +742,14 @@ export default function FilesPage() {
 
   const handleDownload = async (entry: FileEntry) => {
     try {
+      const prefix = getNodeApiPrefix(selectedNodeId);
       const data = await fileFetch<{
         success: boolean;
         data?: string;
         mimeType?: string;
         fileName?: string;
         message?: string;
-      }>(`/api/files/download?path=${encodeURIComponent(entry.path)}`);
+      }>(`${prefix}/files/download?path=${encodeURIComponent(entry.path)}`);
       if (data.success && data.data) {
         const byteChars = atob(data.data);
         const byteArray = new Uint8Array(byteChars.length);
@@ -705,6 +800,25 @@ export default function FilesPage() {
       <div className="flex items-center justify-between shrink-0">
         <h1 className="text-3xl font-bold tracking-tight">文件管理</h1>
         <div className="flex items-center gap-2">
+          {/* 节点选择器 */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+              <Server className="h-4 w-4" />
+              <span>节点:</span>
+            </div>
+            <select
+              value={selectedNodeId || ""}
+              onChange={(e) => handleNodeChange(e.target.value || null)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">主节点</option>
+              {nodes.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.name} {nodeStatus[node.id] ? "🟢" : "🔴"}
+                </option>
+              ))}
+            </select>
+          </div>
           <Button
             variant="outline"
             size="sm"

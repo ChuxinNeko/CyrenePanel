@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } from "os";
 import { readFileSync, existsSync } from "fs";
+import { getOnlineNodesCount } from "../nodes/index";
 
 const startTime = Date.now();
 
@@ -176,6 +177,8 @@ export const systemRoutes = new Elysia()
     const disks = getDiskUsage();
     const bunVersion = typeof Bun !== "undefined" ? Bun.version : "unknown";
 
+    const { total: nodeCount, online: onlineNodeCount } = await getOnlineNodesCount();
+    
     return {
       success: true,
       system: {
@@ -203,8 +206,8 @@ export const systemRoutes = new Elysia()
           percentage: Math.round((usedMem / totalMem) * 100),
         },
         disks,
-        nodeCount: 1,
-        onlineNodeCount: 1,
+        nodeCount,
+        onlineNodeCount,
       },
     };
   });

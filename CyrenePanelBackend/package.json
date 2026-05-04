@@ -9,6 +9,7 @@
     "@elysiajs/cors": "^1.4.2",
     "@elysiajs/jwt": "^1.4.2",
     "@rasla/logify": "^5.2.2",
+    "bun-pty": "^0.4.8",
     "elysia": "latest",
     "mime-types": "^3.0.2"
   },
