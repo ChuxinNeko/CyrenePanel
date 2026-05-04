@@ -17,7 +17,25 @@ import {
   User,
   Monitor,
   Zap,
+  Box,
 } from "lucide-react";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
+
+function authHeaders(): HeadersInit {
+  const token =
+    typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
+}
+
+async function apiGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
+  return res.json();
+}
 
 interface SystemInfo {
   hostname: string;
@@ -54,10 +72,16 @@ interface SystemInfo {
   onlineNodeCount: number;
 }
 
+interface Instance {
+  id: string;
+  name: string;
+  status: "running" | "stopped" | "error";
+}
+
 function getProgressColor(pct: number) {
-  if (pct >= 90) return "bg-red-500";
-  if (pct >= 70) return "bg-yellow-500";
-  return "bg-emerald-500";
+  if (pct >= 90) return "bg-destructive";
+  if (pct >= 70) return "bg-primary/60";
+  return "bg-primary";
 }
 
 function formatBytes(bytes: number): string {
@@ -101,6 +125,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [profile, setProfile] = useState<{ username: string } | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [instances, setInstances] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -109,6 +134,19 @@ export default function DashboardPage() {
       const { data, error } = await api.api.system.get();
       if (!error && data?.success) {
         setSystem(data.system as SystemInfo);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const fetchInstances = useCallback(async () => {
+    try {
+      const data = await apiGet<{ success: boolean; instances: Instance[] }>(
+        "/api/instances"
+      );
+      if (data.success) {
+        setInstances(data.instances);
       }
     } catch {
       // ignore
@@ -124,7 +162,7 @@ export default function DashboardPage() {
           return;
         }
         setProfile(data.profile as { username: string });
-        await fetchSystem();
+        await Promise.all([fetchSystem(), fetchInstances()]);
       } catch {
         router.push("/login");
       } finally {
@@ -132,11 +170,11 @@ export default function DashboardPage() {
       }
     };
     init();
-  }, [router, fetchSystem]);
+  }, [router, fetchSystem, fetchInstances]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await fetchSystem();
+    await Promise.all([fetchSystem(), fetchInstances()]);
     setRefreshing(false);
   };
 
@@ -147,8 +185,8 @@ export default function DashboardPage() {
           <Skeleton className="h-9 w-20" />
           <Skeleton className="h-5 w-32" />
         </div>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {[...Array(4)].map((_, i) => (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {[...Array(3)].map((_, i) => (
             <Card key={i}>
               <CardHeader className="pb-2">
                 <Skeleton className="h-4 w-24" />
@@ -188,34 +226,34 @@ export default function DashboardPage() {
       </div>
 
       {/* Quick stats */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <StatCard
           icon={Server}
           label="在线节点"
           value={system?.onlineNodeCount ?? 0}
           sub={`共 ${system?.nodeCount ?? 0} 个节点`}
-          color="text-green-500"
+          color="text-primary"
         />
         <StatCard
           icon={Cpu}
           label="CPU 使用率"
           value={`${system?.cpu.usage ?? 0}%`}
           sub={`${system?.cpu.cores ?? 0} 核 · ${system?.cpu.model ?? "未知"}`}
-          color="text-blue-500"
+          color="text-primary"
         />
         <StatCard
           icon={MemoryStick}
           label="内存使用"
           value={system?.memory.usedFormatted ?? "—"}
           sub={`共 ${system?.memory.totalFormatted ?? "—"}`}
-          color="text-yellow-500"
+          color="text-primary"
         />
         <StatCard
-          icon={HardDrive}
-          label="磁盘使用"
-          value={system?.disks.length ? formatBytes(system.disks.reduce((sum, d) => sum + d.used, 0)) : "—"}
-          sub={`共 ${system?.disks.length ? formatBytes(system.disks.reduce((sum, d) => sum + d.total, 0)) : "—"} · ${system?.disks.length ?? 0} 个分区`}
-          color="text-purple-500"
+          icon={Box}
+          label="实例状态"
+          value={`${instances.filter((i) => i.status === "running").length} / ${instances.length}`}
+          sub={`运行中 ${instances.filter((i) => i.status === "running").length} · 已停止 ${instances.filter((i) => i.status === "stopped").length}${instances.filter((i) => i.status === "error").length > 0 ? ` · 异常 ${instances.filter((i) => i.status === "error").length}` : ""}`}
+          color="text-primary"
         />
       </div>
 
@@ -234,7 +272,7 @@ export default function DashboardPage() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-sm">
                     <span className="flex items-center gap-2">
-                      <Cpu className="h-3.5 w-3.5 text-blue-500" />
+                      <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
                       CPU
                     </span>
                     <span className="font-medium">{system.cpu.usage}%</span>
@@ -247,7 +285,7 @@ export default function DashboardPage() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-sm">
                     <span className="flex items-center gap-2">
-                      <MemoryStick className="h-3.5 w-3.5 text-yellow-500" />
+                      <MemoryStick className="h-3.5 w-3.5 text-muted-foreground" />
                       内存
                     </span>
                     <span className="font-medium">
@@ -263,7 +301,7 @@ export default function DashboardPage() {
                   <div key={disk.mount} className="space-y-2">
                     <div className="flex items-center justify-between text-sm">
                       <span className="flex items-center gap-2">
-                        <HardDrive className="h-3.5 w-3.5 text-purple-500" />
+                        <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
                         <span className="font-mono text-xs">{disk.filesystem}</span>
                         <span className="text-muted-foreground">{disk.mount}</span>
                       </span>

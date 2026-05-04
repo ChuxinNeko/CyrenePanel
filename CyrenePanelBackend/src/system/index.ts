@@ -1,6 +1,4 @@
 import { Elysia } from "elysia";
-import { logger } from "../logger/index";
-import { config } from "../index";
 import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } from "os";
 import { readFileSync, existsSync } from "fs";
 

@@ -2,39 +2,47 @@ import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { jwt } from "@elysiajs/jwt";
 import { randomBytes } from "crypto";
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { hashSync } from "bcryptjs";
 import { logger, setLogLevel, getLogLevel, statusBadge } from "./logger/index";
 import { accountRoutes } from "./account/index";
 import { systemRoutes } from "./system/index";
 import { fileRoutes } from "./files/index";
+import { instanceRoutes } from "./instances/index";
+import { instanceWsRoutes } from "./instances/ws";
+import { userRoutes } from "./users/index";
+import { loadStore } from "./instances/store";
+import { getConfig, setConfig, dbUserCount, dbGetUser, dbInsertUser } from "./db";
+import { nodeRoutes } from "./nodes/index";
 
-const configPath = join(process.cwd(), "config.json");
+// ── 初始化 admin 账号（首次启动） ──────────────────────────────────
 
-interface Config {
-  username: string;
-  password: string;
-  logLevel: string;
+if (dbUserCount() === 0) {
+  const password = randomBytes(4).toString("hex");
+  const hashedPassword = hashSync(password, 10);
+  dbInsertUser("admin", hashedPassword, "admin");
+  logger.info("已自动创建管理员账号");
+  logger.info("默认账号: admin");
+  logger.warn(`初始密码: ${password}`);
 }
 
-export let config: Config = {
-  username: "admin",
-  password: "",
-  logLevel: "INFO",
-};
+// ── 初始化 API key（首次启动） ─────────────────────────────────────
 
-if (!existsSync(configPath)) {
-  config.password = randomBytes(4).toString("hex"); // 8位随机密码
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
-  logger.info("初始密码已生成并保存到 config.json");
-  logger.info(`默认账号: ${config.username}`);
-  logger.warn(`初始密码: ${config.password}`);
-} else {
-  config = { ...config, ...JSON.parse(readFileSync(configPath, "utf-8")) };
+if (!getConfig("api_key")) {
+  const apiKey = randomBytes(16).toString("hex");
+  setConfig("api_key", apiKey);
+  logger.info("已自动生成 API key");
+  logger.warn(`API Key: ${apiKey}`);
 }
 
-setLogLevel(config.logLevel);
-logger.info(`日志级别: ${config.logLevel}`);
+// ── 日志级别 ───────────────────────────────────────────────────────
+
+const logLevel = getConfig("logLevel") || "INFO";
+setLogLevel(logLevel);
+logger.info(`日志级别: ${logLevel}`);
+
+// ── 加载实例配置 ───────────────────────────────────────────────────
+
+loadStore();
 
 const requestTimings = new WeakMap<Request, number>();
 
@@ -78,7 +86,6 @@ export const app = new Elysia()
       
       const req = reqBody !== undefined ? JSON.stringify(reqBody) : "(none)";
       
-      // 避免异步读取 response，防止干扰 Cookie
       let resStr = "(body hidden in logs to prevent issues)";
       if (typeof response === 'object' && response !== null) {
         try {
@@ -95,7 +102,11 @@ export const app = new Elysia()
   .use(accountRoutes)
   .use(systemRoutes)
   .use(fileRoutes)
-  .listen(5676);
+  .use(instanceRoutes)
+  .use(instanceWsRoutes)
+  .use(userRoutes)
+  .use(nodeRoutes)
+  .listen({ port: 5677, hostname: "0.0.0.0" });
 
 export type App = typeof app;
 

@@ -1,20 +1,27 @@
 import { Elysia, t } from "elysia";
-import { config } from "../index";
+import { compare } from "bcryptjs";
+import { dbGetUser } from "../db";
 import { logger } from "../logger/index";
 
 export const accountRoutes = new Elysia()
   .post(
     "/api/login",
     async ({ body, jwt }: any) => {
-      if (body.username === config.username && body.password === config.password) {
-        const token = await jwt.sign({ username: body.username });
-
-        logger.debug(`用户 ${body.username} 登录成功，已返回 Token`);
-        return { success: true, message: "登录成功", token };
+      const user = dbGetUser(body.username);
+      if (!user) {
+        logger.warn(`用户 ${body.username} 登录失败：用户不存在`);
+        return { success: false, message: "用户名或密码错误" };
       }
-      
-      logger.warn(`用户 ${body.username} 登录失败：凭据错误`);
-      return { success: false, message: "用户名或密码错误" };
+
+      const valid = await compare(body.password, user.password);
+      if (!valid) {
+        logger.warn(`用户 ${body.username} 登录失败：密码错误`);
+        return { success: false, message: "用户名或密码错误" };
+      }
+
+      const token = await jwt.sign({ username: user.username, role: user.role });
+      logger.debug(`用户 ${body.username} 登录成功，已返回 Token`);
+      return { success: true, message: "登录成功", token };
     },
     {
       body: t.Object({

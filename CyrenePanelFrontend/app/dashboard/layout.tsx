@@ -14,7 +14,7 @@ export default function DashboardLayout({
         <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4 justify-between">
           <div className="flex items-center gap-2">
             <SidebarTrigger />
-            <span className="font-semibold text-sm text-muted-foreground">控制面板</span>
+            <span className="font-semibold text-sm text-muted-foreground">CyrenePanel</span>
           </div>
           <ThemeToggle />
         </header>
