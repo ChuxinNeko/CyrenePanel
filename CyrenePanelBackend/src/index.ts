@@ -13,6 +13,7 @@ import { userRoutes } from "./users/index";
 import { loadStore } from "./instances/store";
 import { getConfig, setConfig, dbUserCount, dbGetUser, dbInsertUser } from "./db";
 import { nodeRoutes } from "./nodes/index";
+import { dockerRoutes } from "./docker/index";
 import { terminalRoutes } from "./terminal/index";
 
 // ── 初始化 admin 账号（首次启动） ──────────────────────────────────
@@ -107,6 +108,7 @@ export const app = new Elysia()
   .use(instanceWsRoutes)
   .use(userRoutes)
   .use(nodeRoutes)
+  .use(dockerRoutes)
   .use(terminalRoutes)
   .listen({ port: 5677, hostname: "0.0.0.0" });
 

@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
 import { randomBytes } from "crypto";
-import { hostname, platform, cpus, totalmem, freemem } from "os";
+import { hostname, platform, cpus, totalmem } from "os";
 import {
   getConfig,
   setConfig,
@@ -8,9 +8,11 @@ import {
   dbGetNode,
   dbInsertNode,
   dbDeleteNode,
+  dbUpdateNode,
 } from "../db";
 import { logger } from "../logger/index";
 import { getAllInstances } from "../instances/store";
+import { getMemoryInfo } from "../memory";
 
 // ── 用 API Key 在远端节点换取 JWT token ────────────────────────────
 
@@ -59,18 +61,30 @@ export async function getOnlineNodesCount() {
   };
 }
 
-// ── 获取 CPU 使用率 ────────────────────────────────────────────────
+// ── 获取 CPU 使用率（基于两次采样间增量）─────────────────────────
+
+let prevCpuSnapshot: { idle: number; total: number } | null = null;
 
 function getCpuUsage(): number {
   const cpuInfo = cpus();
-  let totalIdle = 0, totalTick = 0;
+  let idle = 0, total = 0;
   for (const cpu of cpuInfo) {
     for (const type of Object.keys(cpu.times) as Array<keyof typeof cpu.times>) {
-      totalTick += cpu.times[type];
+      total += cpu.times[type];
     }
-    totalIdle += cpu.times.idle;
+    idle += cpu.times.idle;
   }
-  return totalTick > 0 ? Math.round((1 - totalIdle / totalTick) * 100) : 0;
+
+  const current = { idle, total };
+  if (!prevCpuSnapshot) {
+    prevCpuSnapshot = current;
+    return 0;
+  }
+
+  const idleDelta = idle - prevCpuSnapshot.idle;
+  const totalDelta = total - prevCpuSnapshot.total;
+  prevCpuSnapshot = current;
+  return totalDelta > 0 ? Math.round((1 - idleDelta / totalDelta) * 100) : 0;
 }
 
 function formatBytes(bytes: number): string {
@@ -79,6 +93,38 @@ function formatBytes(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+// ── 本地系统指标历史采集（10 分钟，每 10 秒一次 = 60 条） ────────
+
+interface MetricPoint {
+  timestamp: number;
+  cpu: number;
+  memoryPercentage: number;
+}
+
+const METRICS_MAX_POINTS = 60;
+const METRICS_INTERVAL_MS = 10_000;
+const localMetrics: MetricPoint[] = [];
+
+function collectLocalMetrics() {
+  const mem = getMemoryInfo();
+  localMetrics.push({
+    timestamp: Date.now(),
+    cpu: getCpuUsage(),
+    memoryPercentage: Math.round((mem.used / mem.total) * 100),
+  });
+  while (localMetrics.length > METRICS_MAX_POINTS) {
+    localMetrics.shift();
+  }
+}
+
+// 启动时立即采集一次，然后每 30 秒采集
+collectLocalMetrics();
+setInterval(collectLocalMetrics, METRICS_INTERVAL_MS);
+
+export function getLocalMetrics(): MetricPoint[] {
+  return [...localMetrics];
 }
 
 // ── 获取所有节点概览信息 ──────────────────────────────────────────
@@ -94,14 +140,14 @@ export interface NodeOverview {
   runningInstances?: number;
   totalInstances?: number;
   version?: string;
+  metrics?: MetricPoint[];
 }
 
 export async function getNodesOverview(): Promise<NodeOverview[]> {
   const results: NodeOverview[] = [];
 
   // 1. 主节点信息（本地）
-  const totalMem = totalmem();
-  const usedMem = totalMem - freemem();
+  const mem = getMemoryInfo();
   const localInstances = getAllInstances();
   const port = process.env.PORT || 5677;
   const bunVersion = typeof Bun !== "undefined" ? Bun.version : "unknown";
@@ -109,20 +155,21 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
   results.push({
     id: "__main__",
     name: `${hostname()} (主节点)`,
-    address: `${hostname()}:${port}`,
+    address: process.env.NEXT_PUBLIC_API_URL || `http://127.0.0.1:${port}`,
     isMain: true,
     online: true,
     cpu: getCpuUsage(),
     memory: {
-      used: usedMem,
-      total: totalMem,
-      usedFormatted: formatBytes(usedMem),
-      totalFormatted: formatBytes(totalMem),
-      percentage: Math.round((usedMem / totalMem) * 100),
+      used: mem.used,
+      total: mem.total,
+      usedFormatted: formatBytes(mem.used),
+      totalFormatted: formatBytes(mem.total),
+      percentage: Math.round((mem.used / mem.total) * 100),
     },
     runningInstances: localInstances.filter((i) => i.status === "running").length,
     totalInstances: localInstances.length,
     version: `Bun ${bunVersion}`,
+    metrics: [...localMetrics],
   });
 
   // 2. 子节点信息（远程）
@@ -168,6 +215,9 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
             percentage: sys.memory?.percentage ?? 0,
           };
           overview.version = sys.runtimeVersion ?? "未知";
+          if (Array.isArray(sys.metrics)) {
+            overview.metrics = sys.metrics;
+          }
         }
       } catch {
         // 系统信息获取失败不影响连接状态
@@ -222,7 +272,7 @@ export const nodeRoutes = new Elysia()
       success: true,
       key: apiKey || null,
       hostname: hostname(),
-      address: `http://localhost:${process.env.PORT || 5677}`,
+      address: process.env.NEXT_PUBLIC_API_URL || `http://localhost:${process.env.PORT || 5677}`,
     };
   })
 
@@ -314,6 +364,40 @@ export const nodeRoutes = new Elysia()
     logger.info(`管理员 ${profile.username} 删除了子节点 ${node.name}`);
     return { success: true, message: "节点已删除" };
   })
+
+  // ── 编辑子节点 ───────────────────────────────────────────────────
+  .patch(
+    "/api/nodes/:id",
+    async ({ params, body, profile }: any) => {
+      if (!profile || profile.role !== "admin") {
+        return { success: false, message: "无权限" };
+      }
+      const node = dbGetNode(params.id);
+      if (!node) {
+        return { success: false, message: "节点不存在" };
+      }
+
+      const updates: { name?: string; address?: string; apiKey?: string } = {};
+      if (body.name?.trim()) updates.name = body.name.trim();
+      if (body.address?.trim()) updates.address = body.address.trim().replace(/\/+$/, "");
+      if (body.apiKey?.trim()) updates.apiKey = body.apiKey.trim();
+
+      if (Object.keys(updates).length === 0) {
+        return { success: false, message: "没有需要更新的字段" };
+      }
+
+      dbUpdateNode(params.id, updates);
+      logger.info(`管理员 ${profile.username} 编辑了子节点 ${node.name}`);
+      return { success: true, message: "节点已更新" };
+    },
+    {
+      body: t.Object({
+        name: t.Optional(t.String()),
+        address: t.Optional(t.String()),
+        apiKey: t.Optional(t.String()),
+      }),
+    }
+  )
 
   // ── 检查子节点在线状态 ───────────────────────────────────────────
   .get("/api/nodes/:id/status", async ({ params, profile }: any) => {
@@ -516,6 +600,312 @@ export const nodeRoutes = new Elysia()
       return await res.json();
     } catch (e: any) {
       logger.err(`子节点文件下载代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点 Docker 代理 ────────────────────────────────────────────
+
+  .derive(async ({ params, profile }: any) => {
+    return {};
+  })
+
+  .get("/api/nodes/:id/docker/info", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/info`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 信息代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/docker/containers", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const qs = query?.all ? "?all=true" : "";
+      const res = await fetch(`${node.address}/api/docker/containers${qs}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 容器列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/docker/containers/:cid", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 容器详情代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/docker/containers/:cid/start", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}/start`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 启动容器代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/docker/containers/:cid/stop", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}/stop`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 停止容器代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/docker/containers/:cid/restart", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}/restart`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 重启容器代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .delete("/api/nodes/:id/docker/containers/:cid", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const force = query?.force === "true" ? "?force=true" : "";
+      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}${force}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 删除容器代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/docker/containers/:cid/logs", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const tail = query?.tail || "200";
+      const timestamps = query?.timestamps === "true" ? "&timestamps=true" : "";
+      const res = await fetch(`${node.address}/api/docker/containers/${params.cid}/logs?tail=${tail}${timestamps}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 日志代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/docker/images", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/images`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 镜像列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/docker/store", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const qs = query?.category ? `?category=${encodeURIComponent(query.category)}` : "";
+      const res = await fetch(`${node.address}/api/docker/store${qs}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 应用商店列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/docker/store/:sid", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/store/${params.sid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 应用商店详情代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/docker/store/deploy", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/store/deploy`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 应用商店部署代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/docker/store/deploy-stream", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/store/deploy-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+      });
+      // 透传 SSE 流
+      return new Response(res.body, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (e: any) {
+      logger.err(`子节点 Docker 应用商店流式部署代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/docker/settings", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/settings`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 设置获取代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .put("/api/nodes/:id/docker/settings", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/settings`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点 Docker 设置更新代理失败: ${e.message}`);
       return { success: false, message: `子节点请求失败: ${e.message}` };
     }
   });

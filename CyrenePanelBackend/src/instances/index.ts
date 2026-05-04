@@ -13,6 +13,8 @@ import {
   restartInstance,
   deleteInstanceManager,
 } from "./manager";
+import { dbGetNode } from "../db";
+import { exchangeApiKeyForToken } from "../nodes/index";
 
 export const instanceRoutes = new Elysia()
   // JWT 验证 resolve
@@ -34,13 +36,39 @@ export const instanceRoutes = new Elysia()
   // 创建实例
   .post("/api/instances", async ({ body, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
-    const { name, command, cwd, env, autoRestart } = body || {};
+    const { name, command, cwd, env, autoRestart, nodeId } = body || {};
 
     if (!name || !command || !cwd) {
       return { success: false, message: "缺少必要参数: name, command, cwd" };
     }
 
-    const cfg = createInstance({ name, command, cwd, env, autoRestart });
+    // 如果指定了子节点，代理创建请求到子节点
+    if (nodeId && nodeId !== "__main__") {
+      const node = dbGetNode(nodeId);
+      if (!node) return { success: false, message: "节点不存在" };
+
+      try {
+        const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+        if (!token) return { success: false, message: "子节点不可达" };
+
+        const res = await fetch(`${node.address}/api/instances`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ name, command, cwd, env, autoRestart, nodeId, nodeName: node.name }),
+          signal: AbortSignal.timeout(10000),
+        });
+        const data = await res.json();
+        return data;
+      } catch (e: any) {
+        logger.err(`子节点实例创建代理失败: ${e.message}`);
+        return { success: false, message: `子节点请求失败: ${e.message}` };
+      }
+    }
+
+    const cfg = createInstance({ name, command, cwd, env, autoRestart, nodeId: "__main__", nodeName: "主节点" });
     return { success: true, instance: cfg };
   })
 

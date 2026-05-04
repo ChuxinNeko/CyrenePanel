@@ -14,7 +14,6 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import XtermTerminal from "@/components/xterm-terminal";
 import {
   ArrowLeft,
@@ -27,6 +26,11 @@ import {
   Clock,
   FolderOpen,
   AlertCircle,
+  Hash,
+  Calendar,
+  Cpu,
+  Monitor,
+  Server,
 } from "lucide-react";
 
 // ── 类型 ─────────────────────────────────────────────────────────────────
@@ -44,6 +48,8 @@ interface InstanceDetail {
   exitCode: number | null;
   createdAt: number;
   logs: string[];
+  nodeId: string;
+  nodeName: string;
 }
 
 // ── API 辅助 ─────────────────────────────────────────────────────────────
@@ -120,149 +126,116 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-// ── 终端控制按钮 + XtermTerminal ──────────────────────────────────────────
+// ── 右侧信息面板 ────────────────────────────────────────────────────
 
-function ConsoleTab({
-  instance,
-  onAction,
-}: {
-  instance: InstanceDetail;
-  onAction: (action: "start" | "stop" | "restart") => void;
-}) {
-  const isRunning = instance.status === "running";
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        {!isRunning ? (
-          <Button
-            size="sm"
-            className="bg-emerald-600 hover:bg-emerald-700"
-            onClick={() => onAction("start")}
-          >
-            <Play className="h-4 w-4" />
-            启动
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={() => onAction("stop")}
-          >
-            <Square className="h-4 w-4" />
-            停止
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => onAction("restart")}
-          disabled={!isRunning}
-        >
-          <RotateCcw className="h-4 w-4" />
-          重启
-        </Button>
-      </div>
-      <XtermTerminal instanceId={instance.id} status={instance.status} />
-    </div>
-  );
-}
-
-// ── 实例详细信息 Tab ─────────────────────────────────────────────────────
-
-function InfoTab({ instance }: { instance: InstanceDetail }) {
+function InfoPanel({ instance }: { instance: InstanceDetail }) {
   const isRunning = instance.status === "running";
   const uptime =
     isRunning && instance.startedAt ? Date.now() - instance.startedAt : 0;
 
+  const statusMap: Record<string, { label: string; color: string; bg: string; ring: string }> = {
+    running: { label: "运行中", color: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-950", ring: "ring-emerald-500/20" },
+    stopped: { label: "已停止", color: "text-zinc-500", bg: "bg-zinc-50 dark:bg-zinc-900", ring: "ring-zinc-500/20" },
+    error: { label: "错误", color: "text-red-600 dark:text-red-400", bg: "bg-red-50 dark:bg-red-950", ring: "ring-red-500/20" },
+  };
+  const s = statusMap[instance.status] ?? statusMap.stopped;
+
   return (
-    <div className="space-y-6">
-      {/* 基本信息 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <Info className="h-4 w-4" />
-            基本信息
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">实例 ID</Label>
-              <p className="text-sm font-mono">{instance.id}</p>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">实例名称</Label>
-              <p className="text-sm">{instance.name}</p>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">状态</Label>
-              <div className="flex items-center gap-2">
-                <StatusBadge status={instance.status} />
-                {isRunning && instance.pid && (
-                  <span className="text-xs text-muted-foreground">
-                    PID: {instance.pid}
-                  </span>
-                )}
-                {!isRunning && instance.exitCode !== null && (
-                  <span className="text-xs text-muted-foreground">
-                    退出码: {instance.exitCode}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">
-                {isRunning ? "已运行时间" : "运行时长"}
-              </Label>
-              <p className="text-sm flex items-center gap-1">
-                <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                {isRunning ? formatDuration(uptime) : "—"}
-              </p>
-            </div>
+    <div className="space-y-4">
+      {/* 状态大卡片 */}
+      <Card className={`${s.bg} ring-1 ${s.ring} border-0`}>
+        <CardContent className="p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-muted-foreground">当前状态</span>
+            <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${s.color}`}>
+              <span className={`h-2.5 w-2.5 rounded-full ${s.color.replace("text-", "bg-")}`} />
+              {s.label}
+            </span>
           </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">节点</span>
+            <span className="text-sm flex items-center gap-1">
+              <Server className="h-3 w-3 text-muted-foreground" />
+              {instance.nodeName ?? "主节点"}
+            </span>
+          </div>
+          {isRunning && instance.pid && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">PID</span>
+              <span className="font-mono font-medium tabular-nums">{instance.pid}</span>
+            </div>
+          )}
+          {isRunning && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">运行时长</span>
+              <span className="font-medium tabular-nums">{formatDuration(uptime)}</span>
+            </div>
+          )}
+          {!isRunning && instance.exitCode !== null && instance.exitCode !== undefined && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">退出码</span>
+              <span className="font-mono font-medium tabular-nums">{instance.exitCode}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* 执行配置 */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <Terminal className="h-4 w-4" />
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
             执行配置
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1 sm:col-span-2">
-              <Label className="text-xs text-muted-foreground">启动命令</Label>
-              <p className="text-sm font-mono bg-muted px-3 py-2 rounded-md break-all">
-                {instance.command}
-              </p>
-            </div>
-            <div className="space-y-1 sm:col-span-2">
-              <Label className="text-xs text-muted-foreground">工作目录</Label>
-              <p className="text-sm font-mono flex items-center gap-2">
-                <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                {instance.cwd}
-              </p>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">
-                崩溃自动重启
-              </Label>
-              <p className="text-sm">
-                {instance.autoRestart ? (
-                  <span className="text-blue-500">已启用</span>
-                ) : (
-                  <span className="text-muted-foreground">未启用</span>
-                )}
-              </p>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">创建时间</Label>
-              <p className="text-sm">{formatTime(instance.createdAt)}</p>
-            </div>
+        <CardContent className="space-y-3">
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">命令</Label>
+            <code className="block mt-1 text-xs font-mono bg-muted px-2.5 py-1.5 rounded-md break-all leading-relaxed">
+              {instance.command}
+            </code>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">工作目录</Label>
+            <p className="mt-1 text-xs font-mono text-muted-foreground flex items-center gap-1.5">
+              <FolderOpen className="h-3 w-3 shrink-0" />
+              {instance.cwd}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 基本信息 */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Info className="h-3.5 w-3.5 text-muted-foreground" />
+            基本信息
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground flex items-center gap-1.5">
+              <Hash className="h-3 w-3" />
+              ID
+            </span>
+            <span className="font-mono text-muted-foreground">{instance.id.slice(0, 12)}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground flex items-center gap-1.5">
+              <RotateCcw className="h-3 w-3" />
+              自动重启
+            </span>
+            <span className={instance.autoRestart ? "text-emerald-500 font-medium" : "text-muted-foreground"}>
+              {instance.autoRestart ? "已启用" : "未启用"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground flex items-center gap-1.5">
+              <Calendar className="h-3 w-3" />
+              创建时间
+            </span>
+            <span className="text-muted-foreground">{formatTime(instance.createdAt)}</span>
           </div>
         </CardContent>
       </Card>
@@ -270,17 +243,18 @@ function InfoTab({ instance }: { instance: InstanceDetail }) {
       {/* 环境变量 */}
       {Object.keys(instance.env).length > 0 && (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">环境变量</CardTitle>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
+              环境变量
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="rounded-lg border divide-y">
+            <div className="rounded-md border divide-y overflow-hidden">
               {Object.entries(instance.env).map(([key, value]) => (
-                <div key={key} className="flex items-center px-3 py-2 text-sm">
-                  <code className="font-mono text-muted-foreground w-1/3 shrink-0">
-                    {key}
-                  </code>
-                  <code className="font-mono truncate">{value}</code>
+                <div key={key} className="flex items-center px-2.5 py-2 text-xs">
+                  <code className="font-mono font-medium w-1/3 shrink-0 truncate">{key}</code>
+                  <code className="font-mono text-muted-foreground truncate">{value}</code>
                 </div>
               ))}
             </div>
@@ -383,11 +357,13 @@ export default function InstanceDetailPage() {
     );
   }
 
+  const isRunning = instance.status === "running";
+
   return (
-    <div className="space-y-6 max-w-5xl mx-auto w-full">
+    <div className="max-w-[90rem] mx-auto w-full h-[calc(100vh-5rem)] flex flex-col gap-3 p-3 lg:gap-4 lg:p-4">
       {/* 顶部导航 */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex items-start justify-between gap-2 shrink-0 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
           <Button
             variant="ghost"
             size="icon-sm"
@@ -396,45 +372,68 @@ export default function InstanceDetailPage() {
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <div className="min-w-0">
+            <h1 className="text-lg lg:text-xl font-bold tracking-tight truncate">
               {instance.name}
             </h1>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              ID: {instance.id}
+            <p className="text-xs text-muted-foreground font-mono">
+              {instance.id.slice(0, 12)}
             </p>
           </div>
-          <StatusBadge status={instance.status} />
         </div>
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={() => setDeleteConfirm(true)}
-        >
-          <Trash2 className="h-4 w-4" />
-          删除实例
-        </Button>
+        <div className="flex items-center gap-1 shrink-0">
+          {!isRunning ? (
+            <Button
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-700"
+              onClick={() => handleAction("start")}
+            >
+              <Play className="h-3.5 w-3.5 lg:mr-1" />
+              <span className="hidden lg:inline">启动</span>
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => handleAction("stop")}
+            >
+              <Square className="h-3.5 w-3.5 lg:mr-1" />
+              <span className="hidden lg:inline">停止</span>
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => handleAction("restart")}
+            disabled={!isRunning}
+          >
+            <RotateCcw className="h-3.5 w-3.5 lg:mr-1" />
+            <span className="hidden lg:inline">重启</span>
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setDeleteConfirm(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5 lg:mr-1" />
+            <span className="hidden lg:inline">删除</span>
+          </Button>
+        </div>
       </div>
 
-      {/* Tab 内容 */}
-      <Tabs defaultValue="console" className="w-full">
-        <TabsList>
-          <TabsTrigger value="console">
-            <Terminal className="h-4 w-4" />
-            终端
-          </TabsTrigger>
-          <TabsTrigger value="info">
-            <Info className="h-4 w-4" />
-            实例详细信息
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="console">
-          <ConsoleTab instance={instance} onAction={handleAction} />
-        </TabsContent>
-        <TabsContent value="info">
-          <InfoTab instance={instance} />
-        </TabsContent>
-      </Tabs>
+      <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3 lg:gap-4">
+        {/* 左侧：终端 */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-[50vh] lg:min-h-0">
+          <div className="flex-1 min-h-0 rounded-lg border overflow-hidden bg-black">
+            <XtermTerminal instanceId={instance.id} status={instance.status} />
+          </div>
+        </div>
+
+        {/* 右侧：信息面板 */}
+        <div className="w-full lg:w-80 lg:shrink-0 overflow-auto">
+          <InfoPanel instance={instance} />
+        </div>
+      </div>
 
       {/* 删除确认对话框 */}
       <Dialog open={deleteConfirm} onOpenChange={setDeleteConfirm}>

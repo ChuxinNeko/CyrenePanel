@@ -53,6 +53,25 @@ db.exec(`
   );
 `);
 
+// ── 迁移：添加 nodeId / nodeName 列 ────────────────────────────────
+
+function migrateNodeColumns() {
+  const cols = db.prepare("PRAGMA table_info(instances)").all() as { name: string }[];
+  const hasNodeId = cols.some((c) => c.name === "nodeId");
+  const hasNodeName = cols.some((c) => c.name === "nodeName");
+
+  if (!hasNodeId) {
+    db.exec("ALTER TABLE instances ADD COLUMN nodeId TEXT NOT NULL DEFAULT '__main__'");
+    logger.info("已添加 instances.nodeId 列");
+  }
+  if (!hasNodeName) {
+    db.exec("ALTER TABLE instances ADD COLUMN nodeName TEXT NOT NULL DEFAULT '主节点'");
+    logger.info("已添加 instances.nodeName 列");
+  }
+}
+
+migrateNodeColumns();
+
 // ── JSON → SQLite 首次迁移 ───────────────────────────────────────────
 
 function migrateFromJson() {
@@ -142,7 +161,7 @@ export function getAllConfig(): Record<string, string> {
 // ── instances 辅助函数 ───────────────────────────────────────────────
 
 const instInsertStmt = db.prepare(
-  "INSERT INTO instances (id, name, command, cwd, env, autoRestart, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  "INSERT INTO instances (id, name, command, cwd, env, autoRestart, createdAt, nodeId, nodeName) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
 );
 const instGetStmt = db.prepare("SELECT * FROM instances WHERE id = ?");
 const instAllStmt = db.prepare("SELECT * FROM instances");
@@ -161,6 +180,8 @@ export interface InstanceRow {
   env: string;         // JSON string
   autoRestart: number; // 0 or 1
   createdAt: number;
+  nodeId: string;
+  nodeName: string;
 }
 
 function rowToConfig(row: InstanceRow) {
@@ -172,6 +193,8 @@ function rowToConfig(row: InstanceRow) {
     env: JSON.parse(row.env || "{}"),
     autoRestart: row.autoRestart === 1,
     createdAt: row.createdAt,
+    nodeId: row.nodeId ?? "__main__",
+    nodeName: row.nodeName ?? "主节点",
   };
 }
 
@@ -193,6 +216,8 @@ export function dbInsertInstance(cfg: {
   env: Record<string, string>;
   autoRestart: boolean;
   createdAt: number;
+  nodeId?: string;
+  nodeName?: string;
 }): void {
   instInsertStmt.run(
     cfg.id,
@@ -201,7 +226,9 @@ export function dbInsertInstance(cfg: {
     cfg.cwd,
     JSON.stringify(cfg.env),
     cfg.autoRestart ? 1 : 0,
-    cfg.createdAt
+    cfg.createdAt,
+    cfg.nodeId ?? "__main__",
+    cfg.nodeName ?? "主节点"
   );
 }
 
@@ -325,4 +352,23 @@ export function dbInsertNode(cfg: {
 export function dbDeleteNode(id: string): boolean {
   const result = nodeDeleteStmt.run(id);
   return result.changes > 0;
+}
+
+const nodeUpdateStmt = db.prepare(
+  "UPDATE nodes SET name = ?, address = ?, apiKey = ? WHERE id = ?"
+);
+
+export function dbUpdateNode(
+  id: string,
+  fields: { name?: string; address?: string; apiKey?: string }
+): boolean {
+  const existing = dbGetNode(id);
+  if (!existing) return false;
+  nodeUpdateStmt.run(
+    fields.name ?? existing.name,
+    fields.address ?? existing.address,
+    fields.apiKey ?? existing.apiKey,
+    id
+  );
+  return true;
 }

@@ -1,7 +1,8 @@
 import { Elysia } from "elysia";
 import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } from "os";
 import { readFileSync, existsSync } from "fs";
-import { getOnlineNodesCount } from "../nodes/index";
+import { getOnlineNodesCount, getLocalMetrics } from "../nodes/index";
+import { getMemoryInfo } from "../memory";
 
 const startTime = Date.now();
 
@@ -171,9 +172,7 @@ export const systemRoutes = new Elysia()
     const profile = await jwt.verify(token);
     if (!profile) return { success: false, message: "未授权" };
 
-    const totalMem = totalmem();
-    const freeMem = freemem();
-    const usedMem = totalMem - freeMem;
+    const mem = getMemoryInfo();
     const disks = getDiskUsage();
     const bunVersion = typeof Bun !== "undefined" ? Bun.version : "unknown";
 
@@ -197,17 +196,18 @@ export const systemRoutes = new Elysia()
           usage: getCpuUsage(),
         },
         memory: {
-          total: totalMem,
-          used: usedMem,
-          free: freeMem,
-          totalFormatted: formatBytes(totalMem),
-          usedFormatted: formatBytes(usedMem),
-          freeFormatted: formatBytes(freeMem),
-          percentage: Math.round((usedMem / totalMem) * 100),
+          total: mem.total,
+          used: mem.used,
+          free: mem.free,
+          totalFormatted: formatBytes(mem.total),
+          usedFormatted: formatBytes(mem.used),
+          freeFormatted: formatBytes(mem.free),
+          percentage: Math.round((mem.used / mem.total) * 100),
         },
         disks,
         nodeCount,
         onlineNodeCount,
+        metrics: getLocalMetrics(),
       },
     };
   });

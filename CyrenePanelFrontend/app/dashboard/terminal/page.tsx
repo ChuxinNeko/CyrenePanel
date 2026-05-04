@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 export default function TerminalPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const termRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -51,7 +52,9 @@ export default function TerminalPage() {
 
   const [authChecked, setAuthChecked] = useState(false);
   const [connected, setConnected] = useState(false);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
+    searchParams.get("node")
+  );
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [nodeStatus, setNodeStatus] = useState<Record<string, boolean>>({});
 
@@ -490,7 +493,7 @@ export default function TerminalPage() {
               <option value="">主节点</option>
               {nodes.map((node) => (
                 <option key={node.id} value={node.id}>
-                  {node.name} {nodeStatus[node.id] ? "🟢" : "🔴"}
+                  {node.name}
                 </option>
               ))}
             </select>
@@ -507,14 +510,12 @@ export default function TerminalPage() {
       </div>
 
       {/* 终端区域 */}
-      <Card className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <CardContent className="flex-1 min-h-0 p-0 relative">
+      <div className="flex-1 min-h-0 relative rounded-lg overflow-hidden">
           <div
             ref={termRef}
-            className="absolute inset-0 p-2"
+            className="absolute inset-0"
             style={{
               backgroundColor: "#1e1e2e",
-              borderRadius: "inherit",
             }}
             onClick={() => terminalRef.current?.focus()}
           />
@@ -532,8 +533,7 @@ export default function TerminalPage() {
               </div>
             </div>
           )}
-        </CardContent>
-      </Card>
+      </div>
     </div>
   );
 }

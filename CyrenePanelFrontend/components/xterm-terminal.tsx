@@ -66,6 +66,7 @@ export default function XtermTerminal({ instanceId, status, className }: XtermTe
       cursorBlink: true,
       fontSize: 14,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
+      convertEol: true,
       theme: {
         background: "#09090b",
         foreground: "#e4e4e7",

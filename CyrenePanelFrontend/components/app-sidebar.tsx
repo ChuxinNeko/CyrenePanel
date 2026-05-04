@@ -20,7 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Server, Users, Settings, LogOut, LayoutDashboard, FolderOpen, Box, ChevronDown, Terminal } from "lucide-react";
+import { Server, Users, Settings, LogOut, LayoutDashboard, FolderOpen, Box, ChevronDown, Terminal, Container } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
 
@@ -31,7 +31,7 @@ const items = [
     icon: LayoutDashboard,
   },
   {
-    title: "服务器节点",
+    title: "节点管理",
     url: "/dashboard/nodes",
     icon: Server,
   },
@@ -49,6 +49,11 @@ const items = [
     title: "终端",
     url: "/dashboard/terminal",
     icon: Terminal,
+  },
+  {
+    title: "Docker 管理",
+    url: "/dashboard/docker",
+    icon: Container,
   },
   {
     title: "用户管理",

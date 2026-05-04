@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -318,6 +318,7 @@ function FileTreeNode({
 
 export default function FilesPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { resolvedTheme } = useTheme();
   // 2. 修复：定义 Monaco 编辑器实例的引用
   const editorInstanceRef = useRef<any>(null);
@@ -349,7 +350,9 @@ export default function FilesPage() {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
 
   // 节点选择状态
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
+    searchParams.get("node")
+  );
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [nodeStatus, setNodeStatus] = useState<Record<string, boolean>>({});
 

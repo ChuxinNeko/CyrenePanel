@@ -18,6 +18,8 @@ export interface InstanceConfig {
   env: Record<string, string>;
   autoRestart: boolean;
   createdAt: number;
+  nodeId: string;
+  nodeName: string;
 }
 
 export interface InstanceRuntime {
@@ -60,6 +62,8 @@ export function createInstance(input: {
   cwd: string;
   env?: Record<string, string>;
   autoRestart?: boolean;
+  nodeId?: string;
+  nodeName?: string;
 }): InstanceConfig {
   const cfg: InstanceConfig = {
     id: randomUUID(),
@@ -69,6 +73,8 @@ export function createInstance(input: {
     env: input.env ?? {},
     autoRestart: input.autoRestart ?? false,
     createdAt: Date.now(),
+    nodeId: input.nodeId ?? "__main__",
+    nodeName: input.nodeName ?? "主节点",
   };
   dbInsertInstance(cfg);
   runtimes.set(cfg.id, {
