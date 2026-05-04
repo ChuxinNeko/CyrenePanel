@@ -7,6 +7,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Cpu,
   MemoryStick,
@@ -18,6 +27,8 @@ import {
   Monitor,
   Zap,
   Box,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
@@ -78,6 +89,25 @@ interface Instance {
   status: "running" | "stopped" | "error";
 }
 
+interface NodeOverview {
+  id: string;
+  name: string;
+  address: string;
+  isMain: boolean;
+  online: boolean;
+  cpu?: number;
+  memory?: {
+    used: number;
+    total: number;
+    usedFormatted: string;
+    totalFormatted: string;
+    percentage: number;
+  };
+  runningInstances?: number;
+  totalInstances?: number;
+  version?: string;
+}
+
 function getProgressColor(pct: number) {
   if (pct >= 90) return "bg-destructive";
   if (pct >= 70) return "bg-primary/60";
@@ -126,6 +156,7 @@ export default function DashboardPage() {
   const [profile, setProfile] = useState<{ username: string } | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
+  const [nodesOverview, setNodesOverview] = useState<NodeOverview[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -153,6 +184,19 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const fetchNodesOverview = useCallback(async () => {
+    try {
+      const data = await apiGet<{ success: boolean; nodes: NodeOverview[] }>(
+        "/api/nodes/overview"
+      );
+      if (data.success) {
+        setNodesOverview(data.nodes);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -162,7 +206,7 @@ export default function DashboardPage() {
           return;
         }
         setProfile(data.profile as { username: string });
-        await Promise.all([fetchSystem(), fetchInstances()]);
+        await Promise.all([fetchSystem(), fetchInstances(), fetchNodesOverview()]);
       } catch {
         router.push("/login");
       } finally {
@@ -170,11 +214,11 @@ export default function DashboardPage() {
       }
     };
     init();
-  }, [router, fetchSystem, fetchInstances]);
+  }, [router, fetchSystem, fetchInstances, fetchNodesOverview]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([fetchSystem(), fetchInstances()]);
+    await Promise.all([fetchSystem(), fetchInstances(), fetchNodesOverview()]);
     setRefreshing(false);
   };
 
@@ -256,6 +300,120 @@ export default function DashboardPage() {
           color="text-primary"
         />
       </div>
+
+      {/* Node overview */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Server className="h-4 w-4" />
+            节点状态总览
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {nodesOverview.length === 0 ? (
+            <p className="text-sm text-muted-foreground">暂无节点数据</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>节点名称</TableHead>
+                  <TableHead>地址</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>CPU</TableHead>
+                  <TableHead>内存</TableHead>
+                  <TableHead>实例</TableHead>
+                  <TableHead>版本</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {nodesOverview.map((node) => (
+                  <TableRow key={node.id}>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2">
+                        {node.name}
+                        {node.isMain && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                            主
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {node.address}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      {node.online ? (
+                        <Badge variant="default" className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-0">
+                          <Wifi className="h-3 w-3 mr-1" />
+                          在线
+                        </Badge>
+                      ) : (
+                        <Badge variant="destructive">
+                          <WifiOff className="h-3 w-3 mr-1" />
+                          离线
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {node.online && node.cpu !== undefined ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-16">
+                            <Progress
+                              value={node.cpu}
+                              indicatorClassName={getProgressColor(node.cpu)}
+                              className="h-2"
+                            />
+                          </div>
+                          <span className="text-xs font-medium w-10 text-right">{node.cpu}%</span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {node.online && node.memory ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-16">
+                            <Progress
+                              value={node.memory.percentage}
+                              indicatorClassName={getProgressColor(node.memory.percentage)}
+                              className="h-2"
+                            />
+                          </div>
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            {node.memory.usedFormatted}/{node.memory.totalFormatted}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {node.online && node.totalInstances !== undefined ? (
+                        <span className="text-sm">
+                          <span className="font-medium text-primary">{node.runningInstances}</span>
+                          <span className="text-muted-foreground"> / {node.totalInstances}</span>
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {node.online && node.version ? (
+                        <span className="text-xs font-mono text-muted-foreground">{node.version}</span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-3">
         {/* Resource usage */}
