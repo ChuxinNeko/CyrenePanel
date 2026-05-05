@@ -15,6 +15,25 @@ function getMirrorImage(image: string, overrideEnabled?: boolean): string {
   return `${host}/${cleanImage}`;
 }
 
+// ── Compose 镜像替换辅助 ──────────────────────────────────────────
+// 简单的正则替换，将 YAML 中的 image: xxx 替换为镜像仓库版本
+function rewriteComposeImages(content: string): string {
+  const mirrorUrl = getConfig("docker_mirror_url");
+  const globalEnabled = getConfig("docker_mirror_enabled") === "true";
+  if (!globalEnabled || !mirrorUrl) return content;
+
+  const host = mirrorUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+
+  // 匹配 YAML 中 image: xxx 行（支持各种缩进和引用格式）
+  return content.replace(
+    /^(\s*image:\s*["']?)([^"'\s#]+)/gm,
+    (match, prefix, image) => {
+      const cleanImage = image.replace(/^docker\.io\//, "");
+      return `${prefix}${host}/${cleanImage}`;
+    },
+  );
+}
+
 // ── Docker CLI 辅助 ────────────────────────────────────────────────
 
 async function docker(args: string[]): Promise<string> {
@@ -680,4 +699,128 @@ export const dockerRoutes = new Elysia()
     } catch (e: any) {
       return { success: false, message: e.message };
     }
+  })
+
+  // ── Docker Compose 流式部署（SSE） ──────────────────────────────
+  .post("/api/docker/compose/deploy-stream", async ({ body, profile }: any) => {
+    if (!profile) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const { composeContent, projectName, pullPolicy } = body || {};
+
+    if (!composeContent || typeof composeContent !== "string") {
+      return new Response(JSON.stringify({ success: false, message: "缺少 composeContent 参数" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        let closed = false;
+        const send = (data: Record<string, unknown>) => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            closed = true;
+          }
+        };
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          try {
+            controller.close();
+          } catch {
+            // 客户端可能已经断开，忽略关闭异常。
+          }
+        };
+
+        const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+        const { join } = await import("node:path");
+        const { tmpdir } = await import("node:os");
+
+        let tmpDir: string | null = null;
+
+        try {
+          // 阶段 1: 写入临时 docker-compose.yml
+          send({ type: "stage", stage: "write", message: "正在准备 Compose 文件..." });
+
+          tmpDir = await mkdtemp(join(tmpdir(), "cyrene-compose-"));
+          const composeFile = join(tmpDir, "docker-compose.yml");
+
+          // 如果启用了镜像仓库，替换 compose 中的 image 引用
+          const rewrittenContent = rewriteComposeImages(composeContent);
+          await writeFile(composeFile, rewrittenContent, "utf-8");
+          logger.info(`[Compose] 写入 Compose 文件: ${composeFile}`);
+
+          // 阶段 2: docker compose pull（可选）
+          const shouldPull = pullPolicy !== "no-pull";
+          if (shouldPull) {
+            send({ type: "stage", stage: "pull", message: "正在拉取镜像..." });
+
+            const pullArgs = ["compose", "-f", composeFile];
+            if (projectName) pullArgs.push("-p", projectName);
+            pullArgs.push("pull");
+
+            const pullExitCode = await dockerStream(pullArgs, (line) => {
+              const trimmed = line.trim();
+              if (!trimmed) return;
+              send({ type: "progress", layer: "", status: "info", detail: trimmed });
+            });
+
+            if (pullExitCode !== 0) {
+              send({ type: "error", message: `镜像拉取失败 (退出码 ${pullExitCode})` });
+              return;
+            }
+          }
+
+          // 阶段 3: docker compose up -d
+          send({ type: "stage", stage: "up", message: "正在启动容器..." });
+
+          const upArgs = ["compose", "-f", composeFile];
+          if (projectName) upArgs.push("-p", projectName);
+          upArgs.push("up", "-d");
+
+          const upExitCode = await dockerStream(upArgs, (line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            send({ type: "progress", layer: "", status: "info", detail: trimmed });
+          });
+
+          if (upExitCode !== 0) {
+            send({ type: "error", message: `Compose 启动失败 (退出码 ${upExitCode})` });
+            return;
+          }
+
+          send({ type: "done", message: "Compose 部署成功" });
+        } catch (e: any) {
+          logger.err(`[Compose] 部署失败: ${e.message}`);
+          send({ type: "error", message: e.message });
+        } finally {
+          // 清理临时目录
+          if (tmpDir) {
+            try {
+              await rm(tmpDir, { recursive: true, force: true });
+            } catch {
+              // 忽略清理错误
+            }
+          }
+          close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
   });

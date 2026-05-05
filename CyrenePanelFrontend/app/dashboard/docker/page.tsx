@@ -45,9 +45,11 @@ import {
   Search,
   Settings2,
   Trash2,
+  Plus,
 } from "lucide-react";
 import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
+import { AddContainerDialog } from "@/components/add-container-dialog";
 import { useTasks } from "@/lib/task-store";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
@@ -242,6 +244,9 @@ export default function DockerPage() {
   const [mirrorUrl, setMirrorUrl] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+
+  // 添加容器
+  const [addContainerOpen, setAddContainerOpen] = useState(false);
 
   // 删除确认
   const [deleteTarget, setDeleteTarget] = useState<DockerContainer | null>(null);
@@ -751,13 +756,23 @@ export default function DockerPage() {
                     <Box className="h-4 w-4" />
                     容器列表
                   </CardTitle>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setShowAllContainers(!showAllContainers)}
-                  >
-                    {showAllContainers ? "仅显示运行中" : "显示全部"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={() => setAddContainerOpen(true)}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      添加容器
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowAllContainers(!showAllContainers)}
+                    >
+                      {showAllContainers ? "仅显示运行中" : "显示全部"}
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
@@ -1336,6 +1351,22 @@ export default function DockerPage() {
         onDeploy={handleDeploy}
         deploying={deploying}
         deployLog={deployLog}
+      />
+
+      {/* 添加容器对话框 */}
+      <AddContainerDialog
+        open={addContainerOpen}
+        onOpenChange={setAddContainerOpen}
+        isRemoteNode={isRemoteNode}
+        selectedNodeId={selectedNodeId}
+        apiBase={API_BASE}
+        authHeaders={() => authHeaders() as Record<string, string>}
+        startDeployTask={startDeployTask}
+        onSuccess={async () => {
+          setActiveTab("containers");
+          await fetchDockerData();
+          toast.success("容器部署成功");
+        }}
       />
     </div>
   );

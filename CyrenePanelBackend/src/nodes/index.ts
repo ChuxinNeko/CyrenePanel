@@ -892,6 +892,35 @@ export const nodeRoutes = new Elysia()
     }
   })
 
+  .post("/api/nodes/:id/docker/compose/deploy-stream", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/docker/compose/deploy-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+      });
+      // 透传 SSE 流
+      return new Response(res.body, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (e: any) {
+      logger.err(`子节点 Docker Compose 流式部署代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
   .get("/api/nodes/:id/docker/settings", async ({ params, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const node = dbGetNode(params.id);

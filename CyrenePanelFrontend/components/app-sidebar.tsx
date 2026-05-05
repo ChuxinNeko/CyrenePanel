@@ -23,6 +23,7 @@ import {
 import { Server, Users, Settings, LogOut, LayoutDashboard, FolderOpen, Box, ChevronDown, Terminal, Container } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
+import { usePanelName } from "@/lib/panel-name-context";
 
 const items = [
   {
@@ -72,6 +73,7 @@ export function AppSidebar() {
   const pathname = usePathname();
   const { state } = useSidebar();
   const [username, setUsername] = useState<string>("");
+  const { panelName } = usePanelName();
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -102,7 +104,7 @@ export function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader className="h-16 flex items-center justify-center border-b px-4">
-        <h2 className="text-lg font-bold truncate w-full text-center">CyrenePanel</h2>
+        <h2 className="text-lg font-bold truncate w-full text-center">{panelName}</h2>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
