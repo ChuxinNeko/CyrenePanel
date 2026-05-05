@@ -1001,6 +1001,29 @@ export const nodeRoutes = new Elysia()
     }
   })
 
+  .post("/api/nodes/:id/services/create", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/services/create`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点创建服务代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
   .post("/api/nodes/:id/services/:name/:action", async ({ params, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const node = dbGetNode(params.id);

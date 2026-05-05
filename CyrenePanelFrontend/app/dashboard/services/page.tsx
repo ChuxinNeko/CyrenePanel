@@ -34,6 +34,7 @@ import {
   XCircle,
   Wifi,
   WifiOff,
+  Plus,
 } from "lucide-react";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
@@ -55,10 +56,11 @@ async function apiGet<T>(path: string): Promise<T> {
   return res.json();
 }
 
-async function apiPost<T>(path: string): Promise<T> {
+async function apiPost<T>(path: string, body?: any): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authHeaders(),
+    body: body ? JSON.stringify(body) : undefined,
   });
   return res.json();
 }
@@ -205,6 +207,22 @@ export default function ServicesPage() {
   const [logsLoading, setLogsLoading] = useState(false);
 
   const isRemoteNode = selectedNodeId !== "__main__";
+
+  // 创建服务
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    name: "",
+    displayName: "",
+    description: "",
+    execStart: "",
+    args: "",
+    workingDir: "",
+    user: "",
+    restart: "on-failure",
+    startType: "Automatic",
+    env: [] as { name: string; value: string }[],
+  });
 
   // 初始化
   useEffect(() => {
@@ -372,17 +390,27 @@ export default function ServicesPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold tracking-tight">服务管理</h1>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleRefresh}
-          disabled={refreshing}
-        >
-          <RefreshCw
-            className={`h-4 w-4 mr-1.5 ${refreshing ? "animate-spin" : ""}`}
-          />
-          刷新
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => setCreateOpen(true)}
+          >
+            <Plus className="h-4 w-4 mr-1.5" />
+            创建服务
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-1.5 ${refreshing ? "animate-spin" : ""}`}
+            />
+            刷新
+          </Button>
+        </div>
       </div>
 
       {/* 节点选择器 */}
@@ -691,6 +719,224 @@ export default function ServicesPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* 创建服务对话框 */}
+      <Dialog open={createOpen} onOpenChange={(v) => {
+        if (!v) {
+          setCreateForm({
+            name: "", displayName: "", description: "", execStart: "",
+            args: "", workingDir: "", user: "", restart: "on-failure",
+            startType: "Automatic", env: [],
+          });
+        }
+        setCreateOpen(v);
+      }}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="h-4 w-4" />
+              创建{osPlatform === "windows" ? "Windows" : ""} 系统服务
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <label className="text-sm font-medium">服务名称 *</label>
+              <Input
+                placeholder={osPlatform === "windows" ? "MyService" : "my-service"}
+                value={createForm.name}
+                onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
+                className="mt-1"
+              />
+              {osPlatform === "linux" && (
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  会自动添加 .service 后缀
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="text-sm font-medium">显示名称</label>
+              <Input
+                placeholder="我的服务"
+                value={createForm.displayName}
+                onChange={(e) => setCreateForm({ ...createForm, displayName: e.target.value })}
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">描述</label>
+              <Input
+                placeholder="服务描述"
+                value={createForm.description}
+                onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">启动命令 *</label>
+              <Input
+                placeholder={osPlatform === "windows" ? "C:\\path\\to\\app.exe" : "/usr/bin/node"}
+                value={createForm.execStart}
+                onChange={(e) => setCreateForm({ ...createForm, execStart: e.target.value })}
+                className="mt-1 font-mono text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">启动参数</label>
+              <Input
+                placeholder="/app/server.js --port=3000"
+                value={createForm.args}
+                onChange={(e) => setCreateForm({ ...createForm, args: e.target.value })}
+                className="mt-1 font-mono text-sm"
+              />
+            </div>
+            {osPlatform === "linux" && (
+              <>
+                <div>
+                  <label className="text-sm font-medium">工作目录</label>
+                  <Input
+                    placeholder="/app"
+                    value={createForm.workingDir}
+                    onChange={(e) => setCreateForm({ ...createForm, workingDir: e.target.value })}
+                    className="mt-1 font-mono text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">运行用户</label>
+                  <Input
+                    placeholder="root"
+                    value={createForm.user}
+                    onChange={(e) => setCreateForm({ ...createForm, user: e.target.value })}
+                    className="mt-1 font-mono text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">重启策略</label>
+                  <select
+                    value={createForm.restart}
+                    onChange={(e) => setCreateForm({ ...createForm, restart: e.target.value })}
+                    className="mt-1 h-9 w-full px-3 rounded-md border border-input bg-background text-sm"
+                  >
+                    <option value="no">不重启</option>
+                    <option value="on-success">成功时重启</option>
+                    <option value="on-failure">失败时重启</option>
+                    <option value="always">始终重启</option>
+                    <option value="on-abnormal">异常时重启</option>
+                  </select>
+                </div>
+                {/* 环境变量 */}
+                <div>
+                  <label className="text-sm font-medium">环境变量</label>
+                  <div className="space-y-2 mt-1">
+                    {createForm.env.map((e, i) => (
+                      <div key={i} className="flex gap-2">
+                        <Input
+                          placeholder="KEY"
+                          value={e.name}
+                          onChange={(ev) => {
+                            const env = [...createForm.env];
+                            env[i] = { ...env[i], name: ev.target.value };
+                            setCreateForm({ ...createForm, env });
+                          }}
+                          className="flex-1 font-mono text-xs"
+                        />
+                        <Input
+                          placeholder="value"
+                          value={e.value}
+                          onChange={(ev) => {
+                            const env = [...createForm.env];
+                            env[i] = { ...env[i], value: ev.target.value };
+                            setCreateForm({ ...createForm, env });
+                          }}
+                          className="flex-1 font-mono text-xs"
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-9 shrink-0 text-destructive"
+                          onClick={() => {
+                            const env = createForm.env.filter((_, j) => j !== i);
+                            setCreateForm({ ...createForm, env });
+                          }}
+                        >
+                          <XCircle className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setCreateForm({
+                          ...createForm,
+                          env: [...createForm.env, { name: "", value: "" }],
+                        })
+                      }
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                      添加环境变量
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+            {osPlatform === "windows" && (
+              <div>
+                <label className="text-sm font-medium">启动类型</label>
+                <select
+                  value={createForm.startType}
+                  onChange={(e) => setCreateForm({ ...createForm, startType: e.target.value })}
+                  className="mt-1 h-9 w-full px-3 rounded-md border border-input bg-background text-sm"
+                >
+                  <option value="Automatic">自动</option>
+                  <option value="Manual">手动</option>
+                  <option value="Disabled">禁用</option>
+                </select>
+              </div>
+            )}
+            <Button
+              className="w-full"
+              disabled={creating || !createForm.name.trim() || !createForm.execStart.trim()}
+              onClick={async () => {
+                setCreating(true);
+                try {
+                  const url = isRemoteNode
+                    ? `/api/nodes/${selectedNodeId}/services/create`
+                    : "/api/services/create";
+                  const res = await apiPost<{ success: boolean; message?: string }>(url, createForm);
+                  if (res.success) {
+                    toast.success(res.message || "服务创建成功");
+                    setCreateOpen(false);
+                    setCreateForm({
+                      name: "", displayName: "", description: "", execStart: "",
+                      args: "", workingDir: "", user: "", restart: "on-failure",
+                      startType: "Automatic", env: [],
+                    });
+                    await fetchServices();
+                  } else {
+                    toast.error(res.message || "创建失败");
+                  }
+                } catch (e: any) {
+                  toast.error(e.message || "请求失败");
+                } finally {
+                  setCreating(false);
+                }
+              }}
+            >
+              {creating ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  创建中...
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4 mr-1.5" />
+                  创建服务
+                </>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 日志对话框 */}
       <Dialog

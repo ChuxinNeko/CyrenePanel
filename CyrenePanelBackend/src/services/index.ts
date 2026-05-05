@@ -368,6 +368,91 @@ export const serviceRoutes = new Elysia()
     return { success: true, logs };
   })
 
+  .post("/api/services/create", async ({ jwt, request, body }: any) => {
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token) return { success: false, message: "未授权" };
+    const profile = await jwt.verify(token);
+    if (!profile) return { success: false, message: "未授权" };
+
+    const { name, displayName, execStart, description, workingDir, user, restart, env, startType, args } = body as any;
+
+    if (!name || !name.trim()) return { success: false, message: "服务名称不能为空" };
+    if (!execStart || !execStart.trim()) return { success: false, message: "启动命令不能为空" };
+
+    const isLinux = isLinuxPlatform();
+
+    if (isLinux) {
+      // 创建 systemd service unit 文件
+      try {
+        const serviceName = name.endsWith(".service") ? name : `${name}.service`;
+        const svcDescription = description || displayName || name;
+        const svcWorkingDir = workingDir ? `WorkingDirectory=${workingDir}` : "";
+        const svcUser = user ? `User=${user}` : "";
+        const svcRestart = restart || "on-failure";
+        const svcExecStart = execStart.trim();
+        const svcArgs = args || "";
+        const envLines = Array.isArray(env) && env.length > 0
+          ? env.filter((e: any) => e.name).map((e: any) => `Environment=${e.name}=${e.value}`).join("\n")
+          : "";
+
+        const unitContent = [
+          "[Unit]",
+          `Description=${svcDescription}`,
+          "After=network.target",
+          "",
+          "[Service]",
+          svcWorkingDir,
+          svcUser,
+          `Type=simple`,
+          envLines ? envLines : "",
+          `ExecStart=${svcExecStart} ${svcArgs}`.trim(),
+          `Restart=${svcRestart}`,
+          "",
+          "[Install]",
+          "WantedBy=multi-user.target",
+        ].filter((l) => l !== undefined).join("\n");
+
+        // 写入 unit 文件
+        const unitPath = `/etc/systemd/system/${serviceName}`;
+        // 使用 tee 写入需要 sudo
+        const escapedContent = unitContent.replace(/'/g, "'\\''");
+        execCmd(`echo '${escapedContent}' | sudo tee ${unitPath} > /dev/null`, 10000);
+        execCmd("sudo systemctl daemon-reload", 10000);
+        execCmd(`sudo systemctl enable "${serviceName}"`, 10000);
+        execCmd(`sudo systemctl start "${serviceName}"`, 30000);
+
+        return { success: true, message: `服务 ${serviceName} 已创建并启动` };
+      } catch (e: any) {
+        return { success: false, message: e.stderr || e.message || "创建服务失败" };
+      }
+    } else {
+      // Windows: 使用 New-Service 或 sc create
+      try {
+        const svcName = name.trim();
+        const svcPath = execStart.trim();
+        const svcDisplayNameStr = displayName || svcName;
+        const svcDescriptionStr = description || svcDisplayNameStr;
+        const svcStart = startType || "Automatic";
+        const fullArgs = args ? ` -ArgumentList "${args}"` : "";
+
+        const psCmd = [
+          `$ErrorActionPreference = 'Stop'`,
+          `$svcPath = '${svcPath}'`,
+          `$svcArgs = '${args || ''}'`,
+          `$fullPath = if ($svcArgs) { "$svcPath $svcArgs" } else { $svcPath }`,
+          `New-Service -Name '${svcName}' -DisplayName '${svcDisplayNameStr}' -Description '${svcDescriptionStr}' -BinaryPathName $fullPath -StartupType ${svcStart}`,
+        ].join("; ");
+
+        execCmd(`powershell -NoProfile -Command "[Console]::OutputEncoding = [Text.Encoding]::UTF8; ${psCmd}"`, 30000);
+
+        return { success: true, message: `服务 ${svcName} 已创建` };
+      } catch (e: any) {
+        return { success: false, message: e.message || "创建服务失败" };
+      }
+    }
+  })
+
   .post("/api/services/:name/:action", async ({ jwt, request, params }: any) => {
     const authHeader = request.headers.get("authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
