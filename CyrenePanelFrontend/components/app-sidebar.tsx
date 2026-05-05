@@ -35,6 +35,7 @@ import {
   ChevronRight,
   Terminal,
   Container,
+  Settings2,
 } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
@@ -73,6 +74,11 @@ const navGroups = [
         title: "Docker 管理",
         url: "/dashboard/docker",
         icon: Container,
+      },
+      {
+        title: "服务管理",
+        url: "/dashboard/services",
+        icon: Settings2,
       },
       {
         title: "终端",

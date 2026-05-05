@@ -960,4 +960,62 @@ export const nodeRoutes = new Elysia()
       logger.err(`子节点 Docker 设置更新代理失败: ${e.message}`);
       return { success: false, message: `子节点请求失败: ${e.message}` };
     }
+  })
+
+  // ── 子节点服务管理代理 ─────────────────────────────────────────────
+
+  .get("/api/nodes/:id/services", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/services`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(20000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点服务列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/services/logs/:name", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const lines = query?.lines || "200";
+      const res = await fetch(`${node.address}/api/services/logs/${encodeURIComponent(params.name)}?lines=${lines}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点服务日志代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/services/:name/:action", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/services/${encodeURIComponent(params.name)}/${params.action}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点服务操作代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
   });
