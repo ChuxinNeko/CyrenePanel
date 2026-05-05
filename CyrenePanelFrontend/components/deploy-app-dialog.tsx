@@ -58,6 +58,9 @@ interface DeployConfig {
 }
 
 function AppIcon({ icon, className = "" }: { icon: string; className?: string }) {
+  if (icon.startsWith("http://") || icon.startsWith("https://")) {
+    return <img src={icon} alt="" className={className} />;
+  }
   if (icon.includes(":")) {
     return <Icon icon={icon} className={className} />;
   }

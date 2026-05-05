@@ -479,6 +479,7 @@ export const dockerRoutes = new Elysia()
     const {
       appId,
       name,
+      image: directImage,
       ports,
       volumes,
       env,
@@ -486,23 +487,40 @@ export const dockerRoutes = new Elysia()
       networkMode,
     } = body || {};
 
-    if (!appId || !name) {
-      return new Response(JSON.stringify({ success: false, message: "缺少必填参数: appId, name" }), {
+    if (!name) {
+      return new Response(JSON.stringify({ success: false, message: "缺少必填参数: name" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    const app = storeApps.find((a) => a.id === appId);
-    if (!app) {
-      return new Response(JSON.stringify({ success: false, message: "应用不存在" }), {
-        status: 404,
+    // 支持两种模式：
+    // 1. 传 appId → 从 storeApps 查找镜像（旧版兼容）
+    // 2. 直接传 image → Compose 部署（新模式）
+    let targetImage: string;
+    if (appId) {
+      const app = storeApps.find((a) => a.id === appId);
+      if (app) {
+        targetImage = app.image;
+      } else if (directImage) {
+        targetImage = directImage;
+      } else {
+        return new Response(JSON.stringify({ success: false, message: "应用不存在且未提供镜像" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    } else if (directImage) {
+      targetImage = directImage;
+    } else {
+      return new Response(JSON.stringify({ success: false, message: "缺少 appId 或 image 参数" }), {
+        status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    const pullImage = getMirrorImage(app.image);
-    const needTag = pullImage !== app.image;
+    const pullImage = getMirrorImage(targetImage);
+    const needTag = pullImage !== targetImage;
 
     // 构建 docker run 参数
     const runArgs: string[] = ["run", "-d", "--name", name];
@@ -525,7 +543,7 @@ export const dockerRoutes = new Elysia()
     }
     if (restart) runArgs.push("--restart", restart);
     if (networkMode) runArgs.push("--network", networkMode);
-    runArgs.push(app.image);
+    runArgs.push(targetImage);
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -587,8 +605,8 @@ export const dockerRoutes = new Elysia()
 
           // 阶段 2: 标记镜像（如果需要）
           if (needTag) {
-            send({ type: "stage", stage: "tag", message: `标记镜像 ${pullImage} → ${app.image}` });
-            await docker(["tag", pullImage, app.image]);
+            send({ type: "stage", stage: "tag", message: `标记镜像 ${pullImage} → ${targetImage}` });
+            await docker(["tag", pullImage, targetImage]);
           }
 
           // 阶段 3: 运行容器

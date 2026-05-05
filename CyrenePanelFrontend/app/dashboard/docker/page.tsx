@@ -47,10 +47,34 @@ import {
   Trash2,
 } from "lucide-react";
 import { DeployAppDialog, type StoreApp, type DeployLogEntry } from "@/components/deploy-app-dialog";
+import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
+const STORES_API = "https://dockerhub.nekofun.top/apps";
+
+interface RemoteApp {
+  id: string;
+  title: string;
+  icon: string;
+  category: string;
+  tagline: string;
+}
+
+function mapRemoteApp(r: RemoteApp): StoreApp {
+  return {
+    id: r.id,
+    name: r.title,
+    description: r.tagline || "",
+    category: r.category || "其他",
+    icon: r.icon || "",
+    image: `${r.id}:latest`,
+    defaultPorts: [],
+    defaultVolumes: [],
+    defaultEnv: [],
+  };
+}
 
 function authHeaders(): HeadersInit {
   const token =
@@ -164,6 +188,9 @@ function formatTime(ts: string) {
 // ── 图标组件 ───────────────────────────────────────────────────────
 
 function AppIcon({ icon, className = "" }: { icon: string; className?: string }) {
+  if (icon.startsWith("http://") || icon.startsWith("https://")) {
+    return <img src={icon} alt="" className={className} />;
+  }
   if (icon.includes(":")) {
     return <Icon icon={icon} className={className} />;
   }
@@ -203,6 +230,11 @@ export default function DockerPage() {
   const [deployDialogOpen, setDeployDialogOpen] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [deployLog, setDeployLog] = useState<DeployLogEntry[]>([]);
+
+  // 应用详情
+  const [detailApp, setDetailApp] = useState<AppDetail | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   // Docker 设置（镜像仓库）
   const [mirrorEnabled, setMirrorEnabled] = useState(false);
@@ -429,24 +461,18 @@ export default function DockerPage() {
   // ── 应用商店 ──────────────────────────────────────────────────────
 
   const fetchStoreApps = useCallback(async () => {
-    if (!selectedNodeId) return;
     setStoreLoading(true);
-
-    const basePath = isRemoteNode
-      ? `/api/nodes/${selectedNodeId}/docker`
-      : "/api/docker";
-
     try {
-      const res = await apiGet<{ success: boolean; apps?: StoreApp[] }>(
-        `${basePath}/store`
-      );
-      if (res.apps) setStoreApps(res.apps);
+      const res = await fetch(STORES_API);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const remoteApps: RemoteApp[] = await res.json();
+      setStoreApps(remoteApps.map(mapRemoteApp));
     } catch {
       // ignore
     } finally {
       setStoreLoading(false);
     }
-  }, [selectedNodeId, isRemoteNode]);
+  }, []);
 
   useEffect(() => {
     if (activeTab === "store") {
@@ -1096,10 +1122,21 @@ export default function DockerPage() {
                 .map((app) => (
                   <Card
                     key={app.id}
-                    className="hover:shadow-md transition-shadow cursor-pointer group"
-                    onClick={() => {
-                      setDeployApp(app);
-                      setDeployDialogOpen(true);
+                    className={`hover:shadow-md transition-shadow cursor-pointer group ${detailLoading ? "pointer-events-none opacity-70" : ""}`}
+                    onClick={async () => {
+                      setDetailLoading(true);
+                      try {
+                        const res = await fetch(`${STORES_API}/${app.id}/`);
+                        if (res.ok) {
+                          const detail: AppDetail = await res.json();
+                          setDetailApp(detail);
+                          setDetailOpen(true);
+                        }
+                      } catch {
+                        // ignore
+                      } finally {
+                        setDetailLoading(false);
+                      }
                     }}
                   >
                     <CardContent className="p-4">
@@ -1297,6 +1334,30 @@ export default function DockerPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 详情对话框 */}
+      <AppDetailDialog
+        app={detailApp}
+        open={detailOpen}
+        onOpenChange={(v) => {
+          setDetailOpen(v);
+          if (!v) setDetailApp(null);
+        }}
+        apiBase={API_BASE}
+        authHeaders={() => {
+          const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+          const h: Record<string, string> = { "Content-Type": "application/json" };
+          if (token) h["Authorization"] = `Bearer ${token}`;
+          return h;
+        }}
+        isRemoteNode={isRemoteNode}
+        selectedNodeId={selectedNodeId}
+        onDeploySuccess={async () => {
+          setActiveTab("containers");
+          await fetchDockerData();
+          toast.success("部署成功");
+        }}
+      />
 
       {/* 部署对话框 */}
       <DeployAppDialog
