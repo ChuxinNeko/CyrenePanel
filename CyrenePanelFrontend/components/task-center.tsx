@@ -189,7 +189,7 @@ export function TaskCenter() {
                         等待任务输出...
                       </div>
                     ) : (
-                      <TaskLogTerminal logs={selectedTask.logs} className="flex-1" />
+                      <TaskLogTerminal key={selectedTask.id} logs={selectedTask.logs} className="flex-1" />
                     )}
                   </div>
                 </>
