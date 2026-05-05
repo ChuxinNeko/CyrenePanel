@@ -548,8 +548,23 @@ export const dockerRoutes = new Elysia()
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
+        let closed = false;
         const send = (data: Record<string, unknown>) => {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            closed = true;
+          }
+        };
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          try {
+            controller.close();
+          } catch {
+            // 客户端可能已经断开，忽略关闭异常。
+          }
         };
 
         try {
@@ -599,7 +614,6 @@ export const dockerRoutes = new Elysia()
 
           if (pullExitCode !== 0) {
             send({ type: "error", message: `镜像拉取失败 (退出码 ${pullExitCode})` });
-            controller.close();
             return;
           }
 
@@ -619,7 +633,7 @@ export const dockerRoutes = new Elysia()
           logger.err(`[AppStore SSE] 部署失败: ${e.message}`);
           send({ type: "error", message: e.message });
         } finally {
-          controller.close();
+          close();
         }
       },
     });

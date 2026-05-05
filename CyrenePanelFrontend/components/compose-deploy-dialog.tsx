@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +35,7 @@ import {
   Code2,
   Settings2,
 } from "lucide-react";
+import { useTasks } from "@/lib/task-store";
 
 // ── 类型 ─────────────────────────────────────────────────────────────
 
@@ -231,8 +232,14 @@ export function ComposeDeployDialog({
   const [config, setConfig] = useState<ComposeConfig>(emptyConfig());
   const [activeTab, setActiveTab] = useState<string>("visual");
   const [deploying, setDeploying] = useState(false);
-  const [deployLog, setDeployLog] = useState<DeployLogEntry[]>([]);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const { tasks, startDeployTask } = useTasks();
+  const activeTask = useMemo(
+    () => tasks.find((task) => task.id === activeTaskId) || null,
+    [tasks, activeTaskId],
+  );
+  const deployLog = activeTask?.logs || [];
 
   // 获取 docker-compose.yml
   useEffect(() => {
@@ -242,7 +249,7 @@ export function ComposeDeployDialog({
     setRawYaml("");
     setConfig(emptyConfig());
     setDeploying(false);
-    setDeployLog([]);
+    setActiveTaskId(null);
     setActiveTab("visual");
 
     fetch(`${STORES_API}/apps/${appId}/docker-compose.yml`)
@@ -272,6 +279,12 @@ export function ComposeDeployDialog({
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [deployLog]);
 
+  useEffect(() => {
+    if (activeTask && activeTask.status !== "running") {
+      setDeploying(false);
+    }
+  }, [activeTask]);
+
   // 部署：发送完整 YAML 到后端
   const handleDeploy = async () => {
     // 确保从最新 tab 同步数据
@@ -279,9 +292,6 @@ export function ComposeDeployDialog({
     const finalConfig = activeTab === "source" ? parseYamlToConfig(rawYaml) : config;
 
     if (!finalConfig.name.trim()) return;
-
-    setDeploying(true);
-    setDeployLog([]);
 
     const basePath = isRemoteNode
       ? `/api/nodes/${selectedNodeId}/docker`
@@ -304,53 +314,21 @@ export function ComposeDeployDialog({
       networkMode: finalConfig.networkMode || undefined,
     });
 
-    try {
-      const res = await fetch(`${apiBase}${basePath}/store/deploy-stream`, {
-        method: "POST",
-        headers: authHeaders(),
-        body,
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-        setDeployLog((prev) => [...prev, { type: "error", message: err.message || "请求失败" }]);
+    setDeploying(true);
+    const taskId = startDeployTask({
+      title: `部署 ${appTitle || finalConfig.name}`,
+      icon: appIcon,
+      url: `${apiBase}${basePath}/store/deploy-stream`,
+      headers: authHeaders(),
+      body,
+      targetUrl: "/dashboard/docker",
+      onDone: async () => {
+        await onDeploySuccess();
         setDeploying(false);
-        return;
-      }
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const event = JSON.parse(line.slice(6)) as DeployLogEntry;
-              setDeployLog((prev) => [...prev, event]);
-
-              if (event.type === "done") {
-                onDeploySuccess();
-                return;
-              }
-              if (event.type === "error") {
-                setDeploying(false);
-                return;
-              }
-            } catch { /* skip */ }
-          }
-        }
-      }
-    } catch (e: any) {
-      setDeployLog((prev) => [...prev, { type: "error", message: e.message || "请求失败" }]);
-    } finally {
-      setDeploying(false);
-    }
+        onOpenChange(false);
+      },
+    });
+    setActiveTaskId(taskId);
   };
 
   // ── 可视化编辑辅助 ─────────────────────────────────────────────────
@@ -395,7 +373,7 @@ export function ComposeDeployDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!deploying) onOpenChange(v); }}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="flex flex-col h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden"
         style={{ maxWidth: "680px", width: "95vw" }}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -46,8 +46,9 @@ import {
   Settings2,
   Trash2,
 } from "lucide-react";
-import { DeployAppDialog, type StoreApp, type DeployLogEntry } from "@/components/deploy-app-dialog";
+import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
+import { useTasks } from "@/lib/task-store";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
@@ -201,6 +202,7 @@ function AppIcon({ icon, className = "" }: { icon: string; className?: string })
 
 export default function DockerPage() {
   const router = useRouter();
+  const { tasks, startDeployTask } = useTasks();
   const [loading, setLoading] = useState(true);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string>("__main__");
@@ -228,8 +230,7 @@ export default function DockerPage() {
   const [storeSearch, setStoreSearch] = useState("");
   const [deployApp, setDeployApp] = useState<StoreApp | null>(null);
   const [deployDialogOpen, setDeployDialogOpen] = useState(false);
-  const [deploying, setDeploying] = useState(false);
-  const [deployLog, setDeployLog] = useState<DeployLogEntry[]>([]);
+  const [deployingTaskId, setDeployingTaskId] = useState<string | null>(null);
 
   // 应用详情
   const [detailApp, setDetailApp] = useState<AppDetail | null>(null);
@@ -253,6 +254,12 @@ export default function DockerPage() {
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const isRemoteNode = selectedNodeId !== "__main__";
+  const activeDeployTask = useMemo(
+    () => tasks.find((task) => task.id === deployingTaskId) || null,
+    [tasks, deployingTaskId],
+  );
+  const deploying = activeDeployTask?.status === "running";
+  const deployLog = activeDeployTask?.logs || [];
 
   // 初始化：获取用户信息和节点列表
   useEffect(() => {
@@ -547,8 +554,6 @@ export default function DockerPage() {
     networkMode: string;
   }) => {
     if (!deployApp) return;
-    setDeploying(true);
-    setDeployLog([]);
 
     const basePath = isRemoteNode
       ? `/api/nodes/${selectedNodeId}/docker`
@@ -564,62 +569,23 @@ export default function DockerPage() {
       networkMode: config.networkMode || undefined,
     });
 
-    try {
-      const res = await fetch(`${API_BASE}${basePath}/store/deploy-stream`, {
-        method: "POST",
-        headers: authHeaders(),
-        body,
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-        toast.error(err.message || "请求失败");
-        setDeploying(false);
-        return;
-      }
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const event = JSON.parse(line.slice(6)) as DeployLogEntry;
-              setDeployLog((prev) => [...prev, event]);
-
-              if (event.type === "done") {
-                toast.success(event.message || "部署成功");
-                setDeployDialogOpen(false);
-                setDeployApp(null);
-                setDeployLog([]);
-                setActiveTab("containers");
-                await fetchDockerData();
-                setDeploying(false);
-                return;
-              }
-              if (event.type === "error") {
-                toast.error(event.message || "部署失败");
-                setDeploying(false);
-                return;
-              }
-            } catch {
-              // 跳过无法解析的行
-            }
-          }
-        }
-      }
-    } catch (e: any) {
-      toast.error(e.message || "请求失败");
-    } finally {
-      setDeploying(false);
-    }
+    const app = deployApp;
+    const taskId = startDeployTask({
+      title: `部署 ${app.name || config.name}`,
+      icon: app.icon,
+      url: `${API_BASE}${basePath}/store/deploy-stream`,
+      headers: authHeaders(),
+      body,
+      targetUrl: "/dashboard/docker",
+      onDone: async () => {
+        toast.success("部署成功");
+        setDeployDialogOpen(false);
+        setDeployApp(null);
+        setActiveTab("containers");
+        await fetchDockerData();
+      },
+    });
+    setDeployingTaskId(taskId);
   };
 
   if (loading) {
