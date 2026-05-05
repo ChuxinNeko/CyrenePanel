@@ -17,6 +17,7 @@ import { dockerRoutes } from "./docker/index";
 import { terminalRoutes } from "./terminal/index";
 import { settingsRoutes } from "./settings/index";
 import { serviceRoutes } from "./services/index";
+import { environmentRoutes } from "./environments/index";
 
 // ── 初始化 admin 账号（首次启动） ──────────────────────────────────
 
@@ -114,6 +115,7 @@ export const app = new Elysia()
   .use(terminalRoutes)
   .use(settingsRoutes)
   .use(serviceRoutes)
+  .use(environmentRoutes)
   .listen({ port: 5677, hostname: "0.0.0.0" });
 
 export type App = typeof app;

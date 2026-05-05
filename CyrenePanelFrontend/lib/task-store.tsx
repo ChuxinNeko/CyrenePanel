@@ -51,6 +51,7 @@ interface TaskContextValue {
   tasks: PanelTask[];
   runningCount: number;
   startDeployTask: (request: DeployStreamRequest) => string;
+  createTask: (title: string, icon?: string) => string;
   appendTaskLog: (taskId: string, entry: Omit<TaskLogEntry, "timestamp">) => void;
   finishTask: (taskId: string, result?: PanelTask["result"]) => void;
   failTask: (taskId: string, message: string) => void;
@@ -236,18 +237,35 @@ export function TaskProvider({ children }: { children: ReactNode }) {
 
   const runningCount = tasks.filter((task) => task.status === "running").length;
 
+  const createTask = useCallback((title: string, icon?: string) => {
+    const id = createTaskId();
+    setTasks((prev) => [
+      {
+        id,
+        title,
+        icon,
+        status: "running" as TaskStatus,
+        logs: [],
+        createdAt: Date.now(),
+      },
+      ...prev,
+    ]);
+    return id;
+  }, []);
+
   const value = useMemo<TaskContextValue>(
     () => ({
       tasks,
       runningCount,
       startDeployTask,
+      createTask,
       appendTaskLog,
       finishTask,
       failTask,
       clearTask,
       clearFinishedTasks,
     }),
-    [tasks, runningCount, startDeployTask, appendTaskLog, finishTask, failTask, clearTask, clearFinishedTasks],
+    [tasks, runningCount, startDeployTask, createTask, appendTaskLog, finishTask, failTask, clearTask, clearFinishedTasks],
   );
 
   return <TaskContext.Provider value={value}>{children}</TaskContext.Provider>;

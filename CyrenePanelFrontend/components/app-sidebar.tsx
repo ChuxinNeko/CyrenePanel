@@ -36,6 +36,7 @@ import {
   Terminal,
   Container,
   Settings2,
+  Layers,
 } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
@@ -79,6 +80,11 @@ const navGroups = [
         title: "服务管理",
         url: "/dashboard/services",
         icon: Settings2,
+      },
+      {
+        title: "环境管理",
+        url: "/dashboard/environments",
+        icon: Layers,
       },
       {
         title: "终端",
