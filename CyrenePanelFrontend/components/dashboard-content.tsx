@@ -29,7 +29,7 @@ export function DashboardContent({
   children: React.ReactNode;
 }) {
   return (
-    <SidebarProvider>
+    <SidebarProvider defaultOpen={true}>
       <AppSidebar />
       <SidebarInset className="bg-background flex flex-col min-h-screen">
         <DashboardHeader />

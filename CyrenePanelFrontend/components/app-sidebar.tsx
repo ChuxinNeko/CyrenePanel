@@ -12,66 +12,95 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Server, Users, Settings, LogOut, LayoutDashboard, FolderOpen, Box, ChevronDown, Terminal, Container } from "lucide-react";
+import {
+  Server,
+  Users,
+  Settings,
+  LogOut,
+  LayoutDashboard,
+  FolderOpen,
+  Box,
+  ChevronRight,
+  Terminal,
+  Container,
+} from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
 import { usePanelName } from "@/lib/panel-name-context";
 
-const items = [
+const navGroups = [
   {
-    title: "仪表盘",
-    url: "/dashboard",
-    icon: LayoutDashboard,
-  },
-  {
-    title: "节点管理",
-    url: "/dashboard/nodes",
-    icon: Server,
+    title: "概览",
+    items: [
+      {
+        title: "仪表盘",
+        url: "/dashboard",
+        icon: LayoutDashboard,
+      },
+    ],
   },
   {
     title: "实例管理",
-    url: "/dashboard/instances",
-    icon: Box,
+    items: [
+      {
+        title: "实例管理",
+        url: "/dashboard/instances",
+        icon: Box,
+      },
+      {
+        title: "文件管理",
+        url: "/dashboard/files",
+        icon: FolderOpen,
+      },
+      {
+        title: "节点管理",
+        url: "/dashboard/nodes",
+        icon: Server,
+      },
+      {
+        title: "Docker 管理",
+        url: "/dashboard/docker",
+        icon: Container,
+      },
+      {
+        title: "终端",
+        url: "/dashboard/terminal",
+        icon: Terminal,
+      },
+    ],
   },
   {
-    title: "文件管理",
-    url: "/dashboard/files",
-    icon: FolderOpen,
-  },
-  {
-    title: "终端",
-    url: "/dashboard/terminal",
-    icon: Terminal,
-  },
-  {
-    title: "Docker 管理",
-    url: "/dashboard/docker",
-    icon: Container,
-  },
-  {
-    title: "用户管理",
-    url: "/dashboard/users",
-    icon: Users,
-  },
-  {
-    title: "系统设置",
-    url: "/dashboard/settings",
-    icon: Settings,
+    title: "系统管理",
+    items: [
+      {
+        title: "用户管理",
+        url: "/dashboard/users",
+        icon: Users,
+      },
+      {
+        title: "系统设置",
+        url: "/dashboard/settings",
+        icon: Settings,
+      },
+    ],
   },
 ];
 
 export function AppSidebar() {
   const router = useRouter();
   const pathname = usePathname();
-  const { state } = useSidebar();
   const [username, setUsername] = useState<string>("");
   const { panelName } = usePanelName();
 
@@ -99,31 +128,48 @@ export function AppSidebar() {
     router.push("/login");
   };
 
-  const collapsed = state === "collapsed";
-
   return (
     <Sidebar>
       <SidebarHeader className="h-16 flex items-center justify-center border-b px-4">
         <h2 className="text-lg font-bold truncate w-full text-center">{panelName}</h2>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>菜单</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {items.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
-                    <a href={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </a>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {navGroups.map((group) => (
+          <Collapsible
+            key={group.title}
+            defaultOpen={true}
+            className="group/collapsible"
+          >
+            <SidebarGroup>
+              <SidebarGroupLabel asChild>
+                <CollapsibleTrigger>
+                  {group.title}
+                  <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {group.items.map((item) => (
+                      <SidebarMenuItem key={item.title}>
+                        <SidebarMenuButton
+                          asChild
+                          isActive={isActive(item.url)}
+                          tooltip={item.title}
+                        >
+                          <a href={item.url}>
+                            <item.icon />
+                            <span>{item.title}</span>
+                          </a>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+        ))}
       </SidebarContent>
       <SidebarFooter className="p-2 border-t">
         <SidebarMenu>
@@ -141,7 +187,7 @@ export function AppSidebar() {
                     <span className="truncate font-semibold">{username || "加载中..."}</span>
                     <span className="truncate text-xs text-muted-foreground">管理员</span>
                   </div>
-                  <ChevronDown className="ml-auto size-4" />
+                  <ChevronRight className="ml-auto size-4" />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
