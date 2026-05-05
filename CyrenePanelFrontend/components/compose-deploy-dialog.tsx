@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -233,6 +234,8 @@ export function ComposeDeployDialog({
   const [activeTab, setActiveTab] = useState<string>("visual");
   const [deploying, setDeploying] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [useMirror, setUseMirror] = useState(false);
+  const [mirrorUrl, setMirrorUrl] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
   const { tasks, startDeployTask } = useTasks();
   const activeTask = useMemo(
@@ -241,7 +244,7 @@ export function ComposeDeployDialog({
   );
   const deployLog = activeTask?.logs || [];
 
-  // 获取 docker-compose.yml
+  // 获取 docker-compose.yml + 全局镜像设置
   useEffect(() => {
     if (!open || !appId) return;
     setLoading(true);
@@ -252,13 +255,31 @@ export function ComposeDeployDialog({
     setActiveTaskId(null);
     setActiveTab("visual");
 
-    fetch(`${STORES_API}/apps/${appId}/docker-compose.yml`)
+    // 并行获取 compose 配置和镜像设置
+    const fetchCompose = fetch(`${STORES_API}/apps/${appId}/docker-compose.yml`)
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const text = await res.text();
         setRawYaml(text);
         setConfig(parseYamlToConfig(text));
+      });
+
+    const basePath = isRemoteNode
+      ? `/api/nodes/${selectedNodeId}/docker`
+      : "/api/docker";
+    const fetchMirror = fetch(`${apiBase}${basePath}/settings`, {
+      headers: authHeaders(),
+    })
+      .then((res) => res.json())
+      .then((data: any) => {
+        if (data?.success && data.settings) {
+          setUseMirror(data.settings.mirrorEnabled ?? false);
+          setMirrorUrl(data.settings.mirrorUrl || "");
+        }
       })
+      .catch(() => { /* 忽略设置获取失败 */ });
+
+    Promise.all([fetchCompose, fetchMirror])
       .catch((e) => setError(e.message || "获取配置失败"))
       .finally(() => setLoading(false));
   }, [open, appId]);
@@ -312,6 +333,7 @@ export function ComposeDeployDialog({
       env: finalConfig.env.filter((e) => e.name),
       restart: finalConfig.restart || undefined,
       networkMode: finalConfig.networkMode || undefined,
+      useMirror,
     });
 
     setDeploying(true);
@@ -617,6 +639,30 @@ export function ComposeDeployDialog({
                           </SelectContent>
                         </Select>
                       </div>
+                    </div>
+
+                    {/* 镜像加速 */}
+                    <div className="rounded-lg border border-border/60 bg-muted/30 p-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <Label className="text-xs font-medium">镜像加速</Label>
+                          <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                            通过镜像代理拉取，解决无法访问 Docker Hub 的问题
+                          </p>
+                        </div>
+                        <Switch
+                          checked={useMirror}
+                          onCheckedChange={setUseMirror}
+                        />
+                      </div>
+                      {useMirror && (
+                        <div className="text-[11px] text-muted-foreground">
+                          镜像地址:{" "}
+                          <code className="bg-muted px-1 py-0.5 rounded text-[10px] font-mono">
+                            {mirrorUrl || "未配置（请在 Docker 设置中配置）"}
+                          </code>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </ScrollArea>

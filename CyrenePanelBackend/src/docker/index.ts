@@ -5,9 +5,10 @@ import { getConfig, setConfig } from "../db";
 
 // ── Docker 镜像仓库镜像辅助 ───────────────────────────────────────
 
-function getMirrorImage(image: string): string {
+function getMirrorImage(image: string, overrideEnabled?: boolean): string {
   const mirrorUrl = getConfig("docker_mirror_url");
-  const mirrorEnabled = getConfig("docker_mirror_enabled") === "true";
+  const globalEnabled = getConfig("docker_mirror_enabled") === "true";
+  const mirrorEnabled = overrideEnabled !== undefined ? overrideEnabled : globalEnabled;
   if (!mirrorEnabled || !mirrorUrl) return image;
   const host = mirrorUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
   const cleanImage = image.replace(/^docker\.io\//, "");
@@ -485,6 +486,7 @@ export const dockerRoutes = new Elysia()
       env,
       restart,
       networkMode,
+      useMirror,
     } = body || {};
 
     if (!name) {
@@ -519,7 +521,9 @@ export const dockerRoutes = new Elysia()
       });
     }
 
-    const pullImage = getMirrorImage(targetImage);
+    // useMirror: 前端可覆盖全局设置
+    const mirrorOverride = typeof useMirror === "boolean" ? useMirror : undefined;
+    const pullImage = getMirrorImage(targetImage, mirrorOverride);
     const needTag = pullImage !== targetImage;
 
     // 构建 docker run 参数

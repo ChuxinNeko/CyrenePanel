@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Bell, CheckCircle2, Clock, Loader2, Trash2, X, XCircle } from "lucide-react";
+import { Bell, CheckCircle2, Loader2, Trash2, X, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -12,7 +12,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useTasks, type PanelTask, type TaskLogEntry } from "@/lib/task-store";
+import { useTasks, type PanelTask } from "@/lib/task-store";
+import TaskLogTerminal from "@/components/task-log-terminal";
 
 function formatTime(ts: number) {
   return new Date(ts).toLocaleTimeString("zh-CN", {
@@ -39,12 +40,6 @@ function latestText(task: PanelTask) {
   return latest.message || `${latest.layer ? `${latest.layer}: ` : ""}${latest.detail || ""}`;
 }
 
-function logIcon(entry: TaskLogEntry) {
-  if (entry.type === "done") return <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />;
-  if (entry.type === "error") return <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />;
-  if (entry.type === "stage") return <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />;
-  return <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground" />;
-}
 
 function TaskIcon({ task }: { task: PanelTask }) {
   if (task.icon?.startsWith("http://") || task.icon?.startsWith("https://")) {
@@ -84,20 +79,20 @@ export function TaskCenter() {
             {runningCount > 9 ? "9+" : runningCount}
           </span>
         )}
-        <span className="sr-only">任务消息盒子</span>
+        <span className="sr-only">消息中心</span>
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent showCloseButton={false} className="sm:max-w-[95vw] flex h-[85vh] w-[95vw] flex-col overflow-hidden p-0 gap-0">
           <DialogHeader className="sr-only">
-            <DialogTitle>任务消息盒子</DialogTitle>
+            <DialogTitle>消息中心</DialogTitle>
             <DialogDescription>查看部署任务状态和实时日志。</DialogDescription>
           </DialogHeader>
 
           <div className="flex shrink-0 items-center justify-between border-b px-4 py-2.5">
             <div className="flex min-w-0 items-center gap-2">
               <Bell className="h-4 w-4 shrink-0 text-blue-500" />
-              <span className="truncate text-sm font-medium">任务消息盒子</span>
+              <span className="truncate text-sm font-medium">消息中心</span>
               {runningCount > 0 && (
                 <span className="shrink-0 rounded-full bg-blue-500/15 px-2 py-0.5 text-xs font-medium text-blue-600">
                   {runningCount} 个进行中
@@ -187,26 +182,16 @@ export function TaskCenter() {
                     </Button>
                   </div>
 
-                  <ScrollArea className="flex-1 bg-[#0b0f14]">
-                    <div className="min-h-full space-y-1 p-4 font-mono text-xs text-emerald-400">
-                      {selectedTask.logs.length === 0 ? (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          等待任务输出...
-                        </div>
-                      ) : (
-                        selectedTask.logs.map((entry, index) => (
-                          <div key={`${entry.timestamp}-${index}`} className="flex items-start gap-2">
-                            {logIcon(entry)}
-                            <span className="shrink-0 text-slate-500">{formatTime(entry.timestamp)}</span>
-                            <span className="break-all leading-relaxed">
-                              {entry.message || `${entry.layer ? `${entry.layer}: ` : ""}${entry.detail || ""}`}
-                            </span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </ScrollArea>
+                  <div className="flex-1 overflow-hidden bg-[#0b0f14]">
+                    {selectedTask.logs.length === 0 ? (
+                      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                        等待任务输出...
+                      </div>
+                    ) : (
+                      <TaskLogTerminal logs={selectedTask.logs} className="flex-1" />
+                    )}
+                  </div>
                 </>
               ) : (
                 <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
