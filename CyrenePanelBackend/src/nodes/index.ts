@@ -1361,6 +1361,107 @@ export const nodeRoutes = new Elysia()
     }
   })
 
+  .get("/api/nodes/:id/certificates", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/certificates`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点证书列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/certificates", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/certificates`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body || {}),
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点证书保存代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .delete("/api/nodes/:id/certificates/:cid", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/certificates/${encodeURIComponent(params.cid)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点证书删除代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/sites/:name/certificate", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/sites/${encodeURIComponent(params.name)}/certificate`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点站点证书读取代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/sites/:name/certificate/deploy", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/sites/${encodeURIComponent(params.name)}/certificate/deploy`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body || {}),
+        signal: AbortSignal.timeout(30000),
+      });
+      return await res.json();
+    } catch (e: any) {
+      logger.err(`子节点证书部署代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
   .post("/api/nodes/:id/sites/:name/:action", async ({ params, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const node = dbGetNode(params.id);

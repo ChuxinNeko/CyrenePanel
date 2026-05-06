@@ -11,7 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, join, resolve } from "path";
 import { execSync } from "child_process";
 import { logger } from "../logger/index";
 
@@ -321,6 +321,13 @@ function replaceManagedBlock(content: string, start: string, end: string, block:
   return `${content.slice(0, insertAt)}\n${block}${content.slice(insertAt)}`;
 }
 
+function removeDefaultRootLocation(content: string): string {
+  return content.replace(
+    /\n\s*location\s+\/\s*\{\s*\n\s*try_files\s+\$uri\s+\$uri\/\s+\/index\.html;\s*\n\s*\}\s*\n?/m,
+    "\n",
+  );
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -352,6 +359,14 @@ function normalizeProxyTarget(value: string | undefined): string {
   return selected;
 }
 
+function proxyUpstreamHost(target: string): string {
+  try {
+    return new URL(target).host;
+  } catch {
+    throw new Error("反向代理目标地址无效");
+  }
+}
+
 function extractManagedBlock(content: string, start: string, end: string): string {
   const pattern = new RegExp(`${escapeRegExp(start)}([\\s\\S]*?)${escapeRegExp(end)}`, "m");
   return content.match(pattern)?.[1] || "";
@@ -369,9 +384,10 @@ function parseRedirect(content: string) {
 
 function parseProxy(content: string) {
   const block = extractManagedBlock(content, PROXY_START, PROXY_END);
+  const location = block.match(/location\s+(?:=|~\*?|\^~)?\s*([^\s{]+)\s*\{/i)?.[1];
   return {
     enabled: !!block.trim(),
-    path: block.match(/location\s+([^\s{]+)\s*\{/i)?.[1] || "/api/",
+    path: location || "/api/",
     target: block.match(/proxy_pass\s+([^;]+);/i)?.[1] || "",
   };
 }
@@ -498,8 +514,8 @@ function testNginx(layout = detectLayout()): { success: boolean; message: string
 function reloadNginx(layout = detectLayout()): { success: boolean; message: string } {
   if (!layout.binary) return { success: false, message: "未检测到 nginx 命令" };
   const commands = [
-    "systemctl reload nginx",
     `${layout.binary} -s reload`,
+    "systemctl reload nginx",
     "service nginx reload",
   ];
   for (const command of commands) {
@@ -511,6 +527,43 @@ function reloadNginx(layout = detectLayout()): { success: boolean; message: stri
     }
   }
   return { success: false, message: "nginx 重载失败，请检查服务是否正在运行" };
+}
+
+function diagnoseSiteRuntime(layout: NginxLayout, siteName: string, configPath: string) {
+  const configContent = readFileSync(configPath, "utf-8");
+  const primaryDomain = configContent.match(/server_name\s+([^;]+);/i)?.[1]?.split(/\s+/)[0] || siteName;
+  const test = testNginx(layout);
+  const dump = layout.binary ? execCmdSafe(`${layout.binary} -T 2>&1`, 15000) || "" : "";
+  const lines = dump.split(/\r?\n/);
+  const matchedLines = lines
+    .map((line, index) => ({ line: index + 1, content: line }))
+    .filter((item) => item.content.includes(primaryDomain) || item.content.includes(configPath))
+    .slice(0, 80);
+
+  return {
+    success: true,
+    nginx: {
+      binary: layout.binary,
+      mode: layout.mode,
+      availableDir: layout.availableDir,
+      enabledDir: layout.enabledDir,
+    },
+    site: {
+      name: siteName,
+      primaryDomain,
+      configPath,
+      hasListen80: /listen\s+80\s*;/i.test(configContent),
+      hasListen443: /listen\s+443\b/i.test(configContent),
+      hasProxyMarker: configContent.includes(PROXY_START),
+      hasCyreneDebugHeader: configContent.includes("X-Cyrene-Proxy-Target"),
+    },
+    test,
+    loadedMatches: matchedLines,
+    hint:
+      matchedLines.length === 0
+        ? "nginx -T 未发现该域名或配置路径，当前请求大概率没有加载这份站点配置"
+        : "nginx -T 已发现该域名或配置路径；若响应仍无 X-Cyrene-*，请检查访问协议、端口和是否命中其他同名 server",
+  };
 }
 
 function enableSite(layout: NginxLayout, siteName: string): void {
@@ -712,20 +765,44 @@ export const siteRoutes = new Elysia()
       const config = findSiteConfig(layout, siteName);
       if (!config) return { success: false, message: "站点不存在" };
       let block = "";
+      let content = readFileSync(config.path, "utf-8");
+      const existingProxy = parseProxy(content);
       if (payload.enabled) {
         const path = normalizeLocationPath(payload.path, "/api/");
         const target = normalizeProxyTarget(payload.target);
+        const upstreamHost = proxyUpstreamHost(target);
+        if (path === "/") content = removeDefaultRootLocation(content);
         block = `    ${PROXY_START}
-    location ${path} {
+    location ^~ ${path} {
         proxy_pass ${target};
-        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${upstreamHost};
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        add_header X-Cyrene-Site $server_name always;
+        add_header X-Cyrene-Proxy-Target "${target}" always;
     }
     ${PROXY_END}`;
+      } else if (existingProxy.path === "/") {
+        content = replaceManagedBlock(content, PROXY_START, PROXY_END, "");
+        if (!/location\s+\/\s*\{/i.test(content)) {
+          const insertAt = content.lastIndexOf("\n}");
+          const rootBlock = `
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+`;
+          if (insertAt !== -1) {
+            content = `${content.slice(0, insertAt)}${rootBlock}${content.slice(insertAt)}`;
+          }
+        }
       }
-      const content = replaceManagedBlock(readFileSync(config.path, "utf-8"), PROXY_START, PROXY_END, block);
+      content = block ? replaceManagedBlock(content, PROXY_START, PROXY_END, block) : content;
       return saveConfigWithTest(layout, config.path, content);
     } catch (e: any) {
       return { success: false, message: e.message || "反向代理保存失败" };
@@ -821,6 +898,7 @@ export const siteRoutes = new Elysia()
 
       const config = findSiteConfig(layout, siteName);
       if (!config) return { success: false, message: "站点不存在" };
+      if (action === "diagnose") return diagnoseSiteRuntime(layout, siteName, config.path);
 
       if (action === "enable") {
         enableSite(layout, siteName);

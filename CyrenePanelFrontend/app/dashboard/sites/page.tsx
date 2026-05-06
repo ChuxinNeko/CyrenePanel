@@ -36,6 +36,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import { SiteCertificatePanel } from "@/components/site-certificate-panel";
 import { toast } from "sonner";
 import {
   ArrowRightLeft,
@@ -55,6 +56,7 @@ import {
   Settings,
   ShieldCheck,
   ScrollText,
+  Shield,
   Trash2,
   Wifi,
   WifiOff,
@@ -1003,6 +1005,10 @@ export default function SitesPage() {
                       <Network className="h-4 w-4" />
                       反向代理
                     </TabsTrigger>
+                    <TabsTrigger value="certificate" className="h-9 justify-start px-3">
+                      <Shield className="h-4 w-4" />
+                      证书管理
+                    </TabsTrigger>
                     <TabsTrigger value="logs" className="h-9 justify-start px-3">
                       <ScrollText className="h-4 w-4" />
                       网站日志
@@ -1189,6 +1195,16 @@ export default function SitesPage() {
                     </Button>
                   </div>
                 </div>
+              </TabsContent>
+
+              <TabsContent value="certificate" className="mt-0 h-full overflow-hidden">
+                {settingSite && (
+                  <SiteCertificatePanel
+                    siteName={settingSite.name}
+                    basePath={basePath}
+                    onDeployed={fetchSites}
+                  />
+                )}
               </TabsContent>
 
               <TabsContent value="logs" className="mt-0 h-full overflow-hidden">
