@@ -1100,6 +1100,39 @@ export const nodeRoutes = new Elysia()
     }
   })
 
+  .post("/api/nodes/:id/environments/:eid/:action/stream", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    if (!["install", "update", "remove"].includes(params.action)) {
+      return { success: false, message: "不支持的操作" };
+    }
+
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/environments/${encodeURIComponent(params.eid)}/${params.action}/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body || {}),
+      });
+      return new Response(res.body, {
+        status: res.status,
+        headers: {
+          "Content-Type": res.headers.get("Content-Type") || "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (e: any) {
+      logger.err(`子节点环境流式操作代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
   .post("/api/nodes/:id/environments/:eid/update", async ({ params, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const node = dbGetNode(params.id);

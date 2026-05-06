@@ -19,6 +19,8 @@ interface EnvInfo {
   removeCommand: string | null;
   description: string;
   homepage: string | null;
+  defaultVersion?: string | null;
+  versionOptions?: { value: string; label: string; recommended?: boolean }[];
 }
 
 // ── 工具函数 ──────────────────────────────────────────────────────────
@@ -48,6 +50,44 @@ function isLinuxPlatform(): boolean {
   return platform() !== "win32";
 }
 
+function getOfficialServerUrl(): string {
+  return (
+    process.env.CYRENE_OFFICIAL_SERVER_URL ||
+    process.env.OFFICIAL_SERVER_URL ||
+    "http://localhost:30001"
+  ).replace(/\/+$/, "");
+}
+
+function getOfficialScriptCommand(
+  envId: string,
+  action: "install" | "update" | "remove",
+  version?: string | null,
+): string {
+  const scriptUrl = `${getOfficialServerUrl()}/environments/${envId}/script`;
+  const suffix = version && action !== "remove" ? ` ${version}` : "";
+  return `curl -fsSL ${scriptUrl} | sudo bash -s -- ${action}${suffix}`;
+}
+
+const NGINX_VERSION_OPTIONS = [
+  { value: "1.18", label: "1.18.0" },
+  { value: "1.20", label: "1.20.2" },
+  { value: "1.22", label: "1.22.1" },
+  { value: "1.24", label: "1.24.0", recommended: true },
+  { value: "1.25", label: "1.25.5" },
+  { value: "1.26", label: "1.26.3" },
+  { value: "1.27", label: "1.27.5" },
+  { value: "1.28", label: "1.28.0" },
+  { value: "1.29", label: "1.29.3" },
+  { value: "1.30", label: "1.30.0" },
+];
+
+function normalizeNginxVersion(version?: string): string {
+  const selected = version || "1.24";
+  const found = NGINX_VERSION_OPTIONS.find((item) => item.value === selected);
+  if (!found) throw new Error(`不支持的 Nginx 版本: ${selected}`);
+  return found.value;
+}
+
 // ── 环境检测器 ────────────────────────────────────────────────────────
 
 interface EnvDetector {
@@ -63,6 +103,8 @@ interface EnvDetector {
   getInstallInfo: () => { packageManager: string; installCommand: string } | null;
   getUpdateInfo: () => string | null;
   getRemoveInfo: () => string | null;
+  getDefaultVersion?: () => string | null;
+  getVersionOptions?: () => { value: string; label: string; recommended?: boolean }[];
 }
 
 function getNodeDetector(): EnvDetector {
@@ -499,6 +541,44 @@ function getDockerDetector(): EnvDetector {
   };
 }
 
+function getNginxDetector(): EnvDetector {
+  return {
+    id: "nginx",
+    name: "Nginx",
+    displayName: "Nginx",
+    icon: "nginx",
+    description: "高性能 Web 服务器和反向代理",
+    homepage: "https://nginx.org",
+    detectVersion: () => {
+      const v =
+        execCmdSafe("/www/server/nginx/sbin/nginx -v 2>&1") ||
+        execCmdSafe("nginx -v 2>&1");
+      if (!v) return null;
+      const match = v.match(/nginx\/(\d+\.\d+\.\d+)/i);
+      return match ? match[1] : null;
+    },
+    detectPath: () =>
+      execCmdSafe("test -x /www/server/nginx/sbin/nginx && echo /www/server/nginx/sbin/nginx") ||
+      execCmdSafe(isLinuxPlatform() ? "which nginx" : "where nginx"),
+    getLatestVersion: () => null,
+    getInstallInfo: () => {
+      if (!isLinuxPlatform()) return null;
+      return {
+        packageManager: "官方源码编译脚本",
+        installCommand: getOfficialScriptCommand("nginx", "install", "1.24"),
+      };
+    },
+    getUpdateInfo: () => isLinuxPlatform()
+      ? getOfficialScriptCommand("nginx", "update", "1.24")
+      : null,
+    getRemoveInfo: () => isLinuxPlatform()
+      ? getOfficialScriptCommand("nginx", "remove")
+      : null,
+    getDefaultVersion: () => "1.24",
+    getVersionOptions: () => NGINX_VERSION_OPTIONS,
+  };
+}
+
 function getAllDetectors(): EnvDetector[] {
   return [
     getNodeDetector(),
@@ -517,6 +597,7 @@ function getAllDetectors(): EnvDetector[] {
     getComposerDetector(),
     getGitDetector(),
     getDockerDetector(),
+    getNginxDetector(),
   ];
 }
 
@@ -547,10 +628,150 @@ function scanEnvironments(): EnvInfo[] {
       removeCommand: removeCommand || null,
       description: detector.description,
       homepage: detector.homepage,
+      defaultVersion: detector.getDefaultVersion?.() || null,
+      versionOptions: detector.getVersionOptions?.() || [],
     });
   }
 
   return results;
+}
+
+function getActionCommand(
+  detector: EnvDetector,
+  action: "install" | "update" | "remove",
+  version?: string,
+): string | null {
+  if (detector.id === "nginx") {
+    const selectedVersion = normalizeNginxVersion(version);
+    return getOfficialScriptCommand(detector.id, action, selectedVersion);
+  }
+
+  if (action === "install") return detector.getInstallInfo()?.installCommand || null;
+  if (action === "update") return detector.getUpdateInfo();
+  return detector.getRemoveInfo();
+}
+
+async function commandStream(command: string, onLine: (line: string) => void): Promise<number> {
+  const proc = Bun.spawn(["bash", "-lc", command], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const read = async (stream: ReadableStream<Uint8Array>) => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (line.trim()) onLine(line);
+      }
+    }
+    if (buffer.trim()) onLine(buffer);
+  };
+
+  await Promise.all([read(proc.stdout), read(proc.stderr)]);
+  return await proc.exited;
+}
+
+function createEnvironmentActionStream(
+  envId: string,
+  action: "install" | "update" | "remove",
+  body?: { version?: string },
+): Response {
+  const detectors = getAllDetectors();
+  const detector = detectors.find((d) => d.id === envId);
+
+  if (!detector) {
+    return new Response(JSON.stringify({ success: false, message: `未找到环境: ${envId}` }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (detector.id === "nginx" && !isLinuxPlatform()) {
+    return new Response(JSON.stringify({ success: false, message: "Nginx 源码脚本安装仅支持 Linux 节点" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  let command: string | null;
+  try {
+    command = getActionCommand(detector, action, body?.version);
+  } catch (e: any) {
+    return new Response(JSON.stringify({ success: false, message: e.message }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (!command) {
+    return new Response(JSON.stringify({ success: false, message: `${detector.displayName} 不支持该操作` }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      let closed = false;
+      const send = (data: Record<string, unknown>) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+        }
+      };
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          // 客户端可能已经断开。
+        }
+      };
+
+      try {
+        const versionText = body?.version && action !== "remove" ? ` ${body.version}` : "";
+        send({
+          type: "stage",
+          stage: action,
+          message: `开始${action === "install" ? "安装" : action === "update" ? "更新" : "卸载"} ${detector.displayName}${versionText}...`,
+        });
+
+        const exitCode = await commandStream(command, (line) => {
+          send({ type: "progress", layer: "", status: "info", detail: line.trim() });
+        });
+
+        if (exitCode !== 0) {
+          send({ type: "error", message: `${detector.displayName} 操作失败 (退出码 ${exitCode})` });
+          return;
+        }
+
+        send({ type: "done", message: `${detector.displayName} 操作完成` });
+      } catch (e: any) {
+        send({ type: "error", message: e.message || "操作失败" });
+      } finally {
+        close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }
 
 // ── 操作执行 ──────────────────────────────────────────────────────────
@@ -710,6 +931,33 @@ export const environmentRoutes = new Elysia()
     if (!profile) return { success: false, message: "未授权" };
 
     return executeInstall(params.id);
+  })
+
+  .post("/api/environments/:id/:action/stream", async ({ jwt, request, params, body }: any) => {
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const profile = await jwt.verify(token);
+    if (!profile) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (!["install", "update", "remove"].includes(params.action)) {
+      return new Response(JSON.stringify({ success: false, message: "不支持的操作" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    return createEnvironmentActionStream(params.id, params.action, body);
   })
 
   .post("/api/environments/:id/update", async ({ jwt, request, params }: any) => {

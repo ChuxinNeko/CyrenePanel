@@ -84,6 +84,14 @@ interface EnvInfo {
   removeCommand: string | null;
   description: string;
   homepage: string | null;
+  defaultVersion?: string | null;
+  versionOptions?: VersionOption[];
+}
+
+interface VersionOption {
+  value: string;
+  label: string;
+  recommended?: boolean;
 }
 
 interface EnvSummary {
@@ -126,6 +134,7 @@ function getEnvIconId(icon: string): string {
     composer: "logos:composer",
     git: "logos:git-icon",
     docker: "logos:docker-icon",
+    nginx: "logos:nginx",
   };
   return map[icon] || "mdi:code-braces";
 }
@@ -140,7 +149,7 @@ const ACTION_LABELS: Record<string, string> = {
 
 export default function EnvironmentsPage() {
   const router = useRouter();
-  const { createTask, appendTaskLog, finishTask, failTask } = useTasks();
+  const { startDeployTask } = useTasks();
   const [loading, setLoading] = useState(true);
   const [environments, setEnvironments] = useState<EnvInfo[]>([]);
   const [summary, setSummary] = useState<EnvSummary | null>(null);
@@ -168,6 +177,8 @@ export default function EnvironmentsPage() {
     envName: string;
     action: "install" | "update" | "remove";
     command: string;
+    selectedVersion?: string;
+    versionOptions?: VersionOption[];
   } | null>(null);
 
   const isRemoteNode = selectedNodeId !== "__main__";
@@ -263,59 +274,60 @@ export default function EnvironmentsPage() {
   // 操作
   const executeAction = async (
     envId: string,
-    action: "install" | "update" | "remove"
+    action: "install" | "update" | "remove",
+    version?: string
   ) => {
     setActingId(envId);
     setConfirmAction(null);
 
     const env = environments.find((e) => e.id === envId);
     const label = ACTION_LABELS[action] || action;
-    const title = `${label} ${env?.displayName || envId}`;
-    const taskId = createTask(title, env?.icon);
+    const versionText = version && action !== "remove" ? ` ${version}` : "";
+    const basePath = isRemoteNode
+      ? `/api/nodes/${selectedNodeId}/environments/${envId}`
+      : `/api/environments/${envId}`;
 
-    appendTaskLog(taskId, {
-      type: "stage",
-      message: `开始${label} ${env?.displayName || envId}...`,
-    });
-
-    try {
-      const url = isRemoteNode
-        ? `/api/nodes/${selectedNodeId}/environments/${envId}/${action}`
-        : `/api/environments/${envId}/${action}`;
-      const res = await apiPost<{ success: boolean; message: string; output?: string }>(url);
-      if (res.success) {
-        appendTaskLog(taskId, {
-          type: "done",
-          message: res.message || `${label}成功`,
-        });
-        if (res.output) {
-          appendTaskLog(taskId, {
-            type: "progress",
-            message: res.output,
-          });
-        }
-        finishTask(taskId, { message: res.message || `${label}成功` });
-        toast.success(res.message);
+    startDeployTask({
+      title: `${label} ${env?.displayName || envId}${versionText}`,
+      icon: env?.icon,
+      url: `${API_BASE}${basePath}/${action}/stream`,
+      headers: authHeaders(),
+      body: JSON.stringify(version ? { version } : {}),
+      targetUrl: "/dashboard/environments",
+      onDone: async () => {
+        toast.success(`${label}任务完成`);
         await fetchEnvironments();
-      } else {
-        appendTaskLog(taskId, {
-          type: "error",
-          message: res.message || `${label}失败`,
-        });
-        failTask(taskId, res.message || `${label}失败`);
-        toast.error(res.message);
-      }
-    } catch (e: any) {
-      const errMsg = e.message || "操作失败";
-      appendTaskLog(taskId, {
-        type: "error",
-        message: errMsg,
-      });
-      failTask(taskId, errMsg);
-      toast.error(errMsg);
-    } finally {
-      setActingId(null);
-    }
+      },
+    });
+    setActingId(null);
+  };
+
+  const openConfirmAction = (
+    env: EnvInfo,
+    action: "install" | "update" | "remove",
+    command: string
+  ) => {
+    const versionOptions = action === "remove" ? [] : env.versionOptions || [];
+    const selectedVersion =
+      env.defaultVersion || versionOptions.find((item) => item.recommended)?.value || versionOptions[0]?.value;
+    setConfirmAction({
+      envId: env.id,
+      envName: env.displayName,
+      action,
+      command,
+      selectedVersion,
+      versionOptions,
+    });
+  };
+
+  const getConfirmCommand = () => {
+    if (!confirmAction) return "";
+    const { command, action, selectedVersion } = confirmAction;
+    if (!selectedVersion || action === "remove") return command;
+    return command.replace(
+      new RegExp(`(bash -s -- ${action})(?:\\s+\\S+)?$`),
+      `$1 ${selectedVersion}`
+    );
   };
 
   const handleRefresh = async () => {
@@ -594,12 +606,7 @@ export default function EnvironmentsPage() {
                     disabled={actingId === env.id}
                     onClick={() => {
                       if (env.installCommand) {
-                        setConfirmAction({
-                          envId: env.id,
-                          envName: env.displayName,
-                          action: "install",
-                          command: env.installCommand,
-                        });
+                        openConfirmAction(env, "install", env.installCommand);
                       }
                     }}
                   >
@@ -619,12 +626,7 @@ export default function EnvironmentsPage() {
                         className="flex-1 h-8 text-xs"
                         disabled={actingId === env.id}
                         onClick={() => {
-                          setConfirmAction({
-                            envId: env.id,
-                            envName: env.displayName,
-                            action: "update",
-                            command: env.updateCommand!,
-                          });
+                          openConfirmAction(env, "update", env.updateCommand!);
                         }}
                       >
                         {actingId === env.id ? (
@@ -642,12 +644,7 @@ export default function EnvironmentsPage() {
                         className="h-8 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
                         disabled={actingId === env.id}
                         onClick={() => {
-                          setConfirmAction({
-                            envId: env.id,
-                            envName: env.displayName,
-                            action: "remove",
-                            command: env.removeCommand!,
-                          });
+                          openConfirmAction(env, "remove", env.removeCommand!);
                         }}
                       >
                         <Trash2 className="h-3.5 w-3.5 mr-1" />
@@ -789,13 +786,41 @@ export default function EnvironmentsPage() {
             </DialogDescription>
           </DialogHeader>
           {confirmAction && (
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1.5">
-                将执行的命令
-              </p>
-              <pre className="text-xs font-mono bg-muted/50 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-32">
-                {confirmAction.command}
-              </pre>
+            <div className="space-y-3">
+              {confirmAction.versionOptions && confirmAction.versionOptions.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    版本
+                  </p>
+                  <Select
+                    value={confirmAction.selectedVersion}
+                    onValueChange={(value) =>
+                      setConfirmAction((prev) =>
+                        prev ? { ...prev, selectedVersion: value } : prev
+                      )
+                    }
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder="选择版本" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {confirmAction.versionOptions.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}{item.recommended ? "（推荐）" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1.5">
+                  将执行的命令
+                </p>
+                <pre className="text-xs font-mono bg-muted/50 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-32">
+                  {getConfirmCommand()}
+                </pre>
+              </div>
             </div>
           )}
           <DialogFooter>
@@ -812,7 +837,11 @@ export default function EnvironmentsPage() {
               disabled={actingId !== null}
               onClick={() => {
                 if (confirmAction) {
-                  executeAction(confirmAction.envId, confirmAction.action);
+                  executeAction(
+                    confirmAction.envId,
+                    confirmAction.action,
+                    confirmAction.selectedVersion
+                  );
                 }
               }}
             >
