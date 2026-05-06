@@ -47,7 +47,7 @@ export default function TaskLogTerminal({ logs, className }: TaskLogTerminalProp
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<any>(null);
   const fitAddonRef = useRef<any>(null);
-  const writtenCountRef = useRef(0);
+  const lastWrittenLogRef = useRef<TaskLogEntry | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
 
   // Initialize terminal once
@@ -83,7 +83,6 @@ export default function TaskLogTerminal({ logs, className }: TaskLogTerminalProp
           selectionBackground: "#3f3f46",
         },
         allowProposedApi: true,
-        padding: 4,
         scrollback: 5000,
       });
 
@@ -92,11 +91,10 @@ export default function TaskLogTerminal({ logs, className }: TaskLogTerminalProp
       terminal.open(containerRef.current);
 
       // Sync any logs that arrived before mount
-      writtenCountRef.current = 0;
       for (const entry of logs) {
         terminal.writeln(renderLogLine(entry));
-        writtenCountRef.current++;
       }
+      lastWrittenLogRef.current = logs[logs.length - 1] || null;
 
       terminalRef.current = terminal;
       fitAddonRef.current = fitAddon;
@@ -122,7 +120,7 @@ export default function TaskLogTerminal({ logs, className }: TaskLogTerminalProp
         terminalRef.current.dispose();
         terminalRef.current = null;
       }
-      writtenCountRef.current = 0;
+      lastWrittenLogRef.current = null;
     };
   // Only run on mount/unmount — logs are handled in the effect below
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,11 +131,25 @@ export default function TaskLogTerminal({ logs, className }: TaskLogTerminalProp
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    const newLogs = logs.slice(writtenCountRef.current);
+    const lastWrittenLog = lastWrittenLogRef.current;
+    let newLogs: TaskLogEntry[];
+
+    if (!lastWrittenLog) {
+      newLogs = logs;
+    } else {
+      const lastIndex = logs.indexOf(lastWrittenLog);
+      if (lastIndex >= 0) {
+        newLogs = logs.slice(lastIndex + 1);
+      } else {
+        terminal.clear();
+        newLogs = logs;
+      }
+    }
+
     for (const entry of newLogs) {
       terminal.writeln(renderLogLine(entry));
-      writtenCountRef.current++;
     }
+    lastWrittenLogRef.current = logs[logs.length - 1] || null;
 
     // Auto-scroll to bottom
     if (newLogs.length > 0) {

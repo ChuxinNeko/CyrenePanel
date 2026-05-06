@@ -86,12 +86,21 @@ interface EnvInfo {
   homepage: string | null;
   defaultVersion?: string | null;
   versionOptions?: VersionOption[];
+  installMethods?: InstallMethodOption[];
 }
 
 interface VersionOption {
   value: string;
   label: string;
   recommended?: boolean;
+}
+
+interface InstallMethodOption {
+  value: "quick" | "compile";
+  label: string;
+  description: string;
+  recommended?: boolean;
+  supportsVersion?: boolean;
 }
 
 interface EnvSummary {
@@ -179,6 +188,9 @@ export default function EnvironmentsPage() {
     command: string;
     selectedVersion?: string;
     versionOptions?: VersionOption[];
+    allVersionOptions?: VersionOption[];
+    selectedInstallMethod?: "quick" | "compile";
+    installMethods?: InstallMethodOption[];
   } | null>(null);
 
   const isRemoteNode = selectedNodeId !== "__main__";
@@ -275,24 +287,31 @@ export default function EnvironmentsPage() {
   const executeAction = async (
     envId: string,
     action: "install" | "update" | "remove",
-    version?: string
+    version?: string,
+    installMethod?: "quick" | "compile"
   ) => {
     setActingId(envId);
     setConfirmAction(null);
 
     const env = environments.find((e) => e.id === envId);
     const label = ACTION_LABELS[action] || action;
-    const versionText = version && action !== "remove" ? ` ${version}` : "";
+    const methodLabel = env?.installMethods?.find((item) => item.value === installMethod)?.label;
+    const versionText =
+      version && installMethod === "compile" && action !== "remove" ? ` ${version}` : "";
+    const methodText = methodLabel && action !== "remove" ? ` - ${methodLabel}` : "";
     const basePath = isRemoteNode
       ? `/api/nodes/${selectedNodeId}/environments/${envId}`
       : `/api/environments/${envId}`;
 
     startDeployTask({
-      title: `${label} ${env?.displayName || envId}${versionText}`,
+      title: `${label} ${env?.displayName || envId}${methodText}${versionText}`,
       icon: env?.icon,
       url: `${API_BASE}${basePath}/${action}/stream`,
       headers: authHeaders(),
-      body: JSON.stringify(version ? { version } : {}),
+      body: JSON.stringify({
+        ...(installMethod ? { installMethod } : {}),
+        ...(version && installMethod === "compile" ? { version } : {}),
+      }),
       targetUrl: "/dashboard/environments",
       onDone: async () => {
         toast.success(`${label}任务完成`);
@@ -307,7 +326,16 @@ export default function EnvironmentsPage() {
     action: "install" | "update" | "remove",
     command: string
   ) => {
-    const versionOptions = action === "remove" ? [] : env.versionOptions || [];
+    const installMethods = action === "remove" ? [] : env.installMethods || [];
+    const detectedInstallMethod =
+      env.id === "nginx" && env.path?.includes("/www/server/nginx") ? "compile" : "quick";
+    const selectedInstallMethod =
+      installMethods.find((item) => item.value === detectedInstallMethod)?.value ||
+      installMethods.find((item) => item.recommended)?.value ||
+      installMethods[0]?.value;
+    const selectedMethod = installMethods.find((item) => item.value === selectedInstallMethod);
+    const versionOptions =
+      action === "remove" || selectedMethod?.supportsVersion === false ? [] : env.versionOptions || [];
     const selectedVersion =
       env.defaultVersion || versionOptions.find((item) => item.recommended)?.value || versionOptions[0]?.value;
     setConfirmAction({
@@ -317,12 +345,25 @@ export default function EnvironmentsPage() {
       command,
       selectedVersion,
       versionOptions,
+      allVersionOptions: env.versionOptions || [],
+      selectedInstallMethod,
+      installMethods,
     });
   };
 
   const getConfirmCommand = () => {
     if (!confirmAction) return "";
-    const { command, action, selectedVersion } = confirmAction;
+    const { command, action, selectedVersion, selectedInstallMethod } = confirmAction;
+    if (selectedInstallMethod && action !== "remove") {
+      const args: string[] = [action, selectedInstallMethod];
+      if (selectedInstallMethod === "compile" && selectedVersion) {
+        args.push(selectedVersion);
+      }
+      return command.replace(
+        new RegExp(`(bash -s -- ).*$`),
+        `$1${args.join(" ")}`
+      );
+    }
     if (!selectedVersion || action === "remove") return command;
     return command.replace(
       new RegExp(`(bash -s -- ${action})(?:\\s+\\S+)?$`),
@@ -607,6 +648,8 @@ export default function EnvironmentsPage() {
                     onClick={() => {
                       if (env.installCommand) {
                         openConfirmAction(env, "install", env.installCommand);
+                      } else {
+                        toast.error(`${env.displayName} 当前节点不支持通过面板安装`);
                       }
                     }}
                   >
@@ -787,6 +830,50 @@ export default function EnvironmentsPage() {
           </DialogHeader>
           {confirmAction && (
             <div className="space-y-3">
+              {confirmAction.installMethods && confirmAction.installMethods.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    安装方式
+                  </p>
+                  <Select
+                    value={confirmAction.selectedInstallMethod}
+                    onValueChange={(value) =>
+                      setConfirmAction((prev) => {
+                        if (!prev) return prev;
+                        const selectedInstallMethod = value as "quick" | "compile";
+                        const method = prev.installMethods?.find((item) => item.value === selectedInstallMethod);
+                        const versionOptions =
+                          method?.supportsVersion === false ? [] : prev.allVersionOptions || [];
+                        const selectedVersion =
+                          versionOptions.find((item) => item.recommended)?.value || versionOptions[0]?.value;
+
+                        return {
+                          ...prev,
+                          selectedInstallMethod,
+                          versionOptions,
+                          selectedVersion,
+                        };
+                      })
+                    }
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder="选择安装方式" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {confirmAction.installMethods.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}{item.recommended ? "（推荐）" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {confirmAction.installMethods.find((item) => item.value === confirmAction.selectedInstallMethod)?.description && (
+                    <p className="text-xs text-muted-foreground">
+                      {confirmAction.installMethods.find((item) => item.value === confirmAction.selectedInstallMethod)?.description}
+                    </p>
+                  )}
+                </div>
+              )}
               {confirmAction.versionOptions && confirmAction.versionOptions.length > 0 && (
                 <div className="space-y-1.5">
                   <p className="text-xs font-medium text-muted-foreground">
@@ -840,7 +927,8 @@ export default function EnvironmentsPage() {
                   executeAction(
                     confirmAction.envId,
                     confirmAction.action,
-                    confirmAction.selectedVersion
+                    confirmAction.selectedVersion,
+                    confirmAction.selectedInstallMethod
                   );
                 }
               }}

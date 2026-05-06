@@ -59,7 +59,7 @@ interface TaskContextValue {
   clearFinishedTasks: () => void;
 }
 
-const MAX_TASK_LOGS = 800;
+const MAX_TASK_LOGS = 5000;
 
 const TaskContext = createContext<TaskContextValue | null>(null);
 

@@ -21,6 +21,17 @@ interface EnvInfo {
   homepage: string | null;
   defaultVersion?: string | null;
   versionOptions?: { value: string; label: string; recommended?: boolean }[];
+  installMethods?: InstallMethodOption[];
+}
+
+type NginxInstallMethod = "quick" | "compile";
+
+interface InstallMethodOption {
+  value: NginxInstallMethod;
+  label: string;
+  description: string;
+  recommended?: boolean;
+  supportsVersion?: boolean;
 }
 
 // ── 工具函数 ──────────────────────────────────────────────────────────
@@ -54,7 +65,7 @@ function getOfficialServerUrl(): string {
   return (
     process.env.CYRENE_OFFICIAL_SERVER_URL ||
     process.env.OFFICIAL_SERVER_URL ||
-    "http://localhost:30001"
+    "https://dockerhub.nekofun.top"
   ).replace(/\/+$/, "");
 }
 
@@ -62,10 +73,19 @@ function getOfficialScriptCommand(
   envId: string,
   action: "install" | "update" | "remove",
   version?: string | null,
+  installMethod?: NginxInstallMethod | null,
 ): string {
   const scriptUrl = `${getOfficialServerUrl()}/environments/${envId}/script`;
-  const suffix = version && action !== "remove" ? ` ${version}` : "";
-  return `curl -fsSL ${scriptUrl} | sudo bash -s -- ${action}${suffix}`;
+  const args: string[] = [action];
+  if (envId === "nginx" && installMethod) {
+    args.push(installMethod);
+    if (installMethod === "compile" && version && action !== "remove") {
+      args.push(version);
+    }
+  } else if (version && action !== "remove") {
+    args.push(version);
+  }
+  return `curl -fsSL ${scriptUrl} | sudo bash -s -- ${args.join(" ")}`;
 }
 
 const NGINX_VERSION_OPTIONS = [
@@ -81,11 +101,56 @@ const NGINX_VERSION_OPTIONS = [
   { value: "1.30", label: "1.30.0" },
 ];
 
+const NGINX_INSTALL_METHOD_OPTIONS: InstallMethodOption[] = [
+  {
+    value: "quick",
+    label: "快速安装",
+    description: "使用 nginx 官方 apt/yum/dnf 仓库安装稳定版",
+    recommended: true,
+    supportsVersion: false,
+  },
+  {
+    value: "compile",
+    label: "编译安装",
+    description: "下载 nginx、PCRE、zlib、OpenSSL 源码并编译到 /www/server/nginx",
+    supportsVersion: true,
+  },
+];
+
 function normalizeNginxVersion(version?: string): string {
   const selected = version || "1.24";
   const found = NGINX_VERSION_OPTIONS.find((item) => item.value === selected);
   if (!found) throw new Error(`不支持的 Nginx 版本: ${selected}`);
   return found.value;
+}
+
+function normalizeNginxInstallMethod(method?: string): NginxInstallMethod {
+  if (!method) return "quick";
+  if (method === "quick" || method === "compile") return method;
+  throw new Error(`不支持的 Nginx 安装方式: ${method}`);
+}
+
+function detectNginxInstallMethod(): NginxInstallMethod | null {
+  if (execCmdSafe("test -x /www/server/nginx/sbin/nginx && echo compile")) {
+    return "compile";
+  }
+  if (
+    execCmdSafe("test -x /usr/sbin/nginx && echo quick") ||
+    execCmdSafe("test -x /usr/local/sbin/nginx && echo quick") ||
+    execCmdSafe(isLinuxPlatform() ? "command -v nginx" : "where nginx")
+  ) {
+    return "quick";
+  }
+  return null;
+}
+
+function detectNginxBinaryPath(): string | null {
+  return (
+    execCmdSafe("test -x /www/server/nginx/sbin/nginx && echo /www/server/nginx/sbin/nginx") ||
+    execCmdSafe("test -x /usr/sbin/nginx && echo /usr/sbin/nginx") ||
+    execCmdSafe("test -x /usr/local/sbin/nginx && echo /usr/local/sbin/nginx") ||
+    execCmdSafe(isLinuxPlatform() ? "command -v nginx" : "where nginx")
+  );
 }
 
 // ── 环境检测器 ────────────────────────────────────────────────────────
@@ -105,6 +170,7 @@ interface EnvDetector {
   getRemoveInfo: () => string | null;
   getDefaultVersion?: () => string | null;
   getVersionOptions?: () => { value: string; label: string; recommended?: boolean }[];
+  getInstallMethods?: () => InstallMethodOption[];
 }
 
 function getNodeDetector(): EnvDetector {
@@ -550,32 +616,29 @@ function getNginxDetector(): EnvDetector {
     description: "高性能 Web 服务器和反向代理",
     homepage: "https://nginx.org",
     detectVersion: () => {
-      const v =
-        execCmdSafe("/www/server/nginx/sbin/nginx -v 2>&1") ||
-        execCmdSafe("nginx -v 2>&1");
+      const nginxPath = detectNginxBinaryPath();
+      const v = nginxPath ? execCmdSafe(`${nginxPath} -v 2>&1`) : null;
       if (!v) return null;
       const match = v.match(/nginx\/(\d+\.\d+\.\d+)/i);
       return match ? match[1] : null;
     },
-    detectPath: () =>
-      execCmdSafe("test -x /www/server/nginx/sbin/nginx && echo /www/server/nginx/sbin/nginx") ||
-      execCmdSafe(isLinuxPlatform() ? "which nginx" : "where nginx"),
+    detectPath: () => detectNginxBinaryPath(),
     getLatestVersion: () => null,
-    getInstallInfo: () => {
-      if (!isLinuxPlatform()) return null;
-      return {
-        packageManager: "官方源码编译脚本",
-        installCommand: getOfficialScriptCommand("nginx", "install", "1.24"),
-      };
+    getInstallInfo: () => ({
+      packageManager: "nginx official repo / source build",
+      installCommand: getOfficialScriptCommand("nginx", "install", null, "quick"),
+    }),
+    getUpdateInfo: () => {
+      const method = detectNginxInstallMethod() || "quick";
+      return getOfficialScriptCommand("nginx", "update", "1.24", method);
     },
-    getUpdateInfo: () => isLinuxPlatform()
-      ? getOfficialScriptCommand("nginx", "update", "1.24")
-      : null,
-    getRemoveInfo: () => isLinuxPlatform()
-      ? getOfficialScriptCommand("nginx", "remove")
-      : null,
+    getRemoveInfo: () => {
+      const method = detectNginxInstallMethod() || "quick";
+      return getOfficialScriptCommand("nginx", "remove", null, method);
+    },
     getDefaultVersion: () => "1.24",
     getVersionOptions: () => NGINX_VERSION_OPTIONS,
+    getInstallMethods: () => NGINX_INSTALL_METHOD_OPTIONS,
   };
 }
 
@@ -630,6 +693,7 @@ function scanEnvironments(): EnvInfo[] {
       homepage: detector.homepage,
       defaultVersion: detector.getDefaultVersion?.() || null,
       versionOptions: detector.getVersionOptions?.() || [],
+      installMethods: detector.getInstallMethods?.() || [],
     });
   }
 
@@ -640,10 +704,16 @@ function getActionCommand(
   detector: EnvDetector,
   action: "install" | "update" | "remove",
   version?: string,
+  installMethod?: string,
 ): string | null {
   if (detector.id === "nginx") {
-    const selectedVersion = normalizeNginxVersion(version);
-    return getOfficialScriptCommand(detector.id, action, selectedVersion);
+    const method = normalizeNginxInstallMethod(
+      installMethod || detectNginxInstallMethod() || "quick",
+    );
+    const selectedVersion = method === "compile" && action !== "remove"
+      ? normalizeNginxVersion(version)
+      : null;
+    return getOfficialScriptCommand(detector.id, action, selectedVersion, method);
   }
 
   if (action === "install") return detector.getInstallInfo()?.installCommand || null;
@@ -681,7 +751,7 @@ async function commandStream(command: string, onLine: (line: string) => void): P
 function createEnvironmentActionStream(
   envId: string,
   action: "install" | "update" | "remove",
-  body?: { version?: string },
+  body?: { version?: string; installMethod?: string },
 ): Response {
   const detectors = getAllDetectors();
   const detector = detectors.find((d) => d.id === envId);
@@ -694,7 +764,7 @@ function createEnvironmentActionStream(
   }
 
   if (detector.id === "nginx" && !isLinuxPlatform()) {
-    return new Response(JSON.stringify({ success: false, message: "Nginx 源码脚本安装仅支持 Linux 节点" }), {
+    return new Response(JSON.stringify({ success: false, message: "Nginx 安装脚本仅支持 Linux 节点" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
@@ -702,7 +772,7 @@ function createEnvironmentActionStream(
 
   let command: string | null;
   try {
-    command = getActionCommand(detector, action, body?.version);
+    command = getActionCommand(detector, action, body?.version, body?.installMethod);
   } catch (e: any) {
     return new Response(JSON.stringify({ success: false, message: e.message }), {
       status: 400,
@@ -919,6 +989,9 @@ export const environmentRoutes = new Elysia()
         installCommand: detector.getInstallInfo()?.installCommand || null,
         updateCommand: detector.getUpdateInfo() || null,
         removeCommand: detector.getRemoveInfo() || null,
+        defaultVersion: detector.getDefaultVersion?.() || null,
+        versionOptions: detector.getVersionOptions?.() || [],
+        installMethods: detector.getInstallMethods?.() || [],
       },
     };
   })
