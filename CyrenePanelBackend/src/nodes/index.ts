@@ -35,6 +35,46 @@ export async function exchangeApiKeyForToken(
   return null;
 }
 
+async function readJsonOrError(res: Response, label: string) {
+  const contentType = res.headers.get("content-type") || "";
+  const text = await res.text();
+  if (contentType.includes("application/json")) {
+    try {
+      return JSON.parse(text);
+    } catch (e: any) {
+      throw new Error(`${label} 返回了无效 JSON: ${e.message}`);
+    }
+  }
+  const preview = text.replace(/\s+/g, " ").trim().slice(0, 240) || "(空响应)";
+  throw new Error(`${label} 返回非 JSON 响应，HTTP ${res.status}，Content-Type: ${contentType || "unknown"}，内容: ${preview}`);
+}
+
+function sseError(message: string, status = 200) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message })}\n\n`));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+async function ensureEventStreamResponse(res: Response, label: string) {
+  const contentType = res.headers.get("content-type") || "";
+  if (res.ok && contentType.includes("text/event-stream")) return res;
+  const text = await res.text().catch(() => "");
+  const preview = text.replace(/\s+/g, " ").trim().slice(0, 240) || "(空响应)";
+  return sseError(`${label} 返回异常，HTTP ${res.status}，Content-Type: ${contentType || "unknown"}，内容: ${preview}`);
+}
+
 export async function getOnlineNodesCount() {
   const nodes = dbGetAllNodes();
   const checks = nodes.map(async (node) => {
@@ -1379,6 +1419,72 @@ export const nodeRoutes = new Elysia()
     }
   })
 
+  .get("/api/nodes/:id/certificates/acme/environment", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const node = dbGetNode(params.id);
+    if (!node) return { success: false, message: "节点不存在" };
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) return { success: false, message: "子节点不可达" };
+      const res = await fetch(`${node.address}/api/certificates/acme/environment`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      return await readJsonOrError(res, "子节点 ACME 环境接口");
+    } catch (e: any) {
+      logger.err(`子节点 ACME 环境代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/certificates/acme/install-stream", async ({ params, body, profile }: any) => {
+    if (!profile) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const node = dbGetNode(params.id);
+    if (!node) {
+      return new Response(JSON.stringify({ success: false, message: "节点不存在" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) {
+        return new Response(JSON.stringify({ success: false, message: "子节点不可达" }), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const res = await fetch(`${node.address}/api/certificates/acme/install-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body || {}),
+      });
+      const streamRes = await ensureEventStreamResponse(res, "子节点 acme.sh 安装接口");
+      return new Response(streamRes.body, {
+        status: streamRes.status,
+        headers: {
+          "Content-Type": streamRes.headers.get("Content-Type") || "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (e: any) {
+      logger.err(`子节点 acme.sh 安装代理失败: ${e.message}`);
+      return new Response(JSON.stringify({ success: false, message: `子节点请求失败: ${e.message}` }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  })
+
   .post("/api/nodes/:id/certificates", async ({ params, body, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const node = dbGetNode(params.id);
@@ -1459,6 +1565,54 @@ export const nodeRoutes = new Elysia()
     } catch (e: any) {
       logger.err(`子节点证书部署代理失败: ${e.message}`);
       return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/sites/:name/certificate/request-stream", async ({ params, body, profile }: any) => {
+    if (!profile) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const node = dbGetNode(params.id);
+    if (!node) {
+      return new Response(JSON.stringify({ success: false, message: "节点不存在" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) {
+        return new Response(JSON.stringify({ success: false, message: "子节点不可达" }), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const res = await fetch(`${node.address}/api/sites/${encodeURIComponent(params.name)}/certificate/request-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body || {}),
+      });
+      const streamRes = await ensureEventStreamResponse(res, "子节点证书申请接口");
+      return new Response(streamRes.body, {
+        status: streamRes.status,
+        headers: {
+          "Content-Type": streamRes.headers.get("Content-Type") || "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (e: any) {
+      logger.err(`子节点自动申请证书代理失败: ${e.message}`);
+      return new Response(JSON.stringify({ success: false, message: `子节点请求失败: ${e.message}` }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
+      });
     }
   })
 

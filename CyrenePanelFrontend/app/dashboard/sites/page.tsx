@@ -1202,6 +1202,7 @@ export default function SitesPage() {
                   <SiteCertificatePanel
                     siteName={settingSite.name}
                     basePath={basePath}
+                    domains={settingSite.domains}
                     onDeployed={fetchSites}
                   />
                 )}
