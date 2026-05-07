@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { usePanelName } from "@/lib/panel-name-context";
 import { Textarea } from "@/components/ui/textarea";
+import { EnvironmentSelfCheckDialog } from "@/components/environment-self-check-dialog";
 import {
   Settings,
   Save,
@@ -24,6 +25,7 @@ import {
   Copy,
   Check,
   Code,
+  PackageCheck,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -233,6 +235,10 @@ export default function SettingsPage() {
             <Code className="h-4 w-4" />
             页脚设置
           </TabsTrigger>
+          <TabsTrigger value="environment" className="gap-1.5">
+            <PackageCheck className="h-4 w-4" />
+            环境检测
+          </TabsTrigger>
           <TabsTrigger value="security" className="gap-1.5">
             <Shield className="h-4 w-4" />
             安全设置
@@ -373,6 +379,41 @@ export default function SettingsPage() {
                   {saving ? "保存中..." : "保存设置"}
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── 环境检测 ────────────────────────────────────────────── */}
+        <TabsContent value="environment">
+          <Card>
+            <CardHeader>
+              <CardTitle>环境检测</CardTitle>
+              <CardDescription>
+                检查主节点与子节点运行所需的系统命令与依赖，发现缺失项后可由面板自动安装。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <div className="flex items-start gap-3">
+                  <PackageCheck className="mt-0.5 h-5 w-5 text-muted-foreground" />
+                  <div className="space-y-1">
+                    <div className="font-medium">面板环境自检</div>
+                    <p className="text-sm text-muted-foreground">
+                      当前会检测主节点和所有子节点中文件管理压缩/解压所需的 tar、zip、unzip 等依赖。Linux 节点支持通过系统包管理器自动安装缺失项。
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <EnvironmentSelfCheckDialog
+                autoCheck={false}
+                trigger={
+                  <Button>
+                    <PackageCheck className="h-4 w-4 mr-1.5" />
+                    开始环境检测
+                  </Button>
+                }
+              />
             </CardContent>
           </Card>
         </TabsContent>

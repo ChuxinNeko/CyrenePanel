@@ -1,7 +1,7 @@
 import { Elysia } from "elysia";
 import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } from "os";
 import { readFileSync, existsSync } from "fs";
-import { getOnlineNodesCount, getLocalMetrics } from "../nodes/index";
+import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
 import { getMemoryInfo } from "../memory";
 
 const startTime = Date.now();
@@ -175,6 +175,10 @@ export const systemRoutes = new Elysia()
     const mem = getMemoryInfo();
     const disks = getDiskUsage();
     const bunVersion = typeof Bun !== "undefined" ? Bun.version : "unknown";
+    const metrics = getLocalMetrics();
+    const latestMetric = metrics[metrics.length - 1];
+    const network = getLocalNetworkUsage();
+    const diskIo = getLocalDiskIoUsage();
 
     const { total: nodeCount, online: onlineNodeCount } = await getOnlineNodesCount();
     
@@ -193,7 +197,7 @@ export const systemRoutes = new Elysia()
         cpu: {
           cores: cpus().length,
           model: cpus()[0]?.model || "Unknown",
-          usage: getCpuUsage(),
+          usage: latestMetric?.cpu ?? getCpuUsage(),
         },
         memory: {
           total: mem.total,
@@ -205,9 +209,11 @@ export const systemRoutes = new Elysia()
           percentage: Math.round((mem.used / mem.total) * 100),
         },
         disks,
+        network,
+        diskIo,
         nodeCount,
         onlineNodeCount,
-        metrics: getLocalMetrics(),
+        metrics,
       },
     };
   });

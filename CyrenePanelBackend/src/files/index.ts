@@ -1,6 +1,9 @@
 import { Elysia, t } from "elysia";
 import { logger } from "../logger/index";
 import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
   readdirSync,
   statSync,
   readFileSync,
@@ -9,8 +12,10 @@ import {
   unlinkSync,
   renameSync,
   existsSync,
+  rmSync,
 } from "fs";
 import { join, extname, basename, dirname, relative, resolve, sep } from "path";
+import { execFileSync } from "child_process";
 import { lookup } from "mime-types";
 
 // Windows 使用虚拟根目录（空字符串），支持多盘符切换
@@ -26,6 +31,7 @@ function listDrives(): FileEntry[] {
     try {
       if (!existsSync(mount)) continue;
       const stats = statSync(mount);
+      const mode = stats.mode & 0o777;
       drives.push({
         name: `${letter}:`,
         path: `${letter}:`,
@@ -34,6 +40,8 @@ function listDrives(): FileEntry[] {
         modified: stats.mtimeMs,
         extension: "",
         mimeType: false,
+        mode: mode.toString(8).padStart(3, "0"),
+        permissions: modeToPermissions(stats.mode, true),
       });
     } catch {
       // 跳过不可访问的盘符
@@ -92,6 +100,8 @@ interface FileEntry {
   modified: number;
   extension: string;
   mimeType: string | false;
+  mode?: string;
+  permissions?: string;
 }
 
 const TEXT_EXTENSIONS = new Set([
@@ -106,6 +116,35 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 const MAX_TEXT_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+function modeToPermissions(mode: number, isDirectory: boolean): string {
+  const flags = [0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001];
+  const chars = ["r", "w", "x", "r", "w", "x", "r", "w", "x"];
+  return `${isDirectory ? "d" : "-"}${flags
+    .map((flag, index) => (mode & flag ? chars[index] : "-"))
+    .join("")}`;
+}
+
+function entryFromStats(
+  name: string,
+  entryPath: string,
+  fullPath: string,
+  isDirectory: boolean,
+): FileEntry {
+  const stats = statSync(fullPath);
+  const mode = stats.mode & 0o777;
+  return {
+    name,
+    path: entryPath,
+    isDirectory,
+    size: isDirectory ? 0 : stats.size,
+    modified: stats.mtimeMs,
+    extension: isDirectory ? "" : extname(name).toLowerCase(),
+    mimeType: isDirectory ? false : (lookup(name) || false),
+    mode: mode.toString(8).padStart(3, "0"),
+    permissions: modeToPermissions(stats.mode, isDirectory),
+  };
+}
 
 function isTextFile(filePath: string): boolean {
   const ext = extname(filePath).toLowerCase();
@@ -143,17 +182,14 @@ function listDirectory(dirPath: string): FileEntry[] {
   for (const entry of entries) {
     const fullPath = join(dirPath, entry.name);
     try {
-      const stats = statSync(fullPath);
-      const ext = entry.isDirectory() ? "" : extname(entry.name).toLowerCase();
-      result.push({
-        name: entry.name,
-        path: computeEntryPath(dirPath, fullPath),
-        isDirectory: entry.isDirectory(),
-        size: entry.isDirectory() ? 0 : stats.size,
-        modified: stats.mtimeMs,
-        extension: ext,
-        mimeType: entry.isDirectory() ? false : (lookup(entry.name) || false),
-      });
+      result.push(
+        entryFromStats(
+          entry.name,
+          computeEntryPath(dirPath, fullPath),
+          fullPath,
+          entry.isDirectory(),
+        ),
+      );
     } catch {
       continue;
     }
@@ -170,6 +206,167 @@ function listDirectory(dirPath: string): FileEntry[] {
 /** 判断当前请求路径是否为虚拟根目录 */
 function isVirtualRoot(requestedPath: string): boolean {
   return !FILE_ROOT && (!requestedPath || requestedPath === "" || requestedPath === "/");
+}
+
+function requestParentPath(requestedPath: string): string {
+  const normalized = requestedPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const index = normalized.lastIndexOf("/");
+  return index > 0 ? normalized.slice(0, index) : "";
+}
+
+function joinRequestPath(dirPath: string, name: string): string {
+  const cleanDir = dirPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  return cleanDir ? `${cleanDir}/${name}` : name;
+}
+
+function ensureSafeFilePath(requestedPath: string): string {
+  const realPath = safePath(requestedPath);
+  if (!realPath) throw new Error("路径不允许");
+  if (!existsSync(realPath)) throw new Error("路径不存在");
+  return realPath;
+}
+
+function removePath(realPath: string) {
+  const stats = statSync(realPath);
+  if (stats.isDirectory()) rmSync(realPath, { recursive: true, force: true });
+  else unlinkSync(realPath);
+}
+
+function uniqueDestination(targetPath: string): string {
+  if (!existsSync(targetPath)) return targetPath;
+  const folder = dirname(targetPath);
+  const ext = extname(targetPath);
+  const stem = basename(targetPath, ext);
+  for (let i = 1; i < 1000; i++) {
+    const candidate = join(folder, `${stem} - copy${i === 1 ? "" : ` ${i}`}${ext}`);
+    if (!existsSync(candidate)) return candidate;
+  }
+  throw new Error("无法生成不冲突的目标名称");
+}
+
+function copyPath(sourcePath: string, targetDir: string, overwrite = false) {
+  const stats = statSync(sourcePath);
+  let destination = join(targetDir, basename(sourcePath));
+  if (resolve(sourcePath) === resolve(destination)) {
+    if (overwrite) return;
+    destination = uniqueDestination(destination);
+  }
+  if (existsSync(destination)) {
+    if (overwrite) removePath(destination);
+    else destination = uniqueDestination(destination);
+  }
+
+  if (stats.isDirectory()) {
+    cpSync(sourcePath, destination, { recursive: true, errorOnExist: false });
+  } else {
+    copyFileSync(sourcePath, destination);
+  }
+}
+
+function movePath(sourcePath: string, targetDir: string, overwrite = false) {
+  let destination = join(targetDir, basename(sourcePath));
+  if (resolve(sourcePath) === resolve(destination)) return;
+  const stats = statSync(sourcePath);
+  if (stats.isDirectory()) {
+    const sourceWithSep = sourcePath.endsWith(sep) ? sourcePath : sourcePath + sep;
+    const destinationWithSep = destination.endsWith(sep) ? destination : destination + sep;
+    if (destinationWithSep.startsWith(sourceWithSep)) {
+      throw new Error("不能将目录移动到自身内部");
+    }
+  }
+  if (existsSync(destination)) {
+    if (overwrite) removePath(destination);
+    else destination = uniqueDestination(destination);
+  }
+
+  try {
+    renameSync(sourcePath, destination);
+  } catch (e: any) {
+    if (e?.code !== "EXDEV") throw e;
+    copyPath(sourcePath, targetDir, overwrite);
+    removePath(sourcePath);
+  }
+}
+
+function applyModeRecursive(realPath: string, mode: number) {
+  chmodSync(realPath, mode);
+  const stats = statSync(realPath);
+  if (!stats.isDirectory()) return;
+  for (const entry of readdirSync(realPath, { withFileTypes: true })) {
+    applyModeRecursive(join(realPath, entry.name), mode);
+  }
+}
+
+function quotePowerShellLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function archiveKind(filePath: string): "zip" | "tar" | null {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".zip")) return "zip";
+  if (
+    lower.endsWith(".tar") ||
+    lower.endsWith(".tar.gz") ||
+    lower.endsWith(".tgz") ||
+    lower.endsWith(".tar.bz2") ||
+    lower.endsWith(".tbz2") ||
+    lower.endsWith(".tar.xz") ||
+    lower.endsWith(".txz")
+  ) {
+    return "tar";
+  }
+  return null;
+}
+
+function archiveListCommand(filePath: string): { command: string; args: string[] } {
+  const kind = archiveKind(filePath);
+  if (kind === "zip") {
+    if (IS_WINDOWS) {
+      const script = `Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead(${quotePowerShellLiteral(filePath)}).Entries | ForEach-Object { $_.FullName }`;
+      return { command: "powershell.exe", args: ["-NoProfile", "-Command", script] };
+    }
+    return { command: "unzip", args: ["-Z1", filePath] };
+  }
+  if (kind === "tar") return { command: "tar", args: ["-tf", filePath] };
+  throw new Error("仅支持 zip、tar、tar.gz、tgz、tar.bz2、tar.xz");
+}
+
+function archiveTopLevelNames(filePath: string): string[] {
+  const { command, args } = archiveListCommand(filePath);
+  const output = execFileSync(command, args, { encoding: "utf-8", timeout: 30000, windowsHide: true });
+  const names = new Set<string>();
+  for (const rawLine of output.split(/\r?\n/)) {
+    const normalized = rawLine.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+    if (!normalized) continue;
+    const topLevel = normalized.split("/").filter(Boolean)[0];
+    if (topLevel) names.add(topLevel);
+  }
+  return [...names];
+}
+
+function findArchiveConflicts(filePath: string, targetDir: string): string[] {
+  return archiveTopLevelNames(filePath).filter((name) => existsSync(join(targetDir, name)));
+}
+
+function runArchiveCommand(command: string, args: string[], cwd?: string) {
+  execFileSync(command, args, { encoding: "utf-8", timeout: 120000, windowsHide: true, cwd });
+}
+
+function tarCreateArgs(archivePath: string): string[] {
+  const lower = archivePath.toLowerCase();
+  if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) return ["-czf", archivePath];
+  if (lower.endsWith(".tar.bz2") || lower.endsWith(".tbz2")) return ["-cjf", archivePath];
+  if (lower.endsWith(".tar.xz") || lower.endsWith(".txz")) return ["-cJf", archivePath];
+  return ["-cf", archivePath];
+}
+
+function createTarArchive(sourcePaths: string[], targetPath: string) {
+  const baseDir = dirname(sourcePaths[0]);
+  const names = sourcePaths.map((sourcePath) => {
+    if (dirname(sourcePath) !== baseDir) throw new Error("多选压缩需要源文件位于同一目录");
+    return basename(sourcePath);
+  });
+  runArchiveCommand("tar", [...tarCreateArgs(targetPath), "-C", baseDir, ...names]);
 }
 
 export const fileRoutes = new Elysia()
@@ -304,7 +501,6 @@ export const fileRoutes = new Elysia()
     try {
       const stats = statSync(realPath);
       if (stats.isDirectory()) {
-        const { rmSync } = require("fs");
         rmSync(realPath, { recursive: true, force: true });
       } else {
         unlinkSync(realPath);
@@ -336,6 +532,196 @@ export const fileRoutes = new Elysia()
     } catch (e: any) {
       logger.err(`重命名失败: ${e.message}`);
       return { success: false, message: `重命名失败: ${e.message}` };
+    }
+  })
+
+  // 批量复制
+  .post("/api/files/copy", async ({ body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const { paths, targetDir, overwrite } = body || {};
+    if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
+    if (typeof targetDir !== "string") return { success: false, message: "缺少 targetDir" };
+
+    try {
+      const targetRealPath = safePath(targetDir);
+      if (!targetRealPath) return { success: false, message: "目标路径不允许" };
+      if (!existsSync(targetRealPath)) mkdirSync(targetRealPath, { recursive: true });
+      if (!statSync(targetRealPath).isDirectory()) return { success: false, message: "目标不是目录" };
+
+      for (const requestedPath of paths) {
+        copyPath(ensureSafeFilePath(String(requestedPath)), targetRealPath, !!overwrite);
+      }
+      logger.info(`复制文件: ${paths.join(", ")} -> ${targetDir || "/"}`);
+      return { success: true, message: "复制成功" };
+    } catch (e: any) {
+      logger.err(`复制失败: ${e.message}`);
+      return { success: false, message: `复制失败: ${e.message}` };
+    }
+  })
+
+  // 批量移动
+  .post("/api/files/move", async ({ body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const { paths, targetDir, overwrite } = body || {};
+    if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
+    if (typeof targetDir !== "string") return { success: false, message: "缺少 targetDir" };
+
+    try {
+      const targetRealPath = safePath(targetDir);
+      if (!targetRealPath) return { success: false, message: "目标路径不允许" };
+      if (!existsSync(targetRealPath)) mkdirSync(targetRealPath, { recursive: true });
+      if (!statSync(targetRealPath).isDirectory()) return { success: false, message: "目标不是目录" };
+
+      for (const requestedPath of paths) {
+        movePath(ensureSafeFilePath(String(requestedPath)), targetRealPath, !!overwrite);
+      }
+      logger.info(`移动文件: ${paths.join(", ")} -> ${targetDir || "/"}`);
+      return { success: true, message: "移动成功" };
+    } catch (e: any) {
+      logger.err(`移动失败: ${e.message}`);
+      return { success: false, message: `移动失败: ${e.message}` };
+    }
+  })
+
+  // 批量删除
+  .delete("/api/files/batch", async ({ body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const { paths } = body || {};
+    if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
+
+    try {
+      for (const requestedPath of paths) {
+        removePath(ensureSafeFilePath(String(requestedPath)));
+      }
+      logger.info(`批量删除: ${paths.join(", ")}`);
+      return { success: true, message: "删除成功" };
+    } catch (e: any) {
+      logger.err(`批量删除失败: ${e.message}`);
+      return { success: false, message: `删除失败: ${e.message}` };
+    }
+  })
+
+  // 修改 Linux/Unix 权限
+  .patch("/api/files/chmod", async ({ body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    if (IS_WINDOWS) return { success: false, message: "Windows 节点不支持 chmod 权限设置" };
+    const { path: requestedPath, mode, recursive } = body || {};
+    if (!requestedPath) return { success: false, message: "缺少 path" };
+    if (typeof mode !== "string" || !/^[0-7]{3,4}$/.test(mode)) {
+      return { success: false, message: "权限格式应为 755 或 0644" };
+    }
+
+    try {
+      const realPath = ensureSafeFilePath(requestedPath);
+      const parsedMode = parseInt(mode, 8);
+      if (recursive) applyModeRecursive(realPath, parsedMode);
+      else chmodSync(realPath, parsedMode);
+      logger.info(`修改权限: ${requestedPath} -> ${mode}`);
+      return { success: true, message: "权限已更新" };
+    } catch (e: any) {
+      logger.err(`修改权限失败: ${e.message}`);
+      return { success: false, message: `修改权限失败: ${e.message}` };
+    }
+  })
+
+  // 压缩为 zip（Windows）或 tar.gz（Linux/Unix）
+  .post("/api/files/compress", async ({ body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const { paths, targetPath } = body || {};
+    if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
+
+    try {
+      const sourcePaths = paths.map((path: unknown) => ensureSafeFilePath(String(path)));
+      const firstParentRequest = requestParentPath(String(paths[0]));
+      const defaultName = `${basename(sourcePaths[0])}${paths.length > 1 ? "-bundle" : ""}${IS_WINDOWS ? ".zip" : ".tar.gz"}`;
+      const requestedTarget = typeof targetPath === "string" && targetPath.trim()
+        ? targetPath
+        : joinRequestPath(firstParentRequest, defaultName);
+      const targetRealPath = safePath(requestedTarget);
+      if (!targetRealPath) return { success: false, message: "压缩包路径不允许" };
+      const targetDir = dirname(targetRealPath);
+      if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+      if (existsSync(targetRealPath)) return { success: false, message: "压缩包已存在" };
+
+      const kind = archiveKind(targetRealPath) || (IS_WINDOWS ? "zip" : "tar");
+      if (kind === "zip") {
+        if (!IS_WINDOWS) {
+          const baseDir = dirname(sourcePaths[0]);
+          const names = sourcePaths.map((sourcePath) => {
+            if (dirname(sourcePath) !== baseDir) throw new Error("多选压缩需要源文件位于同一目录");
+            return basename(sourcePath);
+          });
+          runArchiveCommand("zip", ["-r", targetRealPath, ...names], baseDir);
+        } else {
+          if (!targetRealPath.toLowerCase().endsWith(".zip")) {
+            return { success: false, message: "Windows 的 zip 压缩包文件名必须以 .zip 结尾" };
+          }
+          const literalPaths = sourcePaths.map(quotePowerShellLiteral).join(",");
+          const command = `Compress-Archive -LiteralPath @(${literalPaths}) -DestinationPath ${quotePowerShellLiteral(targetRealPath)} -Force`;
+          runArchiveCommand("powershell.exe", ["-NoProfile", "-Command", command]);
+        }
+      } else if (kind === "tar") {
+        createTarArchive(sourcePaths, targetRealPath);
+      } else {
+        return { success: false, message: "仅支持 zip、tar、tar.gz、tgz、tar.bz2、tar.xz" };
+      }
+
+      logger.info(`压缩文件: ${paths.join(", ")} -> ${requestedTarget}`);
+      return { success: true, message: "压缩成功", path: requestedTarget };
+    } catch (e: any) {
+      logger.err(`压缩失败: ${e.message}`);
+      return { success: false, message: `压缩失败: ${e.message}` };
+    }
+  })
+
+  // 解压 zip/tar 包
+  .post("/api/files/extract", async ({ body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const { path: requestedPath, targetDir, overwrite } = body || {};
+    if (!requestedPath) return { success: false, message: "缺少 path" };
+
+    try {
+      const archivePath = ensureSafeFilePath(requestedPath);
+      if (statSync(archivePath).isDirectory()) return { success: false, message: "目录不能解压" };
+      const targetRequestPath = typeof targetDir === "string" && targetDir.trim()
+        ? targetDir
+        : requestParentPath(requestedPath);
+      const targetRealPath = safePath(targetRequestPath);
+      if (!targetRealPath) return { success: false, message: "目标路径不允许" };
+      if (!existsSync(targetRealPath)) mkdirSync(targetRealPath, { recursive: true });
+      if (!statSync(targetRealPath).isDirectory()) return { success: false, message: "目标不是目录" };
+
+      const kind = archiveKind(archivePath);
+      if (!overwrite) {
+        const conflicts = findArchiveConflicts(archivePath, targetRealPath);
+        if (conflicts.length > 0) {
+          return {
+            success: false,
+            conflict: true,
+            conflicts,
+            message: `目标目录已存在同名文件: ${conflicts.slice(0, 5).join(", ")}${conflicts.length > 5 ? "..." : ""}`,
+          };
+        }
+      }
+
+      if (kind === "zip") {
+        if (IS_WINDOWS) {
+          const command = `Expand-Archive -LiteralPath ${quotePowerShellLiteral(archivePath)} -DestinationPath ${quotePowerShellLiteral(targetRealPath)}${overwrite ? " -Force" : ""}`;
+          runArchiveCommand("powershell.exe", ["-NoProfile", "-Command", command]);
+        } else {
+          runArchiveCommand("unzip", [overwrite ? "-o" : "-n", archivePath, "-d", targetRealPath]);
+        }
+      } else if (kind === "tar") {
+        runArchiveCommand("tar", ["-xf", archivePath, "-C", targetRealPath]);
+      } else {
+        return { success: false, message: "仅支持 zip、tar、tar.gz、tgz、tar.bz2、tar.xz" };
+      }
+
+      logger.info(`解压文件: ${requestedPath} -> ${targetRequestPath || "/"}`);
+      return { success: true, message: "解压成功" };
+    } catch (e: any) {
+      logger.err(`解压失败: ${e.message}`);
+      return { success: false, message: `解压失败: ${e.message}` };
     }
   })
 

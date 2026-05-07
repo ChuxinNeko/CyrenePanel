@@ -1,6 +1,8 @@
 import { Elysia, t } from "elysia";
 import { randomBytes } from "crypto";
 import { hostname, platform, cpus, totalmem } from "os";
+import { readFileSync } from "fs";
+import { execFileSync } from "child_process";
 import {
   getConfig,
   setConfig,
@@ -75,6 +77,31 @@ async function ensureEventStreamResponse(res: Response, label: string) {
   return sseError(`${label} 返回异常，HTTP ${res.status}，Content-Type: ${contentType || "unknown"}，内容: ${preview}`);
 }
 
+async function proxyNodeJson(
+  nodeId: string,
+  endpoint: string,
+  init: RequestInit = {},
+  timeout = 30000,
+) {
+  const node = dbGetNode(nodeId);
+  if (!node) return { success: false, message: "节点不存在" };
+  const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+  if (!token) return { success: false, message: "子节点不可达" };
+
+  const headers = new Headers(init.headers || {});
+  headers.set("Authorization", `Bearer ${token}`);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const res = await fetch(`${node.address}${endpoint}`, {
+    ...init,
+    headers,
+    signal: AbortSignal.timeout(timeout),
+  });
+  return await res.json();
+}
+
 export async function getOnlineNodesCount() {
   const nodes = dbGetAllNodes();
   const checks = nodes.map(async (node) => {
@@ -128,10 +155,13 @@ function getCpuUsage(): number {
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const i = Math.min(
+    Math.max(Math.floor(Math.log(bytes) / Math.log(k)), 0),
+    sizes.length - 1
+  );
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
@@ -141,18 +171,381 @@ interface MetricPoint {
   timestamp: number;
   cpu: number;
   memoryPercentage: number;
+  networkDownload: number;
+  networkUpload: number;
+  diskRead: number;
+  diskWrite: number;
+  diskReadOps: number;
+  diskWriteOps: number;
+  diskLatency: number;
+}
+
+interface NetworkSnapshot {
+  timestamp: number;
+  receivedBytes: number;
+  transmittedBytes: number;
+}
+
+interface NetworkUsage {
+  download: number;
+  upload: number;
+  downloadFormatted: string;
+  uploadFormatted: string;
+  receivedFormatted: string;
+  transmittedFormatted: string;
+  receivedBytes: number;
+  transmittedBytes: number;
+}
+
+interface DiskIoSnapshot {
+  timestamp: number;
+  readBytes: number;
+  writeBytes: number;
+  readOps: number;
+  writeOps: number;
+  readTimeMs: number;
+  writeTimeMs: number;
+}
+
+interface DiskIoUsage {
+  read: number;
+  write: number;
+  readFormatted: string;
+  writeFormatted: string;
+  readOps: number;
+  writeOps: number;
+  readLatencyMs: number;
+  writeLatencyMs: number;
+  latencyMs: number;
 }
 
 const METRICS_MAX_POINTS = 60;
 const METRICS_INTERVAL_MS = 10_000;
 const localMetrics: MetricPoint[] = [];
+let prevNetworkSnapshot: NetworkSnapshot | null = null;
+let lastNetworkUsage: NetworkUsage = {
+  download: 0,
+  upload: 0,
+  downloadFormatted: "0 B/s",
+  uploadFormatted: "0 B/s",
+  receivedFormatted: "0 B",
+  transmittedFormatted: "0 B",
+  receivedBytes: 0,
+  transmittedBytes: 0,
+};
+let prevDiskIoSnapshot: DiskIoSnapshot | null = null;
+let lastDiskIoUsage: DiskIoUsage = {
+  read: 0,
+  write: 0,
+  readFormatted: "0 B/s",
+  writeFormatted: "0 B/s",
+  readOps: 0,
+  writeOps: 0,
+  readLatencyMs: 0,
+  writeLatencyMs: 0,
+  latencyMs: 0,
+};
+
+function readLinuxNetworkSnapshot(): NetworkSnapshot | null {
+  try {
+    const content = readFileSync("/proc/net/dev", "utf-8");
+    let receivedBytes = 0;
+    let transmittedBytes = 0;
+
+    for (const line of content.split("\n").slice(2)) {
+      const [rawName, rawStats] = line.split(":");
+      if (!rawName || !rawStats) continue;
+      const name = rawName.trim();
+      if (name === "lo") continue;
+
+      const stats = rawStats.trim().split(/\s+/).map(Number);
+      if (stats.length < 16 || stats.some(Number.isNaN)) continue;
+      receivedBytes += stats[0];
+      transmittedBytes += stats[8];
+    }
+
+    return { timestamp: Date.now(), receivedBytes, transmittedBytes };
+  } catch {
+    return null;
+  }
+}
+
+function readWindowsNetworkSnapshot(): NetworkSnapshot | null {
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "Get-NetAdapterStatistics | Select-Object ReceivedBytes,SentBytes | ConvertTo-Json -Compress",
+      ],
+      { encoding: "utf-8", timeout: 3000, windowsHide: true }
+    );
+    const parsed = JSON.parse(output || "[]");
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+
+    let receivedBytes = 0;
+    let transmittedBytes = 0;
+    for (const row of rows) {
+      receivedBytes += Number(row?.ReceivedBytes ?? 0);
+      transmittedBytes += Number(row?.SentBytes ?? 0);
+    }
+
+    return { timestamp: Date.now(), receivedBytes, transmittedBytes };
+  } catch {
+    return null;
+  }
+}
+
+function readNetworkSnapshot(): NetworkSnapshot | null {
+  return platform() === "win32"
+    ? readWindowsNetworkSnapshot()
+    : readLinuxNetworkSnapshot();
+}
+
+export function getLocalNetworkUsage(): NetworkUsage {
+  const current = readNetworkSnapshot();
+  if (!current) return lastNetworkUsage;
+
+  if (!prevNetworkSnapshot) {
+    prevNetworkSnapshot = current;
+    lastNetworkUsage = {
+      download: 0,
+      upload: 0,
+      downloadFormatted: "0 B/s",
+      uploadFormatted: "0 B/s",
+      receivedFormatted: formatBytes(current.receivedBytes),
+      transmittedFormatted: formatBytes(current.transmittedBytes),
+      receivedBytes: current.receivedBytes,
+      transmittedBytes: current.transmittedBytes,
+    };
+    return lastNetworkUsage;
+  }
+
+  const elapsedSeconds = Math.max(
+    (current.timestamp - prevNetworkSnapshot.timestamp) / 1000,
+    1
+  );
+  const download = Math.max(
+    0,
+    (current.receivedBytes - prevNetworkSnapshot.receivedBytes) / elapsedSeconds
+  );
+  const upload = Math.max(
+    0,
+    (current.transmittedBytes - prevNetworkSnapshot.transmittedBytes) /
+      elapsedSeconds
+  );
+
+  prevNetworkSnapshot = current;
+  lastNetworkUsage = {
+    download: Math.round(download),
+    upload: Math.round(upload),
+    downloadFormatted: `${formatBytes(download)}/s`,
+    uploadFormatted: `${formatBytes(upload)}/s`,
+    receivedFormatted: formatBytes(current.receivedBytes),
+    transmittedFormatted: formatBytes(current.transmittedBytes),
+    receivedBytes: current.receivedBytes,
+    transmittedBytes: current.transmittedBytes,
+  };
+  return lastNetworkUsage;
+}
+
+function isLinuxDiskDevice(name: string): boolean {
+  if (/^(loop|ram|fd|sr)\d+/.test(name)) return false;
+  if (/^md\d+p?\d+/.test(name)) return false;
+  if (/^dm-\d+$/.test(name)) return true;
+  if (/^nvme\d+n\d+$/.test(name)) return true;
+  if (/^(sd|vd|xvd|hd)[a-z]+$/.test(name)) return true;
+  if (/^md\d+$/.test(name)) return true;
+  return false;
+}
+
+function readLinuxDiskIoSnapshot(): DiskIoSnapshot | null {
+  try {
+    const content = readFileSync("/proc/diskstats", "utf-8");
+    const snapshot: DiskIoSnapshot = {
+      timestamp: Date.now(),
+      readBytes: 0,
+      writeBytes: 0,
+      readOps: 0,
+      writeOps: 0,
+      readTimeMs: 0,
+      writeTimeMs: 0,
+    };
+
+    for (const line of content.split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 14) continue;
+      const name = parts[2];
+      if (!isLinuxDiskDevice(name)) continue;
+
+      const readOps = Number(parts[3]);
+      const readSectors = Number(parts[5]);
+      const readTimeMs = Number(parts[6]);
+      const writeOps = Number(parts[7]);
+      const writeSectors = Number(parts[9]);
+      const writeTimeMs = Number(parts[10]);
+      if (
+        [readOps, readSectors, readTimeMs, writeOps, writeSectors, writeTimeMs].some(
+          Number.isNaN
+        )
+      ) {
+        continue;
+      }
+
+      snapshot.readOps += readOps;
+      snapshot.writeOps += writeOps;
+      snapshot.readBytes += readSectors * 512;
+      snapshot.writeBytes += writeSectors * 512;
+      snapshot.readTimeMs += readTimeMs;
+      snapshot.writeTimeMs += writeTimeMs;
+    }
+
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function readWindowsDiskIoUsage(): DiskIoUsage | null {
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "Get-Counter '\\PhysicalDisk(_Total)\\Disk Read Bytes/sec','\\PhysicalDisk(_Total)\\Disk Write Bytes/sec','\\PhysicalDisk(_Total)\\Disk Reads/sec','\\PhysicalDisk(_Total)\\Disk Writes/sec','\\PhysicalDisk(_Total)\\Avg. Disk sec/Read','\\PhysicalDisk(_Total)\\Avg. Disk sec/Write' | Select-Object -ExpandProperty CounterSamples | Select-Object Path,CookedValue | ConvertTo-Json -Compress",
+      ],
+      { encoding: "utf-8", timeout: 5000, windowsHide: true }
+    );
+    const parsed = JSON.parse(output || "[]");
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+
+    let read = 0;
+    let write = 0;
+    let readOps = 0;
+    let writeOps = 0;
+    let readLatencyMs = 0;
+    let writeLatencyMs = 0;
+
+    for (const row of rows) {
+      const path = String(row?.Path ?? "").toLowerCase();
+      const value = Number(row?.CookedValue ?? 0);
+      if (path.includes("disk read bytes/sec")) read = value;
+      else if (path.includes("disk write bytes/sec")) write = value;
+      else if (path.includes("disk reads/sec")) readOps = value;
+      else if (path.includes("disk writes/sec")) writeOps = value;
+      else if (path.includes("avg. disk sec/read")) readLatencyMs = value * 1000;
+      else if (path.includes("avg. disk sec/write")) writeLatencyMs = value * 1000;
+    }
+
+    const totalOps = readOps + writeOps;
+    const latencyMs =
+      totalOps > 0
+        ? (readLatencyMs * readOps + writeLatencyMs * writeOps) / totalOps
+        : 0;
+
+    return {
+      read: Math.round(read),
+      write: Math.round(write),
+      readFormatted: `${formatBytes(read)}/s`,
+      writeFormatted: `${formatBytes(write)}/s`,
+      readOps: Math.round(readOps * 10) / 10,
+      writeOps: Math.round(writeOps * 10) / 10,
+      readLatencyMs: Math.round(readLatencyMs * 10) / 10,
+      writeLatencyMs: Math.round(writeLatencyMs * 10) / 10,
+      latencyMs: Math.round(latencyMs * 10) / 10,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function getLocalDiskIoUsage(): DiskIoUsage {
+  if (platform() === "win32") {
+    const usage = readWindowsDiskIoUsage();
+    if (!usage) return lastDiskIoUsage;
+    lastDiskIoUsage = usage;
+    return lastDiskIoUsage;
+  }
+
+  const current = readLinuxDiskIoSnapshot();
+  if (!current) return lastDiskIoUsage;
+
+  if (!prevDiskIoSnapshot) {
+    prevDiskIoSnapshot = current;
+    return lastDiskIoUsage;
+  }
+
+  const elapsedSeconds = Math.max(
+    (current.timestamp - prevDiskIoSnapshot.timestamp) / 1000,
+    1
+  );
+  const read = Math.max(
+    0,
+    (current.readBytes - prevDiskIoSnapshot.readBytes) / elapsedSeconds
+  );
+  const write = Math.max(
+    0,
+    (current.writeBytes - prevDiskIoSnapshot.writeBytes) / elapsedSeconds
+  );
+  const readOps = Math.max(
+    0,
+    (current.readOps - prevDiskIoSnapshot.readOps) / elapsedSeconds
+  );
+  const writeOps = Math.max(
+    0,
+    (current.writeOps - prevDiskIoSnapshot.writeOps) / elapsedSeconds
+  );
+  const readOpsDelta = Math.max(0, current.readOps - prevDiskIoSnapshot.readOps);
+  const writeOpsDelta = Math.max(0, current.writeOps - prevDiskIoSnapshot.writeOps);
+  const readLatencyMs =
+    readOpsDelta > 0
+      ? Math.max(0, current.readTimeMs - prevDiskIoSnapshot.readTimeMs) /
+        readOpsDelta
+      : 0;
+  const writeLatencyMs =
+    writeOpsDelta > 0
+      ? Math.max(0, current.writeTimeMs - prevDiskIoSnapshot.writeTimeMs) /
+        writeOpsDelta
+      : 0;
+  const totalOpsDelta = readOpsDelta + writeOpsDelta;
+  const latencyMs =
+    totalOpsDelta > 0
+      ? (readLatencyMs * readOpsDelta + writeLatencyMs * writeOpsDelta) /
+        totalOpsDelta
+      : 0;
+
+  prevDiskIoSnapshot = current;
+  lastDiskIoUsage = {
+    read: Math.round(read),
+    write: Math.round(write),
+    readFormatted: `${formatBytes(read)}/s`,
+    writeFormatted: `${formatBytes(write)}/s`,
+    readOps: Math.round(readOps * 10) / 10,
+    writeOps: Math.round(writeOps * 10) / 10,
+    readLatencyMs: Math.round(readLatencyMs * 10) / 10,
+    writeLatencyMs: Math.round(writeLatencyMs * 10) / 10,
+    latencyMs: Math.round(latencyMs * 10) / 10,
+  };
+  return lastDiskIoUsage;
+}
 
 function collectLocalMetrics() {
   const mem = getMemoryInfo();
+  const network = getLocalNetworkUsage();
+  const diskIo = getLocalDiskIoUsage();
   localMetrics.push({
     timestamp: Date.now(),
     cpu: getCpuUsage(),
     memoryPercentage: Math.round((mem.used / mem.total) * 100),
+    networkDownload: network.download,
+    networkUpload: network.upload,
+    diskRead: diskIo.read,
+    diskWrite: diskIo.write,
+    diskReadOps: diskIo.readOps,
+    diskWriteOps: diskIo.writeOps,
+    diskLatency: diskIo.latencyMs,
   });
   while (localMetrics.length > METRICS_MAX_POINTS) {
     localMetrics.shift();
@@ -619,6 +1012,84 @@ export const nodeRoutes = new Elysia()
     }
   })
 
+  .post("/api/nodes/:id/files/copy", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/files/copy", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, 120000);
+    } catch (e: any) {
+      logger.err(`子节点复制文件代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/files/move", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/files/move", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, 120000);
+    } catch (e: any) {
+      logger.err(`子节点移动文件代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .delete("/api/nodes/:id/files/batch", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/files/batch", {
+        method: "DELETE",
+        body: JSON.stringify(body),
+      }, 120000);
+    } catch (e: any) {
+      logger.err(`子节点批量删除文件代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .patch("/api/nodes/:id/files/chmod", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/files/chmod", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }, 30000);
+    } catch (e: any) {
+      logger.err(`子节点权限修改代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/files/compress", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/files/compress", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, 180000);
+    } catch (e: any) {
+      logger.err(`子节点压缩文件代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/files/extract", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/files/extract", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, 180000);
+    } catch (e: any) {
+      logger.err(`子节点解压文件代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
   // ── 子节点文件代理：下载文件 ─────────────────────────────────────
   .get("/api/nodes/:id/files/download", async ({ params, query, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
@@ -640,6 +1111,30 @@ export const nodeRoutes = new Elysia()
       return await res.json();
     } catch (e: any) {
       logger.err(`子节点文件下载代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/self-check/environment", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/self-check/environment", {}, 30000);
+    } catch (e: any) {
+      logger.err(`子节点环境自检代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/self-check/environment/install", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    if (profile.role !== "admin") return { success: false, message: "仅管理员可安装面板依赖" };
+    try {
+      return await proxyNodeJson(params.id, "/api/self-check/environment/install", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, 10 * 60 * 1000);
+    } catch (e: any) {
+      logger.err(`子节点环境依赖安装代理失败: ${e.message}`);
       return { success: false, message: `子节点请求失败: ${e.message}` };
     }
   })

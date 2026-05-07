@@ -20,6 +20,7 @@ import { serviceRoutes } from "./services/index";
 import { environmentRoutes } from "./environments/index";
 import { siteRoutes } from "./sites/index";
 import { certificateRoutes } from "./certificates/index";
+import { selfCheckRoutes } from "./self-check/index";
 
 // ── 初始化 admin 账号（首次启动） ──────────────────────────────────
 
@@ -120,6 +121,7 @@ export const app = new Elysia()
   .use(environmentRoutes)
   .use(siteRoutes)
   .use(certificateRoutes)
+  .use(selfCheckRoutes)
   .listen({ port: 5677, hostname: "0.0.0.0" });
 
 export type App = typeof app;
