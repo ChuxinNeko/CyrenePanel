@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { API_BASE, getWebSocketUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import {
   RefreshCw,
@@ -12,8 +13,6 @@ import {
   WifiOff,
   Terminal as TerminalIcon,
 } from "lucide-react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -161,7 +160,7 @@ function TerminalPageContent() {
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    const wsUrl = API_BASE.replace(/^http/, "ws") + `/api/terminal?token=${token}`;
+    const wsUrl = getWebSocketUrl(`/api/terminal?token=${token}`);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

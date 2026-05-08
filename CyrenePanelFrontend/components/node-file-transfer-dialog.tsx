@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { API_BASE } from "@/lib/api-base";
 import { 
   Dialog, 
   DialogContent, 
@@ -71,8 +72,6 @@ function formatBytes(bytes: number): string {
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${Number((bytes / 1024 ** index).toFixed(1))} ${units[index]}`;
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5676";
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;

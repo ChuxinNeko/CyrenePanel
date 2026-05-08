@@ -583,12 +583,16 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
   const mem = getMemoryInfo();
   const localInstances = getAllInstances();
   const port = process.env.PORT || 5677;
+  const localAddress =
+    process.env.CYRENE_PUBLIC_API_URL ||
+    process.env.BACKEND_PUBLIC_URL ||
+    `http://127.0.0.1:${port}`;
   const bunVersion = typeof Bun !== "undefined" ? Bun.version : "unknown";
 
   results.push({
     id: "__main__",
     name: `${hostname()} (主节点)`,
-    address: process.env.NEXT_PUBLIC_API_URL || `http://127.0.0.1:${port}`,
+    address: localAddress,
     isMain: true,
     online: true,
     cpu: getCpuUsage(),
@@ -705,7 +709,10 @@ export const nodeRoutes = new Elysia()
       success: true,
       key: apiKey || null,
       hostname: hostname(),
-      address: process.env.NEXT_PUBLIC_API_URL || `http://localhost:${process.env.PORT || 5677}`,
+      address:
+        process.env.CYRENE_PUBLIC_API_URL ||
+        process.env.BACKEND_PUBLIC_URL ||
+        `http://127.0.0.1:${process.env.PORT || 5677}`,
     };
   })
 

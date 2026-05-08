@@ -3,6 +3,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle, Loader2, PackageCheck, RefreshCw, Server, Wrench } from "lucide-react";
 
+import { API_BASE } from "@/lib/api-base";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,8 +14,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5676";
 
 interface NodeInfo {
   id: string;

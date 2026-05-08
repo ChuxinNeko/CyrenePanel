@@ -38,10 +38,9 @@ import {
 } from "lucide-react";
 import { Icon } from "@iconify/react";
 import { useTasks } from "@/lib/task-store";
+import { API_BASE } from "@/lib/api-base";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
 
 function authHeaders(): HeadersInit {
   const token =

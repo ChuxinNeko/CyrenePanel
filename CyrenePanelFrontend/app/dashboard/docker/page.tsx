@@ -51,10 +51,10 @@ import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
 import { AddContainerDialog } from "@/components/add-container-dialog";
 import { useTasks } from "@/lib/task-store";
+import { API_BASE } from "@/lib/api-base";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
 const STORES_API = "https://dockerhub.nekofun.top/apps";
 
 interface RemoteApp {

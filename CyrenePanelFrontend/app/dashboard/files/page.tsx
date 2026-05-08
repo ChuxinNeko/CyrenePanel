@@ -70,6 +70,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NodeFileTransferDialog } from "@/components/node-file-transfer-dialog";
+import { API_BASE } from "@/lib/api-base";
 
 interface FileEntry {
   name: string;
@@ -123,7 +124,6 @@ type UploadTask = {
   message?: string;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5676";
 const UPLOAD_CHUNK_SIZE = 1024 * 1024;
 const ARCHIVE_EXTENSIONS = [".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz"];
 const TEXT_EXTENSIONS = new Set([

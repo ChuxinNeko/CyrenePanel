@@ -37,6 +37,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { SiteCertificatePanel } from "@/components/site-certificate-panel";
+import { API_BASE } from "@/lib/api-base";
 import { toast } from "sonner";
 import {
   ArrowRightLeft,
@@ -61,8 +62,6 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
 
 function authHeaders(): HeadersInit {
   const token =

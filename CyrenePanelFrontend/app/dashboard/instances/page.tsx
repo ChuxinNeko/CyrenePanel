@@ -33,6 +33,7 @@ import {
   RefreshCw,
   FolderSearch,
 } from "lucide-react";
+import { API_BASE } from "@/lib/api-base";
 
 // ── 类型 ─────────────────────────────────────────────────────────────────
 
@@ -54,8 +55,6 @@ interface Instance {
 }
 
 // ── API 辅助 ─────────────────────────────────────────────────────────────
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
 
 function authHeaders(): HeadersInit {
   const token =

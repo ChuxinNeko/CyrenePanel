@@ -275,7 +275,7 @@ install_frontend_dependencies() {
   cd "$CYRENE_HOME/frontend"
 
   cat > .env.production <<EOF
-NEXT_PUBLIC_API_URL=http://localhost:${BACKEND_PORT}
+CYRENE_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}
 EOF
 
   chown "$CYRENE_USER:$CYRENE_USER" .env.production
@@ -326,6 +326,7 @@ WorkingDirectory=$CYRENE_HOME/frontend
 Environment=NODE_ENV=production
 Environment=PORT=$FRONTEND_PORT
 Environment=HOSTNAME=0.0.0.0
+Environment=CYRENE_BACKEND_URL=http://127.0.0.1:$BACKEND_PORT
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=$BUN_BIN run next start -p $FRONTEND_PORT -H 0.0.0.0
 Restart=on-failure
@@ -380,7 +381,7 @@ print_summary() {
   echo -e "  版本:        ${RELEASE_VERSION}"
   echo -e "  安装目录:    ${CYRENE_HOME}"
   echo -e "  前端地址:    http://${public_ip}:${FRONTEND_PORT}"
-  echo -e "  后端地址:    http://${public_ip}:${BACKEND_PORT}"
+  echo -e "  API proxy:    http://${public_ip}:${FRONTEND_PORT}/api -> http://127.0.0.1:${BACKEND_PORT}/api"
   echo ""
   echo -e "  常用命令:"
   echo -e "    查看后端日志: ${CYAN}journalctl -u cyrene-backend -f${NC}"

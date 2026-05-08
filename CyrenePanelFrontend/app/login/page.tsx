@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { API_BASE } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,8 +33,7 @@ export default function LoginPage() {
     // 使用公开API获取面板名称和页脚代码（无需登录）
     const fetchPublicSettings = async () => {
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
-        const res = await fetch(`${apiUrl}/api/public/footer`);
+        const res = await fetch(`${API_BASE}/api/public/footer`);
         const data = await res.json();
         if (data?.success) {
           if (data.panelName) {

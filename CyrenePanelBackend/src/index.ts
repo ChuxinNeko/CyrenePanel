@@ -122,7 +122,7 @@ export const app = new Elysia()
   .use(siteRoutes)
   .use(certificateRoutes)
   .use(selfCheckRoutes)
-  .listen({ port: 5677, hostname: "0.0.0.0" });
+  .listen({ port: Number(process.env.PORT || 5677), hostname: "0.0.0.0" });
 
 export type App = typeof app;
 

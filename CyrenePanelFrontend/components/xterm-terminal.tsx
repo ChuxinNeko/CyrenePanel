@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
+import { getWebSocketUrl } from "@/lib/api-base";
 import "@xterm/xterm/css/xterm.css";
 
 // ── 类型 ─────────────────────────────────────────────────────────────────
@@ -13,13 +14,10 @@ interface XtermTerminalProps {
 
 // ── API 基础配置 ─────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
-
 function getWsUrl(instanceId: string): string {
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") : "";
-  const wsBase = API_BASE.replace(/^http/, "ws");
-  return `${wsBase}/api/instances/${instanceId}/terminal?token=${encodeURIComponent(token || "")}`;
+  return getWebSocketUrl(`/api/instances/${instanceId}/terminal?token=${encodeURIComponent(token || "")}`);
 }
 
 // ── 组件 ─────────────────────────────────────────────────────────────────

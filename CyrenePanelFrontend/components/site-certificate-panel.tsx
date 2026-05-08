@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { useTasks } from "@/lib/task-store";
+import { API_BASE } from "@/lib/api-base";
 import {
   CalendarClock,
   Loader2,
@@ -19,8 +20,6 @@ import {
   Trash2,
   UploadCloud,
 } from "lucide-react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5677";
 
 function authHeaders(): HeadersInit {
   const token =
