@@ -614,7 +614,15 @@ cleanup() {
     rm -rf "$TMP_DIR"
   fi
 }
+
+on_error() {
+  local exit_code=$?
+  log "Update failed at line ${BASH_LINENO[0]} (exit ${exit_code})"
+  exit "$exit_code"
+}
+
 trap cleanup EXIT
+trap on_error ERR
 
 if [ "${EUID}" -ne 0 ]; then
   log "cyp-update-apply must run as root"

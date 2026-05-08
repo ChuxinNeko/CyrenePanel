@@ -19,7 +19,9 @@ interface OfficialPanelRelease {
 }
 
 const DATA_DIR = join(process.cwd(), "data");
+const LOG_DIR = join(process.cwd(), "logs");
 const UPDATE_REQUEST_PATH = join(DATA_DIR, "update-request.json");
+const UPDATE_LOG_PATH = join(LOG_DIR, "update.log");
 
 function getOfficialServerUrl(): string {
   return (
@@ -48,6 +50,25 @@ function getGitHubReleaseDownloadUrl(version: string): string | null {
   const releaseTag = `v${releaseVersion}`;
   const assetName = `CyrenePanel${releaseVersion}-linux-${releaseArch}.zip`;
   return `https://github.com/${getGitHubRepo()}/releases/download/${releaseTag}/${assetName}`;
+}
+
+async function requireAdmin(jwt: any, request: Request): Promise<{ ok: true; profile: any } | { ok: false; message: string }> {
+  const authHeader = request.headers.get("authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return { ok: false, message: "未授权" };
+  const profile = await jwt.verify(token);
+  if (!profile) return { ok: false, message: "未授权" };
+  if (profile.role !== "admin") return { ok: false, message: "仅管理员可执行此操作" };
+  return { ok: true, profile };
+}
+
+function readUpdateLogs(): string[] {
+  if (!existsSync(UPDATE_LOG_PATH)) return [];
+  return readFileSync(UPDATE_LOG_PATH, "utf-8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-80);
 }
 
 function normalizeVersion(version: string): number[] {
@@ -295,12 +316,8 @@ export const systemRoutes = new Elysia()
     }
   })
   .post("/api/system/update/apply", async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
-    if (!profile) return { success: false, message: "未授权" };
-    if (profile.role !== "admin") return { success: false, message: "仅管理员可更新面板" };
+    const auth = await requireAdmin(jwt, request);
+    if (!auth.ok) return { success: false, message: auth.message };
     if (platform() !== "linux") return { success: false, message: "自动更新仅支持 Linux 部署环境" };
 
     const releaseArch = getSystemReleaseArch();
@@ -335,6 +352,11 @@ export const systemRoutes = new Elysia()
       if (!githubDownloadUrl) return { success: false, message: "无法生成 GitHub Release 下载地址" };
 
       mkdirSync(DATA_DIR, { recursive: true });
+      mkdirSync(LOG_DIR, { recursive: true });
+      writeFileSync(
+        UPDATE_LOG_PATH,
+        `[${new Date().toLocaleString()}] Update requested for ${latestVersion} by ${auth.profile.username}\n`,
+      );
       writeFileSync(
         UPDATE_REQUEST_PATH,
         JSON.stringify(
@@ -343,7 +365,7 @@ export const systemRoutes = new Elysia()
             currentVersion: CYRENE_VERSION,
             repo: getGitHubRepo(),
             downloadUrl: githubDownloadUrl,
-            requestedBy: profile.username,
+            requestedBy: auth.profile.username,
             requestedAt: new Date().toISOString(),
           },
           null,
@@ -365,6 +387,22 @@ export const systemRoutes = new Elysia()
         currentVersion: CYRENE_VERSION,
       };
     }
+  })
+  .get("/api/system/update/logs", async ({ jwt, request }: any) => {
+    const auth = await requireAdmin(jwt, request);
+    if (!auth.ok) return { success: false, message: auth.message, logs: [] };
+    const logs = readUpdateLogs();
+    const lastLine = logs[logs.length - 1] || "";
+    const failed = /failed|invalid|refusing|unsupported|required|not found|missing|must run|error/i.test(lastLine);
+    const completed = /completed/i.test(lastLine);
+    return {
+      success: true,
+      logs,
+      running: existsSync(UPDATE_REQUEST_PATH) && !completed && !failed,
+      completed,
+      failed,
+      lastLine,
+    };
   })
   .get("/api/system", async ({ jwt, request }: any) => {
     const authHeader = request.headers.get("authorization");

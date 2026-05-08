@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -53,6 +53,16 @@ interface PanelUpdateInfo {
   message?: string;
 }
 
+interface PanelUpdateLogs {
+  success: boolean;
+  logs?: string[];
+  running?: boolean;
+  completed?: boolean;
+  failed?: boolean;
+  lastLine?: string;
+  message?: string;
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -78,6 +88,8 @@ export default function SettingsPage() {
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
   const [updateSubmitted, setUpdateSubmitted] = useState(false);
+  const updateLogTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const updateToastIdRef = useRef<string | number | null>(null);
 
   // API Key
   const [apiKey, setApiKey] = useState("");
@@ -136,6 +148,14 @@ export default function SettingsPage() {
     };
     init();
   }, [router, fetchSettings]);
+
+  useEffect(() => {
+    return () => {
+      if (updateLogTimerRef.current) {
+        clearInterval(updateLogTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleSaveGeneral = async () => {
     setSaving(true);
@@ -260,6 +280,75 @@ export default function SettingsPage() {
     }
   };
 
+  const stopUpdateLogPolling = () => {
+    if (updateLogTimerRef.current) {
+      clearInterval(updateLogTimerRef.current);
+      updateLogTimerRef.current = null;
+    }
+  };
+
+  const formatUpdateLogDescription = (logs?: string[]) => {
+    const latestLogs = (logs || []).slice(-3);
+    return latestLogs.length > 0 ? latestLogs.join(" / ") : "等待更新助手开始执行...";
+  };
+
+  const pollUpdateLogs = async () => {
+    try {
+      const { data, error } = await (api as any).api.system.update.logs.get();
+      if (error || !data?.success) return;
+
+      const logInfo = data as PanelUpdateLogs;
+      const id = updateToastIdRef.current || "panel-update-log";
+      updateToastIdRef.current = id;
+
+      if (logInfo.completed) {
+        stopUpdateLogPolling();
+        toast.success("面板更新完成", {
+          id,
+          description: logInfo.lastLine || "服务正在重启，请稍后刷新页面。",
+          duration: 10000,
+        });
+        return;
+      }
+
+      if (logInfo.failed) {
+        stopUpdateLogPolling();
+        toast.error("面板更新失败", {
+          id,
+          description: logInfo.lastLine || "请查看后端更新日志。",
+          duration: 15000,
+        });
+        return;
+      }
+
+      toast.loading("正在更新面板", {
+        id,
+        description: formatUpdateLogDescription(logInfo.logs),
+      });
+    } catch {
+      const id = updateToastIdRef.current || "panel-update-log";
+      updateToastIdRef.current = id;
+      toast.loading("正在更新面板", {
+        id,
+        description: "服务可能正在重启，稍后将继续尝试读取更新日志。",
+      });
+    }
+  };
+
+  const startUpdateLogPolling = () => {
+    stopUpdateLogPolling();
+    const id = "panel-update-log";
+    updateToastIdRef.current = id;
+    toast.loading("正在更新面板", {
+      id,
+      description: "更新任务已提交，正在等待更新助手接管...",
+    });
+    void pollUpdateLogs();
+    updateLogTimerRef.current = setInterval(() => {
+      void pollUpdateLogs();
+    }, 2000);
+  };
+
   const handleApplyUpdate = async () => {
     setApplyingUpdate(true);
     try {
@@ -269,7 +358,7 @@ export default function SettingsPage() {
         return;
       }
       setUpdateSubmitted(true);
-      toast.success(data.message || "更新任务已提交");
+      startUpdateLogPolling();
     } catch {
       toast.error("提交更新失败");
     } finally {
