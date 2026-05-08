@@ -1,350 +1,411 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================
-#  CyrenePanel 一键部署脚本
-#  用法: sudo su -c "wget -qO- https://raw.githubusercontent.com/ChuxinNeko/CyrenePanel/main/scripts/setup_cn.sh | bash"
-#  或:   sudo bash setup_cn.sh
+#  CyrenePanel 一键安装/更新脚本
+#  默认从 GitHub Release 拉取最新版本并注册 systemd 服务
+#
+#  用法:
+#    sudo bash setup_cn.sh
+#    curl -fsSL https://raw.githubusercontent.com/ChuxinNeko/CyrenePanel/main/scripts/setup_cn.sh | sudo bash
+#
+#  可选环境变量:
+#    CYRENE_REPO=ChuxinNeko/CyrenePanel
+#    CYRENE_VERSION=1.0.50          # 指定版本；留空则使用 latest release
+#    CYRENE_HOME=/opt/CyrenePanel
+#    BACKEND_PORT=5677
+#    FRONTEND_PORT=3000
 # ============================================================
 
-set -e
+set -Eeuo pipefail
 
-# ── 颜色定义 ──────────────────────────────────────────────────
 RED='\033[31m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
 BLUE='\033[34m'
 CYAN='\033[36m'
-NC='\033[0m' # No Color
 BOLD='\033[1m'
+NC='\033[0m'
 
-# ── 基本配置 ──────────────────────────────────────────────────
-CYRENE_HOME="/opt/CyrenePanel"
-REPO_URL="https://github.com/ChuxinNeko/CyrenePanel.git"
-BACKEND_PORT=5677
-FRONTEND_PORT=3000
-BACKEND_USER="cyrene"
+CYRENE_REPO="${CYRENE_REPO:-ChuxinNeko/CyrenePanel}"
+CYRENE_HOME="${CYRENE_HOME:-/opt/CyrenePanel}"
+CYRENE_USER="${CYRENE_USER:-cyrene}"
+BACKEND_PORT="${BACKEND_PORT:-5677}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+TMP_DIR="${TMPDIR:-/tmp}/cyrene-install.$$"
 
-# ── 工具函数 ──────────────────────────────────────────────────
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error()   { echo -e "${RED}[ERR]${NC}  $*"; }
+error()   { echo -e "${RED}[ERR]${NC}  $*" >&2; }
 step()    { echo -e "\n${CYAN}${BOLD}>>> $*${NC}"; }
 
-# ── Banner ────────────────────────────────────────────────────
-echo ""
-echo -e "${CYAN}${BOLD}"
-echo "  ╔═══════════════════════════════════════════════════╗"
-echo "  ║                                                   ║"
-echo "  ║            🌊 CyrenePanel 一键部署脚本            ║"
-echo "  ║                                                   ║"
-echo "  ╚═══════════════════════════════════════════════════╝"
-echo -e "${NC}"
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
-# ── 检查 root 权限 ──────────────────────────────────────────
-step "检查系统环境"
-
-if [ "$EUID" -ne 0 ]; then
-    error "请使用 root 权限运行此脚本"
-    echo "  用法: sudo bash $0"
+require_root() {
+  if [ "${EUID}" -ne 0 ]; then
+    error "请使用 root 权限运行：sudo bash setup_cn.sh"
     exit 1
-fi
-success "已获取 root 权限"
+  fi
+}
 
-# ── 检测操作系统 ──────────────────────────────────────────────
-if [ -f /etc/os-release ]; then
+detect_os() {
+  if [ "$(uname -s)" != "Linux" ]; then
+    error "当前安装脚本仅支持 Linux + systemd。"
+    exit 1
+  fi
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    error "未检测到 systemd，无法注册系统服务。"
+    exit 1
+  fi
+
+  if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
     . /etc/os-release
-    OS=$ID
-    OS_VERSION=$VERSION_ID
-else
-    error "无法检测操作系统类型"
-    exit 1
-fi
+    OS_ID="${ID:-linux}"
+    OS_NAME="${PRETTY_NAME:-Linux}"
+  else
+    OS_ID="linux"
+    OS_NAME="Linux"
+  fi
 
-info "操作系统: $PRETTY_NAME"
-
-case "$OS" in
+  case "$OS_ID" in
     ubuntu|debian)
-        PKG_MANAGER="apt"
-        ;;
-    centos|rhel|almalinux|rocky|fedora)
-        PKG_MANAGER="yum"
-        ;;
+      PKG_MANAGER="apt"
+      ;;
+    centos|rhel|almalinux|rocky)
+      PKG_MANAGER="yum"
+      ;;
+    fedora)
+      PKG_MANAGER="dnf"
+      ;;
     *)
-        warn "未经测试的操作系统: $OS，将尝试使用 apt"
+      if command -v apt-get >/dev/null 2>&1; then
         PKG_MANAGER="apt"
-        ;;
-esac
-
-# ── 安装系统依赖 ──────────────────────────────────────────────
-step "安装系统依赖"
-
-if [ "$PKG_MANAGER" = "apt" ]; then
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y curl git build-essential >/dev/null 2>&1
-elif [ "$PKG_MANAGER" = "yum" ]; then
-    yum install -y curl git gcc gcc-c++ make >/dev/null 2>&1
-fi
-success "系统依赖安装完成"
-
-# ── 安装 Bun ──────────────────────────────────────────────────
-step "安装 Bun"
-
-BUN_GLOBAL_PATH="/usr/local/bin/bun"
-
-if command -v bun &>/dev/null; then
-    BUN_VER=$(bun --version)
-    info "Bun 已安装: v$BUN_VER"
-    BUN_BIN_PATH=$(which bun)
-else
-    info "正在安装 Bun..."
-    curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1
-    
-    # 将 bun 复制到全局路径，确保所有用户可用
-    BUN_SRC="$HOME/.bun/bin/bun"
-    if [ -f "$BUN_SRC" ]; then
-        cp "$BUN_SRC" "$BUN_GLOBAL_PATH"
-        chmod +x "$BUN_GLOBAL_PATH"
-        success "Bun 安装完成: v$(bun --version)"
-        BUN_BIN_PATH="$BUN_GLOBAL_PATH"
-    else
-        error "Bun 安装失败"
+      elif command -v dnf >/dev/null 2>&1; then
+        PKG_MANAGER="dnf"
+      elif command -v yum >/dev/null 2>&1; then
+        PKG_MANAGER="yum"
+      else
+        error "无法识别包管理器，请先安装 curl、zip、unzip、ca-certificates。"
         exit 1
+      fi
+      ;;
+  esac
+
+  case "$(uname -m)" in
+    x86_64|amd64)
+      SYSTEM_ARCH="x64"
+      ;;
+    aarch64|arm64)
+      SYSTEM_ARCH="arm64"
+      ;;
+    *)
+      error "不支持的系统架构：$(uname -m)。当前 Release 仅提供 linux-x64 / linux-arm64。"
+      exit 1
+      ;;
+  esac
+
+  SYSTEM_OS="linux"
+  info "系统：$OS_NAME"
+  info "架构：$SYSTEM_OS-$SYSTEM_ARCH"
+}
+
+install_packages() {
+  step "检查并安装系统依赖"
+  local packages=(curl ca-certificates zip unzip)
+
+  case "$PKG_MANAGER" in
+    apt)
+      apt-get update -y
+      DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+      ;;
+    dnf)
+      dnf install -y "${packages[@]}"
+      ;;
+    yum)
+      yum install -y "${packages[@]}"
+      ;;
+  esac
+
+  for cmd in curl zip unzip systemctl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      error "依赖检查失败：未找到 $cmd"
+      exit 1
     fi
-fi
+  done
 
-# 确保 BUN_BIN_PATH 变量可用
-if [ -z "$BUN_BIN_PATH" ]; then
-    BUN_BIN_PATH=$(which bun 2>/dev/null || echo "$BUN_GLOBAL_PATH")
-fi
+  success "系统依赖已就绪"
+}
 
-# ── 克隆项目 ──────────────────────────────────────────────────
-step "克隆 CyrenePanel 项目"
+install_bun() {
+  step "检查 Bun 运行环境"
+  if command -v bun >/dev/null 2>&1; then
+    BUN_BIN="$(command -v bun)"
+    success "Bun 已安装：$($BUN_BIN --version)"
+    return
+  fi
 
-if [ -d "$CYRENE_HOME" ]; then
-    warn "检测到已有安装目录: $CYRENE_HOME"
-    # 如果是管道执行（非交互），默认覆盖安装
-    if [ -t 0 ]; then
-        read -p "是否覆盖安装? (y/N): " OVERWRITE
-    else
-        OVERWRITE="y"
-        info "非交互模式，自动覆盖安装"
-    fi
-    if [ "$OVERWRITE" = "y" ] || [ "$OVERWRITE" = "Y" ]; then
-        info "正在停止已有服务..."
-        systemctl stop cyrene-backend cyrene-frontend 2>/dev/null || true
-        info "正在备份旧数据..."
-        BACKUP_DIR="${CYRENE_HOME}.bak.$(date +%Y%m%d%H%M%S)"
-        cp -r "$CYRENE_HOME" "$BACKUP_DIR"
-        success "旧数据已备份到: $BACKUP_DIR"
-        rm -rf "$CYRENE_HOME"
-    else
-        info "正在更新现有安装..."
-        cd "$CYRENE_HOME"
-        git pull origin main >/dev/null 2>&1 || true
-        success "代码更新完成"
-    fi
-fi
+  info "正在安装 Bun（用于运行 Next.js 前端服务）..."
+  curl -fsSL https://bun.sh/install | bash
 
-if [ ! -d "$CYRENE_HOME" ]; then
-    info "正在克隆仓库..."
-    git clone "$REPO_URL" "$CYRENE_HOME" 2>/dev/null
-    success "项目克隆完成"
-fi
+  if [ -x "$HOME/.bun/bin/bun" ]; then
+    install -m 0755 "$HOME/.bun/bin/bun" /usr/local/bin/bun
+  fi
 
-cd "$CYRENE_HOME"
+  if ! command -v bun >/dev/null 2>&1; then
+    error "Bun 安装失败"
+    exit 1
+  fi
 
-# ── 创建专用用户 ──────────────────────────────────────────────
-step "创建运行用户"
+  BUN_BIN="$(command -v bun)"
+  success "Bun 安装完成：$($BUN_BIN --version)"
+}
 
-if ! id "$BACKEND_USER" &>/dev/null; then
-    useradd -r -s /bin/false -d "$CYRENE_HOME" "$BACKEND_USER" 2>/dev/null
-    success "用户 $BACKEND_USER 创建完成"
-else
-    info "用户 $BACKEND_USER 已存在"
-fi
+resolve_release() {
+  step "解析 GitHub Release"
+  mkdir -p "$TMP_DIR"
 
-chown -R "$BACKEND_USER":"$BACKEND_USER" "$CYRENE_HOME"
+  if [ -n "${CYRENE_VERSION:-}" ]; then
+    RELEASE_VERSION="${CYRENE_VERSION#v}"
+    RELEASE_TAG="v${RELEASE_VERSION}"
+  else
+    local api_url="https://api.github.com/repos/${CYRENE_REPO}/releases/latest"
+    local release_json="$TMP_DIR/latest-release.json"
+    curl -fsSL "$api_url" -o "$release_json"
+    RELEASE_TAG="$(grep -m1 '"tag_name"' "$release_json" | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+    RELEASE_VERSION="${RELEASE_TAG#v}"
+  fi
 
-# ── 安装后端依赖 ──────────────────────────────────────────────
-step "安装后端依赖"
+  if [ -z "${RELEASE_VERSION:-}" ] || [ "$RELEASE_VERSION" = "$RELEASE_TAG" ]; then
+    warn "Release tag 未使用 v 前缀，将按原始版本号继续：${RELEASE_TAG:-unknown}"
+  fi
 
-cd "$CYRENE_HOME/CyrenePanelBackend"
-su -s /bin/bash -c "PATH=$BUN_BIN_PATH:/usr/local/bin:/usr/bin:/bin bun install" "$BACKEND_USER"
-success "后端依赖安装完成"
+  ASSET_NAME="CyrenePanel${RELEASE_VERSION}-${SYSTEM_OS}-${SYSTEM_ARCH}.zip"
+  DOWNLOAD_URL="https://github.com/${CYRENE_REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
 
-# ── 构建前端 ──────────────────────────────────────────────────
-step "构建前端"
+  info "Release：$RELEASE_TAG"
+  info "安装包：$ASSET_NAME"
+}
 
-cd "$CYRENE_HOME/CyrenePanelFrontend"
+download_release() {
+  step "下载 Release 安装包"
+  PACKAGE_PATH="$TMP_DIR/$ASSET_NAME"
+  curl -fL --retry 3 --retry-delay 2 "$DOWNLOAD_URL" -o "$PACKAGE_PATH"
+  unzip -t "$PACKAGE_PATH" >/dev/null
+  success "安装包下载并校验完成"
+}
 
-# 需要临时创建 tsconfig 路径别名，让构建能正常找到后端类型
-# 修改 .env 配置
-cat > .env.production <<EOF
+stop_services() {
+  systemctl stop cyrene-frontend 2>/dev/null || true
+  systemctl stop cyrene-backend 2>/dev/null || true
+}
+
+backup_existing_install() {
+  if [ ! -d "$CYRENE_HOME" ]; then
+    return
+  fi
+
+  step "备份已有安装"
+  stop_services
+  BACKUP_DIR="${CYRENE_HOME}.bak.$(date +%Y%m%d%H%M%S)"
+  cp -a "$CYRENE_HOME" "$BACKUP_DIR"
+  success "已备份到：$BACKUP_DIR"
+}
+
+extract_release() {
+  step "部署文件"
+  local extract_dir="$TMP_DIR/extract"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+  unzip -q "$PACKAGE_PATH" -d "$extract_dir"
+
+  local package_root="$extract_dir/CyrenePanel${RELEASE_VERSION}-${SYSTEM_OS}-${SYSTEM_ARCH}"
+  if [ ! -d "$package_root" ]; then
+    package_root="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  fi
+
+  if [ ! -d "$package_root/backend" ] || [ ! -d "$package_root/frontend" ]; then
+    error "安装包结构不正确：缺少 backend 或 frontend 目录"
+    exit 1
+  fi
+
+  local old_data=""
+  if [ -d "$CYRENE_HOME/backend/data" ]; then
+    old_data="$TMP_DIR/data"
+    cp -a "$CYRENE_HOME/backend/data" "$old_data"
+  elif [ -d "$CYRENE_HOME/CyrenePanelBackend/data" ]; then
+    old_data="$TMP_DIR/data"
+    cp -a "$CYRENE_HOME/CyrenePanelBackend/data" "$old_data"
+  fi
+
+  rm -rf "$CYRENE_HOME"
+  mkdir -p "$CYRENE_HOME"
+  cp -a "$package_root/." "$CYRENE_HOME/"
+
+  mkdir -p "$CYRENE_HOME/backend/data" "$CYRENE_HOME/backend/logs"
+  if [ -n "$old_data" ]; then
+    rm -rf "$CYRENE_HOME/backend/data"
+    cp -a "$old_data" "$CYRENE_HOME/backend/data"
+  fi
+
+  chmod +x "$CYRENE_HOME/backend/server" 2>/dev/null || true
+  success "文件已部署到：$CYRENE_HOME"
+}
+
+create_user_and_permissions() {
+  step "设置运行用户和权限"
+  if ! id "$CYRENE_USER" >/dev/null 2>&1; then
+    useradd -r -s /usr/sbin/nologin -d "$CYRENE_HOME" "$CYRENE_USER" 2>/dev/null \
+      || useradd -r -s /bin/false -d "$CYRENE_HOME" "$CYRENE_USER"
+    success "已创建用户：$CYRENE_USER"
+  else
+    info "用户已存在：$CYRENE_USER"
+  fi
+
+  chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME"
+  chmod 755 "$CYRENE_HOME/backend/logs"
+  success "权限设置完成"
+}
+
+install_frontend_dependencies() {
+  step "安装前端生产依赖"
+  cd "$CYRENE_HOME/frontend"
+
+  cat > .env.production <<EOF
 NEXT_PUBLIC_API_URL=http://localhost:${BACKEND_PORT}
 EOF
 
-info "正在安装前端依赖..."
-su -s /bin/bash -c "PATH=$BUN_BIN_PATH:/usr/local/bin:/usr/bin:/bin bun install" "$BACKEND_USER"
+  chown "$CYRENE_USER:$CYRENE_USER" .env.production
+  su -s /bin/bash -c "PATH=/usr/local/bin:/usr/bin:/bin bun install --production" "$CYRENE_USER"
+  success "前端生产依赖安装完成"
+}
 
-info "正在构建前端..."
-su -s /bin/bash -c "PATH=$BUN_BIN_PATH:/usr/local/bin:/usr/bin:/bin bun run build" "$BACKEND_USER"
-success "前端构建完成"
-
-# ── 设置权限 ──────────────────────────────────────────────────
-step "设置文件权限"
-
-chown -R "$BACKEND_USER":"$BACKEND_USER" "$CYRENE_HOME"
-
-# 确保 cyrene 用户可以访问日志目录
-mkdir -p "$CYRENE_HOME/CyrenePanelBackend/logs"
-chmod 755 "$CYRENE_HOME/CyrenePanelBackend/logs"
-success "权限设置完成"
-
-# ── 创建 systemd 服务: 后端 ──────────────────────────────────
-step "创建系统服务"
-
-BUN_BIN="$BUN_BIN_PATH"
-# 确保 bun 二进制文件路径正确
-if [ ! -f "$BUN_BIN" ]; then
-    BUN_BIN=$(which bun 2>/dev/null || echo "$BUN_GLOBAL_PATH")
-fi
-info "Bun 路径: $BUN_BIN"
-
-cat > /etc/systemd/system/cyrene-backend.service <<EOF
+write_systemd_services() {
+  step "注册 systemd 服务"
+  cat > /etc/systemd/system/cyrene-backend.service <<EOF
 [Unit]
 Description=CyrenePanel Backend Server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=$BACKEND_USER
-Group=$BACKEND_USER
-WorkingDirectory=$CYRENE_HOME/CyrenePanelBackend
+User=$CYRENE_USER
+Group=$CYRENE_USER
+WorkingDirectory=$CYRENE_HOME/backend
 Environment=NODE_ENV=production
-Environment=BUN_INSTALL=/usr/local
-Environment=PATH=$BUN_BIN:/usr/local/bin:/usr/bin:/bin
-ExecStart=$BUN_BIN run src/index.ts
+Environment=PORT=$BACKEND_PORT
+ExecStart=$CYRENE_HOME/backend/server
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-
-# 安全加固
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=$CYRENE_HOME/CyrenePanelBackend/data $CYRENE_HOME/CyrenePanelBackend/logs
+ReadWritePaths=$CYRENE_HOME/backend/data $CYRENE_HOME/backend/logs
 PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ── 创建 systemd 服务: 前端 ──────────────────────────────────
-cat > /etc/systemd/system/cyrene-frontend.service <<EOF
+  cat > /etc/systemd/system/cyrene-frontend.service <<EOF
 [Unit]
 Description=CyrenePanel Frontend Server
-After=network.target cyrene-backend.service
-Wants=cyrene-backend.service
+After=network-online.target cyrene-backend.service
+Wants=network-online.target cyrene-backend.service
 
 [Service]
 Type=simple
-User=$BACKEND_USER
-Group=$BACKEND_USER
-WorkingDirectory=$CYRENE_HOME/CyrenePanelFrontend
+User=$CYRENE_USER
+Group=$CYRENE_USER
+WorkingDirectory=$CYRENE_HOME/frontend
 Environment=NODE_ENV=production
 Environment=PORT=$FRONTEND_PORT
 Environment=HOSTNAME=0.0.0.0
-Environment=BUN_INSTALL=/usr/local
-Environment=PATH=$BUN_BIN:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=$BUN_BIN run next start -p $FRONTEND_PORT -H 0.0.0.0
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-
-# 安全加固
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=$CYRENE_HOME/CyrenePanelFrontend/.next
+ReadWritePaths=$CYRENE_HOME/frontend/.next $CYRENE_HOME/frontend/node_modules
 PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ── 启动服务 ──────────────────────────────────────────────────
-step "启动服务"
+  systemctl daemon-reload
+  systemctl enable cyrene-backend cyrene-frontend >/dev/null
+  success "systemd 服务已注册"
+}
 
-systemctl daemon-reload
-systemctl enable cyrene-backend cyrene-frontend >/dev/null 2>&1
-systemctl start cyrene-backend
-sleep 2
-systemctl start cyrene-frontend
+start_services() {
+  step "启动服务"
+  systemctl restart cyrene-backend
+  sleep 2
+  systemctl restart cyrene-frontend
 
-# ── 等待服务启动 ──────────────────────────────────────────────
-info "等待服务启动..."
-for i in $(seq 1 15); do
-    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${BACKEND_PORT}" >/dev/null 2>&1; then
-        success "后端服务启动成功"
-        break
-    fi
-    if [ "$i" -eq 15 ]; then
-        warn "后端服务启动超时，请手动检查"
+  info "等待后端启动..."
+  for _ in $(seq 1 20); do
+    if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/system/version" >/dev/null 2>&1; then
+      success "后端服务启动成功"
+      break
     fi
     sleep 1
-done
+  done
 
-for i in $(seq 1 30); do
-    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${FRONTEND_PORT}" >/dev/null 2>&1; then
-        success "前端服务启动成功"
-        break
-    fi
-    if [ "$i" -eq 30 ]; then
-        warn "前端服务启动超时，请手动检查"
+  info "等待前端启动..."
+  for _ in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:${FRONTEND_PORT}" >/dev/null 2>&1; then
+      success "前端服务启动成功"
+      break
     fi
     sleep 1
-done
+  done
+}
 
-# ── 输出部署信息 ──────────────────────────────────────────────
-echo ""
-echo -e "${GREEN}${BOLD}"
-echo "  ╔═══════════════════════════════════════════════════╗"
-echo "  ║                                                   ║"
-echo "  ║          ✅ CyrenePanel 部署完成！                 ║"
-echo "  ║                                                   ║"
-echo "  ╚═══════════════════════════════════════════════════╝"
-echo -e "${NC}"
+print_summary() {
+  local public_ip
+  public_ip="$(curl -fsS --max-time 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "服务器IP")"
 
-# 获取公网 IP
-PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "你的服务器IP")
+  echo ""
+  echo -e "${GREEN}${BOLD}CyrenePanel 部署完成${NC}"
+  echo -e "  版本:        ${RELEASE_VERSION}"
+  echo -e "  安装目录:    ${CYRENE_HOME}"
+  echo -e "  前端地址:    http://${public_ip}:${FRONTEND_PORT}"
+  echo -e "  后端地址:    http://${public_ip}:${BACKEND_PORT}"
+  echo ""
+  echo -e "  常用命令:"
+  echo -e "    查看后端日志: ${CYAN}journalctl -u cyrene-backend -f${NC}"
+  echo -e "    查看前端日志: ${CYAN}journalctl -u cyrene-frontend -f${NC}"
+  echo -e "    重启服务:     ${CYAN}systemctl restart cyrene-backend cyrene-frontend${NC}"
+  echo -e "    查看状态:     ${CYAN}systemctl status cyrene-backend cyrene-frontend${NC}"
+  echo ""
+  echo -e "  首次启动会自动创建 admin 账号，初始密码请查看后端日志。"
+}
 
-echo -e "  ${BOLD}前端访问地址:${NC}  http://${PUBLIC_IP}:${FRONTEND_PORT}"
-echo -e "  ${BOLD}后端 API 地址:${NC} http://${PUBLIC_IP}:${BACKEND_PORT}"
-echo ""
-echo -e "  ${BOLD}安装目录:${NC}      $CYRENE_HOME"
-echo -e "  ${BOLD}默认账号:${NC}      admin"
-echo -e "  ${BOLD}初始密码:${NC}      请查看日志获取首次启动生成的密码"
-echo ""
-echo -e "  ${BOLD}常用命令:${NC}"
-echo -e "    查看后端日志:  ${CYAN}journalctl -u cyrene-backend -f${NC}"
-echo -e "    查看前端日志:  ${CYAN}journalctl -u cyrene-frontend -f${NC}"
-echo -e "    重启后端:      ${CYAN}systemctl restart cyrene-backend${NC}"
-echo -e "    重启前端:      ${CYAN}systemctl restart cyrene-frontend${NC}"
-echo -e "    停止所有:      ${CYAN}systemctl stop cyrene-backend cyrene-frontend${NC}"
-echo -e "    查看状态:      ${CYAN}systemctl status cyrene-backend cyrene-frontend${NC}"
-echo -e "    更新项目:      ${CYAN}cd $CYRENE_HOME && git pull && cd CyrenePanelBackend && bun install && cd ../CyrenePanelFrontend && bun install && bun run build${NC}"
-echo ""
+main() {
+  echo -e "${CYAN}${BOLD}CyrenePanel Release 一键部署脚本${NC}"
+  require_root
+  detect_os
+  install_packages
+  install_bun
+  resolve_release
+  download_release
+  backup_existing_install
+  extract_release
+  create_user_and_permissions
+  install_frontend_dependencies
+  write_systemd_services
+  start_services
+  print_summary
+}
 
-# 显示初始密码
-if [ -f "$CYRENE_HOME/CyrenePanelBackend/data/cyrene.db" ]; then
-    info "正在获取初始密码信息..."
-    echo -e "  ${YELLOW}提示: 首次启动时，管理员密码已自动生成并打印在后端日志中${NC}"
-    echo -e "  ${YELLOW}请使用以下命令查看:${NC}"
-    echo -e "  ${CYAN}journalctl -u cyrene-backend --no-pager | grep '初始密码'${NC}"
-    echo ""
-fi
-
-echo -e "  ${YELLOW}提示: 如需修改前端连接的后端地址，请编辑:${NC}"
-echo -e "  ${CYAN}$CYRENE_HOME/CyrenePanelFrontend/.env.production${NC}"
-echo -e "  ${YELLOW}然后重新构建前端: cd $CYRENE_HOME/CyrenePanelFrontend && bun run build && systemctl restart cyrene-frontend${NC}"
-echo ""
+main "$@"
