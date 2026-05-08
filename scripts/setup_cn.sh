@@ -9,7 +9,7 @@
 #
 #  可选环境变量:
 #    CYRENE_REPO=ChuxinNeko/CyrenePanel
-#    CYRENE_VERSION=1.0.50          # 指定版本；留空则使用 latest release
+#    CYRENE_VERSION=1.2.3           # 指定版本；留空则使用 latest release
 #    CYRENE_HOME=/opt/CyrenePanel
 #    BACKEND_PORT=5677
 #    FRONTEND_PORT=3000
