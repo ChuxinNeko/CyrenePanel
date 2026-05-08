@@ -32,6 +32,9 @@ BACKEND_PORT="${BACKEND_PORT:-5677}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 TMP_DIR="${TMPDIR:-/tmp}/cyrene-install.$$"
 RUNTIME_PATH="/usr/local/bin:/usr/bin:/bin"
+BACKEND_START_SINCE=""
+ADMIN_USERNAME=""
+ADMIN_PASSWORD=""
 
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC}   $*"; }
@@ -402,6 +405,7 @@ EOF
 
 start_services() {
   step "启动服务"
+  BACKEND_START_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
   systemctl restart cyrene-backend
   sleep 2
   systemctl restart cyrene-frontend
@@ -425,9 +429,37 @@ start_services() {
   done
 }
 
+capture_admin_credentials() {
+  ADMIN_USERNAME=""
+  ADMIN_PASSWORD=""
+
+  if [ -z "$BACKEND_START_SINCE" ] || ! command -v journalctl >/dev/null 2>&1; then
+    return
+  fi
+
+  local backend_logs
+  backend_logs="$(journalctl -u cyrene-backend --since "$BACKEND_START_SINCE" -n 200 --no-pager 2>/dev/null || true)"
+
+  ADMIN_PASSWORD="$(
+    printf '%s\n' "$backend_logs" \
+      | sed -nE 's/.*初始密码[：:][[:space:]]*([^[:space:]]+).*/\1/p' \
+      | tail -n1
+  )"
+
+  if [ -n "$ADMIN_PASSWORD" ]; then
+    ADMIN_USERNAME="$(
+      printf '%s\n' "$backend_logs" \
+        | sed -nE 's/.*默认账号[：:][[:space:]]*([^[:space:]]+).*/\1/p' \
+        | tail -n1
+    )"
+    ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
+  fi
+}
+
 print_summary() {
   local public_ip
   public_ip="$(curl -fsS --max-time 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "服务器IP")"
+  capture_admin_credentials
 
   echo ""
   echo -e "${GREEN}${BOLD}CyrenePanel 部署完成${NC}"
@@ -436,13 +468,21 @@ print_summary() {
   echo -e "  前端地址:    http://${public_ip}:${FRONTEND_PORT}"
   echo -e "  API proxy:    http://${public_ip}:${FRONTEND_PORT}/api -> http://127.0.0.1:${BACKEND_PORT}/api"
   echo ""
+  echo -e "  管理员账号:"
+  if [ -n "$ADMIN_PASSWORD" ]; then
+    echo -e "    用户名: ${CYAN}${ADMIN_USERNAME}${NC}"
+    echo -e "    密码:   ${YELLOW}${ADMIN_PASSWORD}${NC}"
+    echo -e "    请登录后立即修改初始密码。"
+  else
+    echo -e "    已存在管理员账号，本次部署未重新生成初始密码。"
+    echo -e "    如需找回或重置，请查看后端日志或在面板内修改用户密码。"
+  fi
+  echo ""
   echo -e "  常用命令:"
   echo -e "    查看后端日志: ${CYAN}journalctl -u cyrene-backend -f${NC}"
   echo -e "    查看前端日志: ${CYAN}journalctl -u cyrene-frontend -f${NC}"
   echo -e "    重启服务:     ${CYAN}systemctl restart cyrene-backend cyrene-frontend${NC}"
   echo -e "    查看状态:     ${CYAN}systemctl status cyrene-backend cyrene-frontend${NC}"
-  echo ""
-  echo -e "  首次启动会自动创建 admin 账号，初始密码请查看后端日志。"
 }
 
 main() {
