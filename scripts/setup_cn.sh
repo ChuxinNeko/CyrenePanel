@@ -31,7 +31,7 @@ CYRENE_REPO="${CYRENE_REPO:-ChuxinNeko/CyrenePanel}"
 CYRENE_HOME="${CYRENE_HOME:-/opt/CyrenePanel}"
 CYRENE_USER="${CYRENE_USER:-cyrene}"
 BACKEND_PORT="${BACKEND_PORT:-5677}"
-FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+FRONTEND_PORT="${FRONTEND_PORT:-30198}"
 CYRENE_DOWNLOAD_SOURCE="${CYRENE_DOWNLOAD_SOURCE:-}"
 GH_PROXY_PREFIX="${GH_PROXY_PREFIX:-https://gh-proxy.org/}"
 TMP_DIR="${TMPDIR:-/tmp}/cyrene-install.$$"
@@ -415,7 +415,7 @@ EOF
     exit 1
   fi
 
-  su -s /bin/bash -c "PATH=$RUNTIME_PATH bun install --production" "$CYRENE_USER"
+  su -s /bin/bash -c "PATH=$RUNTIME_PATH npm_config_registry=https://registry.npmmirror.com/ bun install --production" "$CYRENE_USER"
   success "前端生产依赖安装完成"
 }
 
