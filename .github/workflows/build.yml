@@ -60,6 +60,10 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "name=${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Install backend dependencies
+        working-directory: CyrenePanelBackend
+        run: bun install
+
       - name: Install frontend dependencies
         working-directory: CyrenePanelFrontend
         run: bun install
@@ -69,10 +73,6 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: bun run build
-
-      - name: Install backend dependencies
-        working-directory: CyrenePanelBackend
-        run: bun install
 
       - name: Build backend binary
         working-directory: CyrenePanelBackend
