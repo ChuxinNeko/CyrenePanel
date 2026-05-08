@@ -140,6 +140,43 @@ install_packages() {
   success "系统依赖已就绪"
 }
 
+install_nodejs() {
+  step "Check Node.js"
+
+  if command -v node >/dev/null 2>&1; then
+    success "Node.js is ready: $(node -v)"
+    return
+  fi
+
+  info "Node.js not found; installing Node.js 22"
+
+  case "$PKG_MANAGER" in
+    apt)
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+      DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+      ;;
+    dnf)
+      curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+      dnf install -y nodejs
+      ;;
+    yum)
+      curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+      yum install -y nodejs
+      ;;
+    *)
+      error "Unable to install Node.js 22 for the detected package manager"
+      exit 1
+      ;;
+  esac
+
+  if ! command -v node >/dev/null 2>&1; then
+    error "Node.js 22 installation failed: node command not found"
+    exit 1
+  fi
+
+  success "Node.js installed: $(node -v)"
+}
+
 install_bun() {
   step "检查 Bun 运行环境"
   if command -v bun >/dev/null 2>&1; then
@@ -397,6 +434,7 @@ main() {
   require_root
   detect_os
   install_packages
+  install_nodejs
   install_bun
   resolve_release
   download_release
