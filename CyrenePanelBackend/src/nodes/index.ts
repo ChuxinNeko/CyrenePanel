@@ -15,6 +15,7 @@ import {
 import { logger } from "../logger/index";
 import { getAllInstances } from "../instances/store";
 import { getMemoryInfo } from "../memory";
+import { CYRENE_VERSION } from "../version";
 
 // ── 用 API Key 在远端节点换取 JWT token ────────────────────────────
 
@@ -573,6 +574,7 @@ export interface NodeOverview {
   runningInstances?: number;
   totalInstances?: number;
   version?: string;
+  panelVersion?: string;
   metrics?: MetricPoint[];
 }
 
@@ -606,6 +608,7 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
     runningInstances: localInstances.filter((i) => i.status === "running").length,
     totalInstances: localInstances.length,
     version: `Bun ${bunVersion}`,
+    panelVersion: CYRENE_VERSION,
     metrics: [...localMetrics],
   });
 
@@ -652,6 +655,7 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
             percentage: sys.memory?.percentage ?? 0,
           };
           overview.version = sys.runtimeVersion ?? "未知";
+          overview.panelVersion = sys.panelVersion ?? "未知";
           if (Array.isArray(sys.metrics)) {
             overview.metrics = sys.metrics;
           }
@@ -1173,6 +1177,38 @@ export const nodeRoutes = new Elysia()
       }, 10 * 60 * 1000);
     } catch (e: any) {
       logger.err(`子节点环境依赖安装代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点版本更新代理 ────────────────────────────────────────────
+
+  .get("/api/nodes/:id/system/update", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/system/update", {}, 15000);
+    } catch (e: any) {
+      logger.err(`子节点检查更新代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/system/update/apply", async ({ params, profile }: any) => {
+    if (!profile || profile.role !== "admin") return { success: false, message: "无权限" };
+    try {
+      return await proxyNodeJson(params.id, "/api/system/update/apply", { method: "POST" }, 30000);
+    } catch (e: any) {
+      logger.err(`子节点更新应用代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .get("/api/nodes/:id/system/update/logs", async ({ params, profile }: any) => {
+    if (!profile || profile.role !== "admin") return { success: false, message: "无权限" };
+    try {
+      return await proxyNodeJson(params.id, "/api/system/update/logs", {}, 15000);
+    } catch (e: any) {
+      logger.err(`子节点更新日志代理失败: ${e.message}`);
       return { success: false, message: `子节点请求失败: ${e.message}` };
     }
   })

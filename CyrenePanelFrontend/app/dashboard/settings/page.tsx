@@ -38,6 +38,7 @@ import {
   ExternalLink,
   Download,
   Loader2,
+  Server,
 } from "lucide-react";
 
 interface PanelUpdateInfo {
@@ -89,8 +90,10 @@ export default function SettingsPage() {
 
   // Version update
   const [currentVersion, setCurrentVersion] = useState("");
+  const [nodes, setNodes] = useState<any[]>([]);
   const [updateInfo, setUpdateInfo] = useState<PanelUpdateInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updatingNodeId, setUpdatingNodeId] = useState<string | null>(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
   const [updateSubmitted, setUpdateSubmitted] = useState(false);
@@ -146,6 +149,12 @@ export default function SettingsPage() {
           return;
         }
         await fetchSettings();
+        try {
+          const overviewRes = await (api as any).api.nodes.overview.get();
+          if (overviewRes?.data?.success) {
+            setNodes(overviewRes.data.nodes || []);
+          }
+        } catch {}
       } catch {
         router.push("/login");
       } finally {
@@ -260,10 +269,17 @@ export default function SettingsPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleCheckUpdate = async () => {
+  const handleCheckNodeUpdate = async (nodeId: string) => {
     setCheckingUpdate(true);
+    setUpdatingNodeId(nodeId);
     try {
-      const { data, error } = await api.api.system.update.get();
+      let data, error;
+      if (nodeId === "__main__") {
+        ({ data, error } = await api.api.system.update.get());
+      } else {
+        ({ data, error } = await (api as any).api.nodes({ id: nodeId }).system.update.get());
+      }
+
       if (error || !data?.success) {
         toast.error((data as PanelUpdateInfo | undefined)?.message || "检查更新失败");
         return;
@@ -301,9 +317,15 @@ export default function SettingsPage() {
     return latestLogs.length > 0 ? latestLogs.join(" / ") : "等待更新助手开始执行...";
   };
 
-  const pollUpdateLogs = async () => {
+  const pollUpdateLogs = async (nodeId: string) => {
     try {
-      const { data, error } = await (api as any).api.system.update.logs.get();
+      let data, error;
+      if (nodeId === "__main__") {
+        ({ data, error } = await (api as any).api.system.update.logs.get());
+      } else {
+        ({ data, error } = await (api as any).api.nodes({ id: nodeId }).system.update.logs.get());
+      }
+
       if (error || !data?.success) return;
 
       const logInfo = data as PanelUpdateLogs;
@@ -354,7 +376,7 @@ export default function SettingsPage() {
     }
   };
 
-  const startUpdateLogPolling = () => {
+  const startUpdateLogPolling = (nodeId: string) => {
     stopUpdateLogPolling();
     const id = "panel-update-log";
     updateToastIdRef.current = id;
@@ -362,22 +384,29 @@ export default function SettingsPage() {
       id,
       description: "更新任务已提交，正在等待更新助手接管...",
     });
-    void pollUpdateLogs();
+    void pollUpdateLogs(nodeId);
     updateLogTimerRef.current = setInterval(() => {
-      void pollUpdateLogs();
+      void pollUpdateLogs(nodeId);
     }, 2000);
   };
 
   const handleApplyUpdate = async () => {
+    if (!updatingNodeId) return;
     setApplyingUpdate(true);
     try {
-      const { data, error } = await (api as any).api.system.update.apply.post();
+      let data, error;
+      if (updatingNodeId === "__main__") {
+        ({ data, error } = await (api as any).api.system.update.apply.post());
+      } else {
+        ({ data, error } = await (api as any).api.nodes({ id: updatingNodeId }).system.update.apply.post());
+      }
+
       if (error || !data?.success) {
         toast.error(data?.message || "提交更新失败");
         return;
       }
       setUpdateSubmitted(true);
-      startUpdateLogPolling();
+      startUpdateLogPolling(updatingNodeId);
     } catch {
       toast.error("提交更新失败");
     } finally {
@@ -620,16 +649,43 @@ export default function SettingsPage() {
             </CardHeader>
             <CardContent className="flex flex-col gap-6">
               <div className="flex flex-col gap-4 rounded-lg border bg-muted/30 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex flex-col gap-1">
-                    <div className="font-medium">当前版本</div>
-                    <p className="text-sm text-muted-foreground">
-                      后端当前运行的 CyrenePanel 版本。
-                    </p>
-                  </div>
-                  <Badge variant="outline" className="font-mono">
-                    {currentVersion || "未知"}
-                  </Badge>
+                <div className="flex flex-col gap-1">
+                  <div className="font-medium">节点版本状态</div>
+                  <p className="text-sm text-muted-foreground">
+                    各节点的 CyrenePanel 当前运行版本。
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2 mt-2">
+                  {nodes.length > 0 ? nodes.map((node) => (
+                    <div key={node.id} className="flex flex-wrap items-center justify-between gap-2 p-2 rounded border bg-background/50">
+                      <div className="flex items-center gap-2">
+                        <Server className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span className="font-medium text-sm truncate">{node.name}</span>
+                        {node.isMain && <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 shrink-0">主</Badge>}
+                        {!node.online && <Badge variant="destructive" className="text-[10px] px-1 py-0 h-4 shrink-0">离线</Badge>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                         <Badge variant="outline" className="font-mono">{node.panelVersion || (node.isMain ? currentVersion : "未知")}</Badge>
+                         <Button
+                           variant="ghost"
+                           size="sm"
+                           className="h-7 text-xs px-2"
+                           disabled={!node.online || checkingUpdate}
+                           onClick={() => handleCheckNodeUpdate(node.id)}
+                         >
+                           {checkingUpdate && updatingNodeId === node.id ? (
+                             <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                           ) : (
+                             <RefreshCw className="h-3 w-3 mr-1" />
+                           )}
+                           检测更新
+                         </Button>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="text-sm text-muted-foreground py-2">加载节点信息中...</div>
+                  )}
                 </div>
 
                 {updateInfo && (
@@ -675,14 +731,10 @@ export default function SettingsPage() {
                   <Button variant="outline" asChild>
                     <a href={updateInfo.downloadUrl} target="_blank" rel="noreferrer">
                       <ExternalLink className="h-4 w-4 mr-1.5" />
-                      查看更新
+                      查看更新说明
                     </a>
                   </Button>
                 )}
-                <Button onClick={handleCheckUpdate} disabled={checkingUpdate}>
-                  <RefreshCw className={`h-4 w-4 mr-1.5 ${checkingUpdate ? "animate-spin" : ""}`} />
-                  {checkingUpdate ? "检测中..." : "手动检测更新"}
-                </Button>
               </div>
             </CardContent>
           </Card>
@@ -757,7 +809,7 @@ export default function SettingsPage() {
       </Tabs>
 
       <Dialog open={updateDialogOpen} onOpenChange={setUpdateDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>检查更新结果</DialogTitle>
             <DialogDescription>
@@ -768,8 +820,8 @@ export default function SettingsPage() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-md border p-3">
-                <div className="text-muted-foreground">当前版本</div>
-                <div className="mt-1 font-mono font-medium">{updateInfo?.currentVersion || currentVersion || "未知"}</div>
+                <div className="text-muted-foreground">节点当前版本</div>
+                <div className="mt-1 font-mono font-medium">{updateInfo?.currentVersion || "未知"}</div>
               </div>
               <div className="rounded-md border p-3">
                 <div className="text-muted-foreground">最新版本</div>
