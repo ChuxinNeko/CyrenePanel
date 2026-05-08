@@ -339,6 +339,233 @@ EOF
   success "前端生产依赖安装完成"
 }
 
+install_cyp_command() {
+  step "安装 cyp 管理命令"
+
+  mkdir -p /usr/local/bin
+
+  cat > /usr/local/bin/cyp <<'CYP'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CYRENE_HOME="${CYRENE_HOME:-__CYRENE_HOME__}"
+CYRENE_USER="${CYRENE_USER:-__CYRENE_USER__}"
+BACKEND_PORT="${BACKEND_PORT:-__BACKEND_PORT__}"
+FRONTEND_PORT="${FRONTEND_PORT:-__FRONTEND_PORT__}"
+RUNTIME_PATH="${RUNTIME_PATH:-/usr/local/bin:/usr/bin:/bin}"
+
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+CYAN='\033[36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+success() { echo -e "${GREEN}$*${NC}"; }
+warn() { echo -e "${YELLOW}$*${NC}"; }
+error() { echo -e "${RED}$*${NC}" >&2; }
+
+db_path() {
+  echo "$CYRENE_HOME/backend/data/cyrene.db"
+}
+
+require_root() {
+  if [ "${EUID}" -ne 0 ]; then
+    error "请使用 root 权限运行：sudo cyp"
+    exit 1
+  fi
+}
+
+require_bun() {
+  if ! PATH="$RUNTIME_PATH" command -v bun >/dev/null 2>&1; then
+    error "未找到 bun，请先重新运行 CyrenePanel 安装脚本。"
+    exit 1
+  fi
+}
+
+require_db() {
+  local db
+  db="$(db_path)"
+  if [ ! -f "$db" ]; then
+    error "未找到数据库：$db"
+    exit 1
+  fi
+}
+
+run_bun() {
+  PATH="$RUNTIME_PATH" CYP_DB="$(db_path)" bun -e "$1"
+}
+
+list_users() {
+  require_bun
+  require_db
+  run_bun 'import { Database } from "bun:sqlite"; const db = new Database(process.env.CYP_DB); const rows = db.query("SELECT id, username, role, createdAt FROM users ORDER BY id").all(); if (rows.length === 0) { console.log("暂无用户"); process.exit(0); } for (const row of rows) console.log(`${row.id}\t${row.username}\t${row.role}`);'
+}
+
+first_admin() {
+  require_bun
+  require_db
+  run_bun 'import { Database } from "bun:sqlite"; const db = new Database(process.env.CYP_DB); const row = db.query("SELECT username FROM users WHERE role = ? ORDER BY id LIMIT 1").get("admin"); if (row) console.log(row.username);'
+}
+
+restart_panel() {
+  require_root
+  systemctl restart cyrene-backend
+  systemctl restart cyrene-frontend
+  success "面板已重启。"
+}
+
+restart_backend() {
+  systemctl restart cyrene-backend
+}
+
+change_username() {
+  require_root
+  require_bun
+  require_db
+
+  echo "当前用户："
+  list_users
+  echo ""
+
+  local old_username new_username input_username
+  old_username="$(first_admin || true)"
+  read -r -p "当前管理员用户名 [${old_username:-admin}]: " input_username
+  old_username="${input_username:-${old_username:-admin}}"
+  read -r -p "新的管理员用户名: " new_username
+
+  if [ -z "$new_username" ]; then
+    error "用户名不能为空。"
+    exit 1
+  fi
+
+  if [ "$old_username" = "$new_username" ]; then
+    warn "用户名未变化。"
+    return
+  fi
+
+  PATH="$RUNTIME_PATH" CYP_DB="$(db_path)" CYP_OLD_USERNAME="$old_username" CYP_NEW_USERNAME="$new_username" bun -e 'import { Database } from "bun:sqlite"; const db = new Database(process.env.CYP_DB); db.exec("PRAGMA busy_timeout = 5000"); const oldName = process.env.CYP_OLD_USERNAME; const newName = process.env.CYP_NEW_USERNAME; const exists = db.query("SELECT id FROM users WHERE username = ?").get(newName); if (exists) { console.error(`用户名已存在：${newName}`); process.exit(2); } const result = db.query("UPDATE users SET username = ? WHERE username = ? AND role = ?").run(newName, oldName, "admin"); if (result.changes === 0) { console.error(`未找到管理员用户：${oldName}`); process.exit(3); }'
+
+  restart_backend
+  success "管理员用户名已修改为：$new_username"
+}
+
+change_password() {
+  require_root
+  require_bun
+  require_db
+
+  echo "当前用户："
+  list_users
+  echo ""
+
+  local username input_username password1 password2
+  username="$(first_admin || true)"
+  read -r -p "要修改密码的管理员用户名 [${username:-admin}]: " input_username
+  username="${input_username:-${username:-admin}}"
+
+  read -r -s -p "新的管理员密码: " password1
+  echo ""
+  read -r -s -p "再次输入新密码: " password2
+  echo ""
+
+  if [ -z "$password1" ]; then
+    error "密码不能为空。"
+    exit 1
+  fi
+
+  if [ "$password1" != "$password2" ]; then
+    error "两次输入的密码不一致。"
+    exit 1
+  fi
+
+  PATH="$RUNTIME_PATH" CYP_DB="$(db_path)" CYP_USERNAME="$username" CYP_PASSWORD="$password1" bun -e 'import { Database } from "bun:sqlite"; const db = new Database(process.env.CYP_DB); db.exec("PRAGMA busy_timeout = 5000"); const hash = await Bun.password.hash(process.env.CYP_PASSWORD, { algorithm: "bcrypt", cost: 10 }); const result = db.query("UPDATE users SET password = ? WHERE username = ? AND role = ?").run(hash, process.env.CYP_USERNAME, "admin"); if (result.changes === 0) { console.error(`未找到管理员用户：${process.env.CYP_USERNAME}`); process.exit(3); }'
+
+  restart_backend
+  success "管理员密码已修改。"
+}
+
+show_status() {
+  systemctl --no-pager status cyrene-backend cyrene-frontend || true
+}
+
+show_info() {
+  local public_ip
+  public_ip="$(curl -fsS --max-time 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "服务器IP")"
+  echo -e "安装目录: ${CYRENE_HOME}"
+  echo -e "前端地址: http://${public_ip}:${FRONTEND_PORT}"
+  echo -e "后端地址: http://127.0.0.1:${BACKEND_PORT}"
+  echo -e "数据库:   $(db_path)"
+}
+
+show_logs() {
+  journalctl -u cyrene-backend -u cyrene-frontend -f
+}
+
+menu() {
+  while true; do
+    echo ""
+    echo -e "${CYAN}${BOLD}CyrenePanel 管理菜单${NC}"
+    echo "  1. 重启面板"
+    echo "  2. 修改管理员用户名"
+    echo "  3. 修改管理员密码"
+    echo "  4. 查看面板状态"
+    echo "  5. 查看访问信息"
+    echo "  6. 查看实时日志"
+    echo "  0. 退出"
+    echo ""
+    read -r -p "请输入选项: " choice
+
+    case "$choice" in
+      1) restart_panel ;;
+      2) change_username ;;
+      3) change_password ;;
+      4) show_status ;;
+      5) show_info ;;
+      6) show_logs ;;
+      0) exit 0 ;;
+      *) warn "无效选项，请重新输入。" ;;
+    esac
+  done
+}
+
+usage() {
+  cat <<USAGE
+用法:
+  cyp                打开管理菜单
+  cyp restart        重启面板
+  cyp username       修改管理员用户名
+  cyp password       修改管理员密码
+  cyp status         查看服务状态
+  cyp info           查看访问信息
+  cyp logs           查看实时日志
+USAGE
+}
+
+case "${1:-menu}" in
+  menu|"") menu ;;
+  restart) restart_panel ;;
+  username) change_username ;;
+  password) change_password ;;
+  status) show_status ;;
+  info) show_info ;;
+  logs) show_logs ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac
+CYP
+
+  sed -i \
+    -e "s#__CYRENE_HOME__#${CYRENE_HOME}#g" \
+    -e "s#__CYRENE_USER__#${CYRENE_USER}#g" \
+    -e "s#__BACKEND_PORT__#${BACKEND_PORT}#g" \
+    -e "s#__FRONTEND_PORT__#${FRONTEND_PORT}#g" \
+    /usr/local/bin/cyp
+
+  chmod 0755 /usr/local/bin/cyp
+  success "cyp 管理命令已安装：cyp"
+}
+
 write_systemd_services() {
   step "注册 systemd 服务"
   cat > /etc/systemd/system/cyrene-backend.service <<EOF
@@ -483,6 +710,7 @@ print_summary() {
   echo -e "    查看前端日志: ${CYAN}journalctl -u cyrene-frontend -f${NC}"
   echo -e "    重启服务:     ${CYAN}systemctl restart cyrene-backend cyrene-frontend${NC}"
   echo -e "    查看状态:     ${CYAN}systemctl status cyrene-backend cyrene-frontend${NC}"
+  echo -e "    管理菜单:     ${CYAN}cyp${NC}"
 }
 
 main() {
@@ -499,6 +727,7 @@ main() {
   create_user_and_permissions
   install_frontend_dependencies
   write_systemd_services
+  install_cyp_command
   start_services
   print_summary
 }
