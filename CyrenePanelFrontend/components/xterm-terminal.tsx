@@ -74,7 +74,6 @@ export default function XtermTerminal({ instanceId, status, className }: XtermTe
         selectionBackground: "#3f3f46",
       },
       allowProposedApi: true,
-      padding: 8,
     });
 
     const fitAddon = new FitAddon();

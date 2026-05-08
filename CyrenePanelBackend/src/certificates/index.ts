@@ -441,12 +441,14 @@ async function requestCertificate(
     );
   } else if (certbot && challenge === "http") {
     prepareHttpChallengeConfig(layout, site, send);
+    const webroot = site.root;
+    if (!webroot) throw new Error("当前站点未配置 root，无法使用文件验证");
     const certName = domains[0].replace(/^\*\./, "").replace(/[^a-zA-Z0-9.-]/g, "-");
     const args = [
       "certonly",
       "--webroot",
       "-w",
-      site.root,
+      webroot,
       ...domainArgs,
       "--non-interactive",
       "--agree-tos",
