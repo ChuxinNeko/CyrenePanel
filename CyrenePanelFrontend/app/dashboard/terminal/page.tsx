@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { Suspense, useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   RefreshCw,
   Server,
@@ -41,7 +40,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export default function TerminalPage() {
+function TerminalPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const termRef = useRef<HTMLDivElement>(null);
@@ -534,6 +533,22 @@ export default function TerminalPage() {
             </div>
           )}
       </div>
+    </div>
+  );
+}
+
+export default function TerminalPage() {
+  return (
+    <Suspense fallback={<TerminalPageFallback />}>
+      <TerminalPageContent />
+    </Suspense>
+  );
+}
+
+function TerminalPageFallback() {
+  return (
+    <div className="flex h-[calc(100vh-7rem)] items-center justify-center">
+      <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
     </div>
   );
 }
