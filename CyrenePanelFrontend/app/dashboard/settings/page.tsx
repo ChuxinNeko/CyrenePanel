@@ -60,6 +60,12 @@ interface PanelUpdateLogs {
   completed?: boolean;
   failed?: boolean;
   lastLine?: string;
+  status?: {
+    status?: string;
+    version?: string;
+    message?: string;
+    updatedAt?: string;
+  } | null;
   message?: string;
 }
 
@@ -287,8 +293,11 @@ export default function SettingsPage() {
     }
   };
 
-  const formatUpdateLogDescription = (logs?: string[]) => {
+  const formatUpdateLogDescription = (logs?: string[], status?: PanelUpdateLogs["status"]) => {
     const latestLogs = (logs || []).slice(-3);
+    if (latestLogs.length > 0) return latestLogs.join(" / ");
+    if (status?.message) return status.message;
+    if (status?.status) return `Update status: ${status.status}`;
     return latestLogs.length > 0 ? latestLogs.join(" / ") : "等待更新助手开始执行...";
   };
 
@@ -321,9 +330,19 @@ export default function SettingsPage() {
         return;
       }
 
+      if (!logInfo.running && !logInfo.status && (logInfo.logs || []).length === 0) {
+        stopUpdateLogPolling();
+        toast.error("更新任务未启动", {
+          id,
+          description: "后端没有找到更新请求或日志，请检查 cyrene-updater.path 是否已启用。",
+          duration: 15000,
+        });
+        return;
+      }
+
       toast.loading("正在更新面板", {
         id,
-        description: formatUpdateLogDescription(logInfo.logs),
+        description: formatUpdateLogDescription(logInfo.logs, logInfo.status),
       });
     } catch {
       const id = updateToastIdRef.current || "panel-update-log";

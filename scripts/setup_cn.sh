@@ -601,12 +601,35 @@ FRONTEND_PORT="${FRONTEND_PORT:-__FRONTEND_PORT__}"
 RUNTIME_PATH="${RUNTIME_PATH:-/usr/local/bin:/usr/bin:/bin}"
 REQUEST_FILE="$CYRENE_HOME/backend/data/update-request.json"
 LOG_FILE="$CYRENE_HOME/backend/logs/update.log"
+STATUS_FILE="$CYRENE_HOME/backend/data/update-status.json"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 exec >>"$LOG_FILE" 2>&1
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\n/ /g'
+}
+
+write_status() {
+  local status="$1"
+  local message="${2:-}"
+  local now
+  now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  mkdir -p "$(dirname "$STATUS_FILE")"
+  printf '{"status":"%s","version":"%s","message":"%s","updatedAt":"%s"}\n' \
+    "$(json_escape "$status")" \
+    "$(json_escape "${RELEASE_VERSION:-}")" \
+    "$(json_escape "$message")" \
+    "$now" > "$STATUS_FILE"
+}
+
+reopen_log() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+  exec >>"$LOG_FILE" 2>&1
 }
 
 cleanup() {
@@ -618,6 +641,7 @@ cleanup() {
 on_error() {
   local exit_code=$?
   log "Update failed at line ${BASH_LINENO[0]} (exit ${exit_code})"
+  write_status "failed" "Update failed at line ${BASH_LINENO[0]} (exit ${exit_code})" || true
   exit "$exit_code"
 }
 
@@ -670,6 +694,7 @@ mapfile -t request < <(
 RELEASE_VERSION="${request[0]}"
 CYRENE_REPO="${request[1]}"
 DOWNLOAD_URL="${request[2]:-}"
+write_status "running" "Updater started"
 
 case "$(uname -m)" in
   x86_64|amd64) SYSTEM_ARCH="x64" ;;
@@ -695,6 +720,7 @@ esac
 
 log "Starting update to v${RELEASE_VERSION}"
 log "Downloading $DOWNLOAD_URL"
+write_status "downloading" "Downloading update package"
 
 TMP_DIR="$(mktemp -d)"
 PACKAGE_PATH="$TMP_DIR/$ASSET_NAME"
@@ -720,6 +746,11 @@ if [ -d "$CYRENE_HOME/backend/data" ]; then
   cp -a "$CYRENE_HOME/backend/data" "$DATA_TMP"
 fi
 
+LOGS_TMP="$TMP_DIR/logs"
+if [ -d "$CYRENE_HOME/backend/logs" ]; then
+  cp -a "$CYRENE_HOME/backend/logs" "$LOGS_TMP"
+fi
+
 BACKUP_DIR="${CYRENE_HOME}.bak.update.$(date +%Y%m%d%H%M%S)"
 if [ -d "$CYRENE_HOME" ]; then
   cp -a "$CYRENE_HOME" "$BACKUP_DIR"
@@ -728,6 +759,7 @@ fi
 
 systemctl stop cyrene-frontend 2>/dev/null || true
 systemctl stop cyrene-backend 2>/dev/null || true
+write_status "installing" "Installing update package"
 
 rm -rf "$CYRENE_HOME"
 mkdir -p "$CYRENE_HOME"
@@ -738,6 +770,10 @@ if [ -d "$DATA_TMP" ]; then
   rm -rf "$CYRENE_HOME/backend/data"
   cp -a "$DATA_TMP" "$CYRENE_HOME/backend/data"
 fi
+if [ -d "$LOGS_TMP" ]; then
+  cp -a "$LOGS_TMP/." "$CYRENE_HOME/backend/logs/"
+fi
+reopen_log
 
 chmod +x "$CYRENE_HOME/backend/server" 2>/dev/null || true
 
@@ -753,6 +789,7 @@ if PATH="$RUNTIME_PATH" command -v bun >/dev/null 2>&1; then
 fi
 
 rm -f "$REQUEST_FILE"
+write_status "completed" "Update to v${RELEASE_VERSION} completed"
 systemctl restart cyrene-backend
 sleep 2
 systemctl restart cyrene-frontend

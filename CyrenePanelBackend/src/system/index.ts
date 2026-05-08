@@ -22,6 +22,14 @@ const DATA_DIR = join(process.cwd(), "data");
 const LOG_DIR = join(process.cwd(), "logs");
 const UPDATE_REQUEST_PATH = join(DATA_DIR, "update-request.json");
 const UPDATE_LOG_PATH = join(LOG_DIR, "update.log");
+const UPDATE_STATUS_PATH = join(DATA_DIR, "update-status.json");
+
+interface PanelUpdateStatus {
+  status?: string;
+  version?: string;
+  message?: string;
+  updatedAt?: string;
+}
 
 function getOfficialServerUrl(): string {
   return (
@@ -69,6 +77,30 @@ function readUpdateLogs(): string[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-80);
+}
+
+function readUpdateStatus(): PanelUpdateStatus | null {
+  if (!existsSync(UPDATE_STATUS_PATH)) return null;
+  try {
+    return JSON.parse(readFileSync(UPDATE_STATUS_PATH, "utf-8")) as PanelUpdateStatus;
+  } catch {
+    return null;
+  }
+}
+
+function writeUpdateStatus(status: PanelUpdateStatus) {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(
+    UPDATE_STATUS_PATH,
+    JSON.stringify(
+      {
+        ...status,
+        updatedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 function normalizeVersion(version: string): number[] {
@@ -353,6 +385,11 @@ export const systemRoutes = new Elysia()
 
       mkdirSync(DATA_DIR, { recursive: true });
       mkdirSync(LOG_DIR, { recursive: true });
+      writeUpdateStatus({
+        status: "submitted",
+        version: latestVersion,
+        message: "Update request submitted, waiting for updater service",
+      });
       writeFileSync(
         UPDATE_LOG_PATH,
         `[${new Date().toLocaleString()}] Update requested for ${latestVersion} by ${auth.profile.username}\n`,
@@ -392,16 +429,20 @@ export const systemRoutes = new Elysia()
     const auth = await requireAdmin(jwt, request);
     if (!auth.ok) return { success: false, message: auth.message, logs: [] };
     const logs = readUpdateLogs();
+    const status = readUpdateStatus();
     const lastLine = logs[logs.length - 1] || "";
-    const failed = /failed|invalid|refusing|unsupported|required|not found|missing|must run|error/i.test(lastLine);
-    const completed = /completed/i.test(lastLine);
+    const failed = status?.status === "failed" || /failed|invalid|refusing|unsupported|required|not found|missing|must run|error/i.test(lastLine);
+    const completed = status?.status === "completed" || /completed/i.test(lastLine);
+    const requestExists = existsSync(UPDATE_REQUEST_PATH);
+    const statusRunning = !!status?.status && ["submitted", "running", "downloading", "installing", "restarting"].includes(status.status);
     return {
       success: true,
       logs,
-      running: existsSync(UPDATE_REQUEST_PATH) && !completed && !failed,
+      running: (requestExists || statusRunning) && !completed && !failed,
       completed,
       failed,
       lastLine,
+      status,
     };
   })
   .get("/api/system", async ({ jwt, request }: any) => {
