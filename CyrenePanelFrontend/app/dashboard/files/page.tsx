@@ -1,6 +1,6 @@
 "use client";
 
-import { type DragEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, type DragEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "next-themes";
@@ -382,7 +382,7 @@ function FileTreeNode({
   );
 }
 
-export default function FilesPage() {
+function FilesPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { resolvedTheme } = useTheme();
@@ -1778,6 +1778,24 @@ export default function FilesPage() {
         onOpenChange={setTransferDialogOpen} 
         nodes={nodes} 
       />
+    </div>
+  );
+}
+
+export default function FilesPage() {
+  return (
+    <Suspense fallback={<FilesPageFallback />}>
+      <FilesPageContent />
+    </Suspense>
+  );
+}
+
+function FilesPageFallback() {
+  return (
+    <div className="mx-auto flex h-[calc(100vh-7rem)] w-full max-w-7xl flex-col gap-4 p-4">
+      <Skeleton className="h-10 w-72" />
+      <Skeleton className="h-12 w-full" />
+      <Skeleton className="h-full w-full" />
     </div>
   );
 }
