@@ -35,6 +35,7 @@ RUNTIME_PATH="/usr/local/bin:/usr/bin:/bin"
 BACKEND_START_SINCE=""
 ADMIN_USERNAME=""
 ADMIN_PASSWORD=""
+API_KEY=""
 
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC}   $*"; }
@@ -485,6 +486,20 @@ change_password() {
   success "管理员密码已修改。"
 }
 
+reset_api_key() {
+  require_root
+  require_bun
+  require_db
+
+  local new_key
+  new_key="$(
+    PATH="$RUNTIME_PATH" CYP_DB="$(db_path)" bun -e 'import { Database } from "bun:sqlite"; import { randomBytes } from "crypto"; const db = new Database(process.env.CYP_DB); db.exec("PRAGMA busy_timeout = 5000"); const key = randomBytes(16).toString("hex"); db.query("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run("api_key", key); console.log(key);'
+  )"
+
+  restart_backend
+  success "API Key 已重置：$new_key"
+}
+
 show_status() {
   systemctl --no-pager status cyrene-backend cyrene-frontend || true
 }
@@ -509,9 +524,10 @@ menu() {
     echo "  1. 重启面板"
     echo "  2. 修改管理员用户名"
     echo "  3. 修改管理员密码"
-    echo "  4. 查看面板状态"
-    echo "  5. 查看访问信息"
-    echo "  6. 查看实时日志"
+    echo "  4. 重置 API Key"
+    echo "  5. 查看面板状态"
+    echo "  6. 查看访问信息"
+    echo "  7. 查看实时日志"
     echo "  0. 退出"
     echo ""
     read -r -p "请输入选项: " choice
@@ -520,9 +536,10 @@ menu() {
       1) restart_panel ;;
       2) change_username ;;
       3) change_password ;;
-      4) show_status ;;
-      5) show_info ;;
-      6) show_logs ;;
+      4) reset_api_key ;;
+      5) show_status ;;
+      6) show_info ;;
+      7) show_logs ;;
       0) exit 0 ;;
       *) warn "无效选项，请重新输入。" ;;
     esac
@@ -536,6 +553,7 @@ usage() {
   cyp restart        重启面板
   cyp username       修改管理员用户名
   cyp password       修改管理员密码
+  cyp apikey         重置 API Key
   cyp status         查看服务状态
   cyp info           查看访问信息
   cyp logs           查看实时日志
@@ -547,6 +565,7 @@ case "${1:-menu}" in
   restart) restart_panel ;;
   username) change_username ;;
   password) change_password ;;
+  apikey|api-key) reset_api_key ;;
   status) show_status ;;
   info) show_info ;;
   logs) show_logs ;;
@@ -659,6 +678,7 @@ start_services() {
 capture_admin_credentials() {
   ADMIN_USERNAME=""
   ADMIN_PASSWORD=""
+  API_KEY=""
 
   if [ -z "$BACKEND_START_SINCE" ] || ! command -v journalctl >/dev/null 2>&1; then
     return
@@ -681,6 +701,12 @@ capture_admin_credentials() {
     )"
     ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
   fi
+
+  API_KEY="$(
+    printf '%s\n' "$backend_logs" \
+      | sed -nE 's/.*API Key[：:][[:space:]]*([^[:space:]]+).*/\1/p' \
+      | tail -n1
+  )"
 }
 
 print_summary() {
@@ -703,6 +729,14 @@ print_summary() {
   else
     echo -e "    已存在管理员账号，本次部署未重新生成初始密码。"
     echo -e "    如需找回或重置，请查看后端日志或在面板内修改用户密码。"
+  fi
+  echo ""
+  echo -e "  API Key:"
+  if [ -n "$API_KEY" ]; then
+    echo -e "    ${YELLOW}${API_KEY}${NC}"
+  else
+    echo -e "    已存在 API Key，本次部署未重新生成。"
+    echo -e "    如需重置，请运行：${CYAN}sudo cyp apikey${NC}"
   fi
   echo ""
   echo -e "  常用命令:"
