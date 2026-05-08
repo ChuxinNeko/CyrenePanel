@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } from "os";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
 import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
@@ -17,12 +18,36 @@ interface OfficialPanelRelease {
   downloadUrl?: unknown;
 }
 
+const DATA_DIR = join(process.cwd(), "data");
+const UPDATE_REQUEST_PATH = join(DATA_DIR, "update-request.json");
+
 function getOfficialServerUrl(): string {
   return (
     process.env.CYRENE_OFFICIAL_SERVER_URL ||
     process.env.OFFICIAL_SERVER_URL ||
     "https://dockerhub.nekofun.top"
   ).replace(/\/+$/, "");
+}
+
+function getGitHubRepo(): string {
+  return (process.env.CYRENE_REPO || "ChuxinNeko/CyrenePanel").replace(/^https:\/\/github\.com\//, "").replace(/\/+$/, "");
+}
+
+function getSystemReleaseArch(): string | null {
+  const systemArch = arch();
+  if (systemArch === "x64" || systemArch === "amd64") return "x64";
+  if (systemArch === "arm64" || systemArch === "aarch64") return "arm64";
+  return null;
+}
+
+function getGitHubReleaseDownloadUrl(version: string): string | null {
+  if (platform() !== "linux") return null;
+  const releaseArch = getSystemReleaseArch();
+  if (!releaseArch) return null;
+  const releaseVersion = version.replace(/^v/i, "");
+  const releaseTag = `v${releaseVersion}`;
+  const assetName = `CyrenePanel${releaseVersion}-linux-${releaseArch}.zip`;
+  return `https://github.com/${getGitHubRepo()}/releases/download/${releaseTag}/${assetName}`;
 }
 
 function normalizeVersion(version: string): number[] {
@@ -258,11 +283,85 @@ export const systemRoutes = new Elysia()
         changelog: normalizeChangelog(release),
         releaseDate: typeof release.releaseDate === "string" ? release.releaseDate : null,
         downloadUrl: typeof release.downloadUrl === "string" ? release.downloadUrl : null,
+        githubDownloadUrl: getGitHubReleaseDownloadUrl(latestVersion),
+        canAutoUpdate: platform() === "linux" && !!getSystemReleaseArch() && existsSync("/usr/local/bin/cyp-update-apply"),
       };
     } catch (e: any) {
       return {
         success: false,
         message: `检查更新失败: ${e?.message || "unknown error"}`,
+        currentVersion: CYRENE_VERSION,
+      };
+    }
+  })
+  .post("/api/system/update/apply", async ({ jwt, request }: any) => {
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token) return { success: false, message: "未授权" };
+    const profile = await jwt.verify(token);
+    if (!profile) return { success: false, message: "未授权" };
+    if (profile.role !== "admin") return { success: false, message: "仅管理员可更新面板" };
+    if (platform() !== "linux") return { success: false, message: "自动更新仅支持 Linux 部署环境" };
+
+    const releaseArch = getSystemReleaseArch();
+    if (!releaseArch) return { success: false, message: `不支持的系统架构：${arch()}` };
+    if (!existsSync("/usr/local/bin/cyp-update-apply")) {
+      return { success: false, message: "未安装自动更新助手，请先使用新版一键脚本重新部署一次" };
+    }
+
+    try {
+      const release = await fetchOfficialPanelRelease();
+      const latestVersion =
+        typeof release.version === "string"
+          ? release.version
+          : typeof release.latestVersion === "string"
+            ? release.latestVersion
+            : "";
+
+      if (!latestVersion) {
+        return { success: false, message: "官方服务器未返回有效版本号" };
+      }
+
+      if (compareVersions(latestVersion, CYRENE_VERSION) <= 0) {
+        return {
+          success: false,
+          message: "当前已经是最新版本",
+          currentVersion: CYRENE_VERSION,
+          latestVersion,
+        };
+      }
+
+      const githubDownloadUrl = getGitHubReleaseDownloadUrl(latestVersion);
+      if (!githubDownloadUrl) return { success: false, message: "无法生成 GitHub Release 下载地址" };
+
+      mkdirSync(DATA_DIR, { recursive: true });
+      writeFileSync(
+        UPDATE_REQUEST_PATH,
+        JSON.stringify(
+          {
+            version: latestVersion,
+            currentVersion: CYRENE_VERSION,
+            repo: getGitHubRepo(),
+            downloadUrl: githubDownloadUrl,
+            requestedBy: profile.username,
+            requestedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+      );
+
+      return {
+        success: true,
+        message: "更新任务已提交，面板将自动下载并重启",
+        currentVersion: CYRENE_VERSION,
+        latestVersion,
+        githubDownloadUrl,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        message: `提交更新失败: ${e?.message || "unknown error"}`,
         currentVersion: CYRENE_VERSION,
       };
     }

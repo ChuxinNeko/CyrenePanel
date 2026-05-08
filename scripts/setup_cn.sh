@@ -585,6 +585,209 @@ CYP
   success "cyp 管理命令已安装：cyp"
 }
 
+install_update_helper() {
+  step "安装面板自动更新助手"
+
+  mkdir -p /usr/local/bin "$CYRENE_HOME/backend/data" "$CYRENE_HOME/backend/logs"
+
+  cat > /usr/local/bin/cyp-update-apply <<'UPDATER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CYRENE_HOME="${CYRENE_HOME:-__CYRENE_HOME__}"
+CYRENE_USER="${CYRENE_USER:-__CYRENE_USER__}"
+BACKEND_PORT="${BACKEND_PORT:-__BACKEND_PORT__}"
+FRONTEND_PORT="${FRONTEND_PORT:-__FRONTEND_PORT__}"
+RUNTIME_PATH="${RUNTIME_PATH:-/usr/local/bin:/usr/bin:/bin}"
+REQUEST_FILE="$CYRENE_HOME/backend/data/update-request.json"
+LOG_FILE="$CYRENE_HOME/backend/logs/update.log"
+
+mkdir -p "$(dirname "$LOG_FILE")"
+exec >>"$LOG_FILE" 2>&1
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+cleanup() {
+  if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
+trap cleanup EXIT
+
+if [ "${EUID}" -ne 0 ]; then
+  log "cyp-update-apply must run as root"
+  exit 1
+fi
+
+if [ ! -f "$REQUEST_FILE" ]; then
+  log "No update request found"
+  exit 0
+fi
+
+if ! PATH="$RUNTIME_PATH" command -v bun >/dev/null 2>&1; then
+  log "bun not found in PATH=$RUNTIME_PATH"
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+  log "curl and unzip are required"
+  exit 1
+fi
+
+mapfile -t request < <(
+  PATH="$RUNTIME_PATH" CYP_REQUEST_FILE="$REQUEST_FILE" bun -e '
+    const fs = require("fs");
+    const req = JSON.parse(fs.readFileSync(process.env.CYP_REQUEST_FILE, "utf8"));
+    const version = String(req.version || "").replace(/^v/i, "");
+    if (!/^\d+(?:\.\d+){0,4}$/.test(version)) {
+      console.error("Invalid version: " + req.version);
+      process.exit(2);
+    }
+    const repo = String(req.repo || "ChuxinNeko/CyrenePanel")
+      .replace(/^https:\/\/github\.com\//, "")
+      .replace(/\/+$/, "");
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+      console.error("Invalid repo: " + repo);
+      process.exit(3);
+    }
+    const downloadUrl = typeof req.downloadUrl === "string" ? req.downloadUrl : "";
+    console.log(version);
+    console.log(repo);
+    console.log(downloadUrl);
+  '
+)
+
+RELEASE_VERSION="${request[0]}"
+CYRENE_REPO="${request[1]}"
+DOWNLOAD_URL="${request[2]:-}"
+
+case "$(uname -m)" in
+  x86_64|amd64) SYSTEM_ARCH="x64" ;;
+  aarch64|arm64) SYSTEM_ARCH="arm64" ;;
+  *)
+    log "Unsupported architecture: $(uname -m)"
+    exit 1
+    ;;
+esac
+
+ASSET_NAME="CyrenePanel${RELEASE_VERSION}-linux-${SYSTEM_ARCH}.zip"
+if [ -z "$DOWNLOAD_URL" ]; then
+  DOWNLOAD_URL="https://github.com/${CYRENE_REPO}/releases/download/v${RELEASE_VERSION}/${ASSET_NAME}"
+fi
+
+case "$DOWNLOAD_URL" in
+  https://github.com/*) ;;
+  *)
+    log "Refusing non-GitHub download URL: $DOWNLOAD_URL"
+    exit 1
+    ;;
+esac
+
+log "Starting update to v${RELEASE_VERSION}"
+log "Downloading $DOWNLOAD_URL"
+
+TMP_DIR="$(mktemp -d)"
+PACKAGE_PATH="$TMP_DIR/$ASSET_NAME"
+curl -fL --retry 3 --retry-delay 2 "$DOWNLOAD_URL" -o "$PACKAGE_PATH"
+unzip -t "$PACKAGE_PATH" >/dev/null
+
+EXTRACT_DIR="$TMP_DIR/extract"
+mkdir -p "$EXTRACT_DIR"
+unzip -q "$PACKAGE_PATH" -d "$EXTRACT_DIR"
+
+PACKAGE_ROOT="$EXTRACT_DIR/CyrenePanel${RELEASE_VERSION}-linux-${SYSTEM_ARCH}"
+if [ ! -d "$PACKAGE_ROOT" ]; then
+  PACKAGE_ROOT="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+fi
+
+if [ ! -d "$PACKAGE_ROOT/backend" ] || [ ! -d "$PACKAGE_ROOT/frontend" ]; then
+  log "Invalid package structure: missing backend or frontend directory"
+  exit 1
+fi
+
+DATA_TMP="$TMP_DIR/data"
+if [ -d "$CYRENE_HOME/backend/data" ]; then
+  cp -a "$CYRENE_HOME/backend/data" "$DATA_TMP"
+fi
+
+BACKUP_DIR="${CYRENE_HOME}.bak.update.$(date +%Y%m%d%H%M%S)"
+if [ -d "$CYRENE_HOME" ]; then
+  cp -a "$CYRENE_HOME" "$BACKUP_DIR"
+  log "Backup created: $BACKUP_DIR"
+fi
+
+systemctl stop cyrene-frontend 2>/dev/null || true
+systemctl stop cyrene-backend 2>/dev/null || true
+
+rm -rf "$CYRENE_HOME"
+mkdir -p "$CYRENE_HOME"
+cp -a "$PACKAGE_ROOT/." "$CYRENE_HOME/"
+
+mkdir -p "$CYRENE_HOME/backend/data" "$CYRENE_HOME/backend/logs"
+if [ -d "$DATA_TMP" ]; then
+  rm -rf "$CYRENE_HOME/backend/data"
+  cp -a "$DATA_TMP" "$CYRENE_HOME/backend/data"
+fi
+
+chmod +x "$CYRENE_HOME/backend/server" 2>/dev/null || true
+
+cat > "$CYRENE_HOME/frontend/.env.production" <<EOF
+CYRENE_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}
+EOF
+
+chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME"
+chmod 755 "$CYRENE_HOME/backend/logs"
+
+if PATH="$RUNTIME_PATH" command -v bun >/dev/null 2>&1; then
+  su -s /bin/bash -c "cd \"$CYRENE_HOME/frontend\" && PATH=$RUNTIME_PATH bun install --production" "$CYRENE_USER"
+fi
+
+rm -f "$REQUEST_FILE"
+systemctl restart cyrene-backend
+sleep 2
+systemctl restart cyrene-frontend
+log "Update to v${RELEASE_VERSION} completed"
+UPDATER
+
+  sed -i \
+    -e "s#__CYRENE_HOME__#${CYRENE_HOME}#g" \
+    -e "s#__CYRENE_USER__#${CYRENE_USER}#g" \
+    -e "s#__BACKEND_PORT__#${BACKEND_PORT}#g" \
+    -e "s#__FRONTEND_PORT__#${FRONTEND_PORT}#g" \
+    /usr/local/bin/cyp-update-apply
+
+  chmod 0755 /usr/local/bin/cyp-update-apply
+
+  cat > /etc/systemd/system/cyrene-updater.service <<EOF
+[Unit]
+Description=CyrenePanel Auto Update Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cyp-update-apply
+EOF
+
+  cat > /etc/systemd/system/cyrene-updater.path <<EOF
+[Unit]
+Description=Watch CyrenePanel update requests
+
+[Path]
+PathExists=$CYRENE_HOME/backend/data/update-request.json
+Unit=cyrene-updater.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now cyrene-updater.path >/dev/null
+  success "面板自动更新助手已安装"
+}
+
 write_systemd_services() {
   step "注册 systemd 服务"
   cat > /etc/systemd/system/cyrene-backend.service <<EOF
@@ -762,6 +965,7 @@ main() {
   install_frontend_dependencies
   write_systemd_services
   install_cyp_command
+  install_update_helper
   start_services
   print_summary
 }

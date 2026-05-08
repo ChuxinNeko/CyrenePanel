@@ -11,6 +11,14 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { usePanelName } from "@/lib/panel-name-context";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +36,8 @@ import {
   Code,
   PackageCheck,
   ExternalLink,
+  Download,
+  Loader2,
 } from "lucide-react";
 
 interface PanelUpdateInfo {
@@ -38,6 +48,8 @@ interface PanelUpdateInfo {
   changelog?: string[];
   releaseDate?: string | null;
   downloadUrl?: string | null;
+  githubDownloadUrl?: string | null;
+  canAutoUpdate?: boolean;
   message?: string;
 }
 
@@ -63,6 +75,9 @@ export default function SettingsPage() {
   const [currentVersion, setCurrentVersion] = useState("");
   const [updateInfo, setUpdateInfo] = useState<PanelUpdateInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [applyingUpdate, setApplyingUpdate] = useState(false);
+  const [updateSubmitted, setUpdateSubmitted] = useState(false);
 
   // API Key
   const [apiKey, setApiKey] = useState("");
@@ -230,6 +245,8 @@ export default function SettingsPage() {
 
       const info = data as PanelUpdateInfo;
       setUpdateInfo(info);
+      setUpdateSubmitted(false);
+      setUpdateDialogOpen(true);
       setCurrentVersion(info.currentVersion || currentVersion);
       if (info.hasUpdate) {
         toast.info(`检测到新版本 ${info.latestVersion}`);
@@ -240,6 +257,23 @@ export default function SettingsPage() {
       toast.error("检查更新失败");
     } finally {
       setCheckingUpdate(false);
+    }
+  };
+
+  const handleApplyUpdate = async () => {
+    setApplyingUpdate(true);
+    try {
+      const { data, error } = await (api as any).api.system.update.apply.post();
+      if (error || !data?.success) {
+        toast.error(data?.message || "提交更新失败");
+        return;
+      }
+      setUpdateSubmitted(true);
+      toast.success(data.message || "更新任务已提交");
+    } catch {
+      toast.error("提交更新失败");
+    } finally {
+      setApplyingUpdate(false);
     }
   };
 
@@ -613,6 +647,85 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={updateDialogOpen} onOpenChange={setUpdateDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>检查更新结果</DialogTitle>
+            <DialogDescription>
+              版本信息来自官方服务器，自动更新将从 GitHub Release 下载对应系统架构的安装包。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-md border p-3">
+                <div className="text-muted-foreground">当前版本</div>
+                <div className="mt-1 font-mono font-medium">{updateInfo?.currentVersion || currentVersion || "未知"}</div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-muted-foreground">最新版本</div>
+                <div className="mt-1 font-mono font-medium">{updateInfo?.latestVersion || "未知"}</div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+              <div>
+                <div className="font-medium">
+                  {updateInfo?.hasUpdate ? "发现新版本" : "当前已是最新版本"}
+                </div>
+                {updateInfo?.releaseDate && (
+                  <div className="mt-1 text-sm text-muted-foreground">发布时间：{updateInfo.releaseDate}</div>
+                )}
+              </div>
+              <Badge variant={updateInfo?.hasUpdate ? "default" : "secondary"}>
+                {updateInfo?.hasUpdate ? "可更新" : "无需更新"}
+              </Badge>
+            </div>
+
+            {updateInfo?.changelog && updateInfo.changelog.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-medium">更新内容</div>
+                <div className="max-h-44 overflow-auto rounded-md border bg-muted/30 p-3">
+                  <ul className="space-y-1 text-sm text-muted-foreground">
+                    {updateInfo.changelog.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {updateSubmitted && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                更新任务已提交。面板会在后台下载 GitHub Release 并自动重启，页面可能会短暂断开。
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            {updateInfo?.downloadUrl && (
+              <Button variant="outline" asChild>
+                <a href={updateInfo.downloadUrl} target="_blank" rel="noreferrer">
+                  <ExternalLink className="h-4 w-4 mr-1.5" />
+                  查看说明
+                </a>
+              </Button>
+            )}
+            <Button
+              onClick={handleApplyUpdate}
+              disabled={!updateInfo?.hasUpdate || !updateInfo?.canAutoUpdate || applyingUpdate || updateSubmitted}
+            >
+              {applyingUpdate ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4 mr-1.5" />
+              )}
+              {updateSubmitted ? "已提交更新" : "自动下载并更新"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
