@@ -205,6 +205,24 @@ install_bun() {
     return
   fi
 
+  if [ -x "$HOME/.bun/bin/bun" ]; then
+    install -m 0755 "$HOME/.bun/bin/bun" /usr/local/bin/bun
+    BUN_BIN="/usr/local/bin/bun"
+    success "Bun is ready: $($BUN_BIN --version)"
+    return
+  fi
+
+  if [ -n "${SUDO_USER:-}" ]; then
+    local sudo_user_home
+    sudo_user_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    if [ -n "$sudo_user_home" ] && [ -x "$sudo_user_home/.bun/bin/bun" ]; then
+      install -m 0755 "$sudo_user_home/.bun/bin/bun" /usr/local/bin/bun
+      BUN_BIN="/usr/local/bin/bun"
+      success "Bun is ready: $($BUN_BIN --version)"
+      return
+    fi
+  fi
+
   info "正在安装 Bun（用于运行 Next.js 前端服务）..."
   curl -fsSL https://bun.sh/install | bash
 
