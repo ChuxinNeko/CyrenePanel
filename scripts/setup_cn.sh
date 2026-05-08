@@ -31,6 +31,7 @@ CYRENE_USER="${CYRENE_USER:-cyrene}"
 BACKEND_PORT="${BACKEND_PORT:-5677}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 TMP_DIR="${TMPDIR:-/tmp}/cyrene-install.$$"
+RUNTIME_PATH="/usr/local/bin:/usr/bin:/bin"
 
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC}   $*"; }
@@ -143,12 +144,13 @@ install_packages() {
 install_nodejs() {
   step "Check Node.js"
 
-  if command -v node >/dev/null 2>&1; then
-    success "Node.js is ready: $(node -v)"
+  if PATH="$RUNTIME_PATH" command -v node >/dev/null 2>&1; then
+    NODE_BIN="$(PATH="$RUNTIME_PATH" command -v node)"
+    success "Node.js is ready: $($NODE_BIN -v)"
     return
   fi
 
-  info "Node.js not found; installing Node.js 22"
+  info "Node.js not found in deployment PATH; installing Node.js 22"
 
   case "$PKG_MANAGER" in
     apt)
@@ -169,19 +171,28 @@ install_nodejs() {
       ;;
   esac
 
-  if ! command -v node >/dev/null 2>&1; then
+  if ! PATH="$RUNTIME_PATH" command -v node >/dev/null 2>&1; then
     error "Node.js 22 installation failed: node command not found"
     exit 1
   fi
 
-  success "Node.js installed: $(node -v)"
+  NODE_BIN="$(PATH="$RUNTIME_PATH" command -v node)"
+  success "Node.js installed: $($NODE_BIN -v)"
 }
 
 install_bun() {
   step "检查 Bun 运行环境"
+  if PATH="$RUNTIME_PATH" command -v bun >/dev/null 2>&1; then
+    BUN_BIN="$(PATH="$RUNTIME_PATH" command -v bun)"
+    success "Bun 已安装：$($BUN_BIN --version)"
+    return
+  fi
+
   if command -v bun >/dev/null 2>&1; then
     BUN_BIN="$(command -v bun)"
-    success "Bun 已安装：$($BUN_BIN --version)"
+    install -m 0755 "$BUN_BIN" /usr/local/bin/bun
+    BUN_BIN="/usr/local/bin/bun"
+    success "Bun is ready: $($BUN_BIN --version)"
     return
   fi
 
@@ -192,12 +203,12 @@ install_bun() {
     install -m 0755 "$HOME/.bun/bin/bun" /usr/local/bin/bun
   fi
 
-  if ! command -v bun >/dev/null 2>&1; then
+  if ! PATH="$RUNTIME_PATH" command -v bun >/dev/null 2>&1; then
     error "Bun 安装失败"
     exit 1
   fi
 
-  BUN_BIN="$(command -v bun)"
+  BUN_BIN="$(PATH="$RUNTIME_PATH" command -v bun)"
   success "Bun 安装完成：$($BUN_BIN --version)"
 }
 
@@ -316,7 +327,12 @@ CYRENE_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}
 EOF
 
   chown "$CYRENE_USER:$CYRENE_USER" .env.production
-  su -s /bin/bash -c "PATH=/usr/local/bin:/usr/bin:/bin bun install --production" "$CYRENE_USER"
+  if ! su -s /bin/bash -c "PATH=$RUNTIME_PATH command -v node >/dev/null && PATH=$RUNTIME_PATH command -v bun >/dev/null" "$CYRENE_USER"; then
+    error "Node.js or Bun is not available for user $CYRENE_USER in PATH=$RUNTIME_PATH"
+    exit 1
+  fi
+
+  su -s /bin/bash -c "PATH=$RUNTIME_PATH bun install --production" "$CYRENE_USER"
   success "前端生产依赖安装完成"
 }
 
@@ -364,7 +380,7 @@ Environment=NODE_ENV=production
 Environment=PORT=$FRONTEND_PORT
 Environment=HOSTNAME=0.0.0.0
 Environment=CYRENE_BACKEND_URL=http://127.0.0.1:$BACKEND_PORT
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$RUNTIME_PATH
 ExecStart=$BUN_BIN run next start -p $FRONTEND_PORT -H 0.0.0.0
 Restart=on-failure
 RestartSec=5
