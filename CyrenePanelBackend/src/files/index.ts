@@ -13,6 +13,10 @@ import {
   renameSync,
   existsSync,
   rmSync,
+  openSync,
+  closeSync,
+  writeSync,
+  ftruncateSync,
 } from "fs";
 import { join, extname, basename, dirname, relative, resolve, sep } from "path";
 import { execFileSync } from "child_process";
@@ -226,6 +230,78 @@ function ensureSafeFilePath(requestedPath: string): string {
   return realPath;
 }
 
+function ensureSafeUploadTarget(requestedPath: string): string {
+  if (!requestedPath || requestedPath.endsWith("/") || requestedPath.endsWith("\\")) {
+    throw new Error("缺少文件名");
+  }
+  const realPath = safePath(requestedPath);
+  if (!realPath) throw new Error("路径不允许");
+  const parentDir = dirname(realPath);
+  if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
+  if (!statSync(parentDir).isDirectory()) throw new Error("目标目录无效");
+  if (existsSync(realPath) && statSync(realPath).isDirectory()) throw new Error("目标是目录而非文件");
+  return realPath;
+}
+
+function decodeBase64Chunk(data: string): Buffer {
+  if (typeof data !== "string") throw new Error("分片内容无效");
+  const commaIndex = data.indexOf(",");
+  const raw = commaIndex >= 0 ? data.slice(commaIndex + 1) : data;
+  return Buffer.from(raw, "base64");
+}
+
+function getUploadStatus(requestedPath: string, totalSize?: number) {
+  const realPath = ensureSafeUploadTarget(requestedPath);
+  const uploaded = existsSync(realPath) ? statSync(realPath).size : 0;
+  return {
+    success: true,
+    uploaded: typeof totalSize === "number" && totalSize >= 0 ? Math.min(uploaded, totalSize) : uploaded,
+    exists: existsSync(realPath),
+  };
+}
+
+function writeUploadChunk(requestedPath: string, offset: number, totalSize: number, chunkBase64: string) {
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("offset 无效");
+  if (!Number.isSafeInteger(totalSize) || totalSize < 0) throw new Error("totalSize 无效");
+
+  const realPath = ensureSafeUploadTarget(requestedPath);
+  const chunk = decodeBase64Chunk(chunkBase64);
+  if (offset + chunk.length > totalSize) throw new Error("分片超过文件总大小");
+
+  const currentSize = existsSync(realPath) ? statSync(realPath).size : 0;
+  if (currentSize !== offset) {
+    return {
+      success: false,
+      resumable: true,
+      uploaded: Math.min(currentSize, totalSize),
+      message: "上传偏移不匹配，已返回当前进度",
+    };
+  }
+
+  const fd = openSync(realPath, "a");
+  try {
+    writeSync(fd, chunk, 0, chunk.length);
+  } finally {
+    closeSync(fd);
+  }
+
+  const uploaded = statSync(realPath).size;
+  if (uploaded === totalSize) {
+    const truncateFd = openSync(realPath, "r+");
+    try {
+      ftruncateSync(truncateFd, totalSize);
+    } finally {
+      closeSync(truncateFd);
+    }
+  }
+  return {
+    success: true,
+    uploaded,
+    complete: uploaded >= totalSize,
+    message: uploaded >= totalSize ? "上传完成" : "分片已上传",
+  };
+}
+
 function removePath(realPath: string) {
   const stats = statSync(realPath);
   if (stats.isDirectory()) rmSync(realPath, { recursive: true, force: true });
@@ -411,6 +487,38 @@ export const fileRoutes = new Elysia()
     } catch (e: any) {
       logger.err(`文件列表失败: ${e.message}`);
       return { success: false, message: `读取失败: ${e.message}` };
+    }
+  })
+
+  // 查询上传进度，用于断点续传
+  .get("/api/files/upload/status", ({ query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const requestedPath = query.path as string;
+    if (!requestedPath) return { success: false, message: "缺少 path 参数" };
+    const totalSize = query.totalSize !== undefined ? Number(query.totalSize) : undefined;
+
+    try {
+      return getUploadStatus(requestedPath, totalSize);
+    } catch (e: any) {
+      logger.err(`上传进度查询失败: ${e.message}`);
+      return { success: false, message: `查询失败: ${e.message}` };
+    }
+  })
+
+  // 分片上传文件；客户端按 offset 顺序发送，服务端返回当前已写入字节数
+  .post("/api/files/upload/chunk", async ({ body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const { path: requestedPath, offset, totalSize, chunk } = body || {};
+    if (!requestedPath) return { success: false, message: "缺少 path" };
+    if (typeof chunk !== "string") return { success: false, message: "缺少 chunk" };
+
+    try {
+      const result = writeUploadChunk(requestedPath, Number(offset), Number(totalSize), chunk);
+      if (result.success && result.complete) logger.info(`文件上传完成: ${requestedPath}`);
+      return result;
+    } catch (e: any) {
+      logger.err(`文件上传失败: ${e.message}`);
+      return { success: false, message: `上传失败: ${e.message}` };
     }
   })
 

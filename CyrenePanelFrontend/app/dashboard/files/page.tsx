@@ -1,6 +1,6 @@
 "use client";
 
-import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "next-themes";
@@ -8,6 +8,7 @@ import {
   AlertCircle,
   Archive,
   ArrowLeft,
+  ArrowLeftRight,
   ArrowUpDown,
   CheckCircle,
   ChevronDown,
@@ -35,9 +36,9 @@ import {
   Save,
   Scissors,
   Search,
-  Server,
   ShieldCheck,
   Trash2,
+  UploadCloud,
   X,
 } from "lucide-react";
 
@@ -62,6 +63,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { NodeFileTransferDialog } from "@/components/node-file-transfer-dialog";
 
 interface FileEntry {
   name: string;
@@ -105,8 +113,18 @@ type ToastState = { message: string; type: "success" | "error" };
 type SortField = "name" | "size" | "modified" | "type";
 type ClipboardState = { mode: "copy" | "move"; paths: string[] } | null;
 type ContextMenuState = { x: number; y: number; entry: FileEntry | null } | null;
+type UploadStatus = "uploading" | "success" | "error";
+type UploadTask = {
+  id: string;
+  name: string;
+  size: number;
+  uploaded: number;
+  status: UploadStatus;
+  message?: string;
+};
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5676";
+const UPLOAD_CHUNK_SIZE = 1024 * 1024;
 const ARCHIVE_EXTENSIONS = [".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz"];
 const TEXT_EXTENSIONS = new Set([
   ".txt", ".log", ".md", ".json", ".yml", ".yaml", ".xml", ".toml",
@@ -133,6 +151,18 @@ async function fileFetch<T>(url: string, init?: RequestInit): Promise<T> {
   };
   const res = await fetch(`${API_BASE}${url}`, { ...init, headers });
   return res.json();
+}
+
+function readBlobAsBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.slice(result.indexOf(",") + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("读取文件分片失败"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function getNodeApiPrefix(nodeId: string | null): string {
@@ -268,6 +298,7 @@ function FileTreeNode({
   activePath,
   onToggle,
   onFileClick,
+  onDirClick,
   onLoadChildren,
 }: {
   node: TreeNode;
@@ -276,6 +307,7 @@ function FileTreeNode({
   activePath: string | null;
   onToggle: (path: string) => void;
   onFileClick: (path: string) => void;
+  onDirClick?: (path: string) => void;
   onLoadChildren: (path: string) => void;
 }) {
   const nodeRef = useRef<HTMLDivElement>(null);
@@ -310,11 +342,22 @@ function FileTreeNode({
         className={`flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors hover:bg-muted/80 ${isActive ? "bg-muted font-medium text-foreground" : "text-muted-foreground"}`}
         style={{ paddingLeft: `${depth * 14 + 4}px` }}
         onClick={() => {
-          if (!node.loaded) onLoadChildren(node.path);
-          onToggle(node.path);
+          if (onDirClick) {
+            onDirClick(node.path);
+          } else {
+            if (!node.loaded) onLoadChildren(node.path);
+            onToggle(node.path);
+          }
         }}
       >
-        <ChevronDown className={`h-3 w-3 shrink-0 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+        <ChevronDown
+          className={`h-3 w-3 shrink-0 transition-transform ${isExpanded ? "" : "-rotate-90"}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!node.loaded) onLoadChildren(node.path);
+            onToggle(node.path);
+          }}
+        />
         <FolderOpen className="h-3.5 w-3.5 shrink-0 text-yellow-500" />
         <span className="truncate">{node.name}</span>
       </div>
@@ -329,6 +372,7 @@ function FileTreeNode({
               activePath={activePath}
               onToggle={onToggle}
               onFileClick={onFileClick}
+              onDirClick={onDirClick}
               onLoadChildren={onLoadChildren}
             />
           ))}
@@ -383,10 +427,14 @@ export default function FilesPage() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [propertyEntries, setPropertyEntries] = useState<FileEntry[] | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(searchParams.get("node"));
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
-  const [nodeStatus, setNodeStatus] = useState<Record<string, boolean>>({});
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false);
 
   const prefix = getNodeApiPrefix(selectedNodeId);
   const showToast = useCallback((message: string, type: "success" | "error") => setToast({ message, type }), []);
@@ -415,6 +463,46 @@ export default function FilesPage() {
   const allVisibleSelected = visibleEntries.length > 0 && visibleEntries.every((entry) => selectedPaths.has(entry.path));
   const isWindowsNode = rootPath === "" || /^[A-Za-z]:/.test(currentPath) || entries.some((entry) => /^[A-Za-z]:/.test(entry.path));
   const tableColumnCount = isWindowsNode ? 6 : 7;
+
+  const initTreeRoot = useCallback(async () => {
+    const data = await fileFetch<{ success: boolean; entries?: FileEntry[] }>(`${prefix}/files?path=`);
+    if (!data.success || !data.entries) return;
+    setTreeRoot({
+      name: "/",
+      path: "",
+      isDirectory: true,
+      loaded: true,
+      children: data.entries.map((entry) => ({ name: entry.name, path: entry.path, isDirectory: entry.isDirectory, loaded: false })),
+    });
+    setExpandedPaths(new Set([""]));
+  }, [prefix]);
+
+  const loadTreeChildren = useCallback(async (dirPath: string) => {
+    const data = await fileFetch<{ success: boolean; entries?: FileEntry[] }>(`${prefix}/files?path=${encodeURIComponent(dirPath)}`);
+    if (!data.success || !data.entries) return;
+    const children = data.entries.map((entry) => ({ name: entry.name, path: entry.path, isDirectory: entry.isDirectory, loaded: false }));
+    setTreeRoot((prev) => {
+      if (!prev) return prev;
+      const update = (node: TreeNode): TreeNode => {
+        if (node.path === dirPath) return { ...node, children, loaded: true };
+        return node.children ? { ...node, children: node.children.map(update) } : node;
+      };
+      return update(prev);
+    });
+  }, [prefix]);
+
+  const expandTreeToPath = useCallback(async (filePath: string, isFile = true) => {
+    const parts = filePath.split("/").filter(Boolean);
+    let current = "";
+    const dirs: string[] = [""];
+    const limit = isFile ? parts.length - 1 : parts.length;
+    for (let i = 0; i < limit; i++) {
+      current = current ? `${current}/${parts[i]}` : parts[i];
+      dirs.push(current);
+    }
+    setExpandedPaths((prev) => new Set([...prev, ...dirs]));
+    for (const dir of dirs) await loadTreeChildren(dir);
+  }, [loadTreeChildren]);
 
   const fetchDir = useCallback(async (path: string) => {
     setFetching(true);
@@ -445,16 +533,117 @@ export default function FilesPage() {
     }
   }, []);
 
-  const fetchNodeStatuses = useCallback(async () => {
-    for (const node of nodes) {
-      try {
-        const data = await fileFetch<{ success: boolean; online?: boolean }>(`/api/nodes/${node.id}/status`);
-        setNodeStatus((prev) => ({ ...prev, [node.id]: data.success && !!data.online }));
-      } catch {
-        setNodeStatus((prev) => ({ ...prev, [node.id]: false }));
+  const updateUploadTask = useCallback((id: string, patch: Partial<UploadTask>) => {
+    setUploadTasks((prev) => prev.map((task) => (task.id === id ? { ...task, ...patch } : task)));
+  }, []);
+
+  const uploadSingleFile = useCallback(async (file: File) => {
+    const id = `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`;
+    const targetPath = joinPath(currentPath, file.name);
+    setUploadTasks((prev) => [
+      ...prev,
+      { id, name: file.name, size: file.size, uploaded: 0, status: "uploading" },
+    ]);
+
+    try {
+      const status = await fileFetch<{ success: boolean; uploaded?: number; message?: string }>(
+        `${prefix}/files/upload/status?path=${encodeURIComponent(targetPath)}&totalSize=${file.size}`,
+      );
+      if (!status.success) throw new Error(status.message || "无法获取上传进度");
+
+      let offset = Math.min(status.uploaded || 0, file.size);
+      updateUploadTask(id, { uploaded: offset });
+
+      if (file.size === 0) {
+        const result = await fileFetch<{ success: boolean; message?: string }>(
+          `${prefix}/files/upload/chunk`,
+          {
+            method: "POST",
+            body: JSON.stringify({ path: targetPath, offset: 0, totalSize: 0, chunk: "" }),
+          },
+        );
+        if (!result.success) throw new Error(result.message || "上传失败");
       }
+
+      while (offset < file.size) {
+        const end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size);
+        const chunk = await readBlobAsBase64(file.slice(offset, end));
+        const result = await fileFetch<{ success: boolean; uploaded?: number; complete?: boolean; resumable?: boolean; message?: string }>(
+          `${prefix}/files/upload/chunk`,
+          {
+            method: "POST",
+            body: JSON.stringify({ path: targetPath, offset, totalSize: file.size, chunk }),
+          },
+        );
+
+        if (!result.success) {
+          if (result.resumable && typeof result.uploaded === "number" && result.uploaded !== offset) {
+            offset = Math.min(result.uploaded, file.size);
+            updateUploadTask(id, { uploaded: offset });
+            continue;
+          }
+          throw new Error(result.message || "上传失败");
+        }
+
+        offset = Math.min(result.uploaded ?? end, file.size);
+        updateUploadTask(id, { uploaded: offset });
+      }
+
+      updateUploadTask(id, { uploaded: file.size, status: "success", message: "上传完成" });
+      return true;
+    } catch (error: any) {
+      updateUploadTask(id, { status: "error", message: error?.message || "上传失败" });
+      return false;
     }
-  }, [nodes]);
+  }, [currentPath, prefix, updateUploadTask]);
+
+  const uploadFiles = useCallback(async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList).filter((file) => file.size >= 0);
+    if (files.length === 0) return;
+
+    let successCount = 0;
+    for (const file of files) {
+      if (await uploadSingleFile(file)) successCount += 1;
+    }
+
+    if (successCount > 0) {
+      showToast(`已上传 ${successCount}/${files.length} 个文件`, "success");
+      fetchDir(currentPath);
+      if (treeRoot) loadTreeChildren(currentPath);
+    } else {
+      showToast("上传失败", "error");
+    }
+  }, [currentPath, fetchDir, loadTreeChildren, showToast, treeRoot, uploadSingleFile]);
+
+  const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    if (event.dataTransfer.items?.length) setDragActive(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  }, []);
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    if (event.dataTransfer.files.length > 0) uploadFiles(event.dataTransfer.files);
+  }, [uploadFiles]);
+
+
 
   const navigateTo = useCallback((path: string) => {
     if (fileListScrollRef.current) {
@@ -470,7 +659,8 @@ export default function FilesPage() {
     setOriginalContent("");
     setFileMeta(null);
     fetchDir(path);
-  }, [currentPath, fetchDir]);
+    expandTreeToPath(path, false);
+  }, [currentPath, fetchDir, expandTreeToPath]);
 
   useEffect(() => {
     const init = async () => {
@@ -480,7 +670,7 @@ export default function FilesPage() {
           router.push("/login");
           return;
         }
-        await Promise.all([fetchDir(""), fetchNodes()]);
+        await Promise.all([fetchDir(""), fetchNodes(), initTreeRoot()]);
       } catch {
         router.push("/login");
       } finally {
@@ -489,13 +679,14 @@ export default function FilesPage() {
       }
     };
     init();
-  }, [fetchDir, fetchNodes, router]);
+  }, [fetchDir, fetchNodes, initTreeRoot, router]);
 
   useEffect(() => {
     if (isFirstLoad.current) return;
     pendingScrollRestoreRef.current = { path: "", top: 0 };
     fetchDir("");
-  }, [fetchDir, selectedNodeId]);
+    initTreeRoot();
+  }, [fetchDir, initTreeRoot, selectedNodeId]);
 
   useEffect(() => {
     const pending = pendingScrollRestoreRef.current;
@@ -509,12 +700,7 @@ export default function FilesPage() {
     return () => window.cancelAnimationFrame(frame);
   }, [currentPath, entries, fetching]);
 
-  useEffect(() => {
-    if (nodes.length === 0) return;
-    fetchNodeStatuses();
-    const timer = window.setInterval(fetchNodeStatuses, 30000);
-    return () => window.clearInterval(timer);
-  }, [fetchNodeStatuses, nodes]);
+
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -532,49 +718,12 @@ export default function FilesPage() {
     };
   }, [contextMenu]);
 
-  const initTreeRoot = useCallback(async () => {
-    const data = await fileFetch<{ success: boolean; entries?: FileEntry[] }>(`${prefix}/files?path=`);
-    if (!data.success || !data.entries) return;
-    setTreeRoot({
-      name: "/",
-      path: "",
-      isDirectory: true,
-      loaded: true,
-      children: data.entries.map((entry) => ({ name: entry.name, path: entry.path, isDirectory: entry.isDirectory, loaded: false })),
-    });
-    setExpandedPaths(new Set([""]));
-  }, [prefix]);
 
-  const loadTreeChildren = useCallback(async (dirPath: string) => {
-    const data = await fileFetch<{ success: boolean; entries?: FileEntry[] }>(`${prefix}/files?path=${encodeURIComponent(dirPath)}`);
-    if (!data.success || !data.entries) return;
-    const children = data.entries.map((entry) => ({ name: entry.name, path: entry.path, isDirectory: entry.isDirectory, loaded: false }));
-    setTreeRoot((prev) => {
-      if (!prev) return prev;
-      const update = (node: TreeNode): TreeNode => {
-        if (node.path === dirPath) return { ...node, children, loaded: true };
-        return node.children ? { ...node, children: node.children.map(update) } : node;
-      };
-      return update(prev);
-    });
-  }, [prefix]);
-
-  const expandTreeToPath = useCallback(async (filePath: string) => {
-    const parts = filePath.split("/");
-    let current = "";
-    const dirs: string[] = [];
-    for (let i = 0; i < parts.length - 1; i++) {
-      current = current ? `${current}/${parts[i]}` : parts[i];
-      dirs.push(current);
-    }
-    setExpandedPaths((prev) => new Set([...prev, "", ...dirs]));
-    for (const dir of dirs) await loadTreeChildren(dir);
-  }, [loadTreeChildren]);
 
   const handleOpenFile = useCallback(async (entryOrPath: FileEntry | string) => {
     const filePath = typeof entryOrPath === "string" ? entryOrPath : entryOrPath.path;
     if (!treeRoot) await initTreeRoot();
-    await expandTreeToPath(filePath);
+    await expandTreeToPath(filePath, true);
     setFileLoading(true);
     setOpenFile(filePath);
     try {
@@ -862,128 +1011,250 @@ export default function FilesPage() {
             {currentNode ? `${currentNode.name} · ${currentNode.address}` : "主节点"} · {entries.length} 项
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            <Server className="h-4 w-4" />
-            <span>节点</span>
-          </div>
-          <select
-            value={selectedNodeId || ""}
-            onChange={(event) => {
-              setSelectedNodeId(event.target.value || null);
-              setCurrentPath("");
-              setClipboard(null);
-              setTreeRoot(null);
-              setExpandedPaths(new Set());
-            }}
-            className="h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="">主节点</option>
-            {nodes.map((node) => (
-              <option key={node.id} value={node.id}>
-                {node.name} {nodeStatus[node.id] ? "在线" : "离线"}
-              </option>
-            ))}
-          </select>
-          <Button variant="outline" size="sm" onClick={() => navigateTo(currentPath)} disabled={fetching}>
-            <RefreshCw className={`h-4 w-4 ${fetching ? "animate-spin" : ""}`} />
-            刷新
-          </Button>
-        </div>
+
       </div>
 
-      <Card className="shrink-0">
-        <CardContent className="flex flex-col gap-3 p-3">
-          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => currentPath && navigateTo(parentPath(currentPath))}
-              disabled={!currentPath}
-            >
-              <ArrowLeft className="h-4 w-4" />
-              上级
-            </Button>
-            <div className="min-w-0 flex-1">
-              <Breadcrumb path={currentPath} root={rootPath} onNavigate={navigateTo} />
+      <Card className="flex flex-row min-h-0 flex-1 overflow-hidden p-0 gap-0">
+        {treeSidebarOpen && (
+          <div className="hidden w-64 shrink-0 flex-col border-r bg-muted/10 md:flex">
+            <div className="flex shrink-0 items-center justify-between border-b px-3 py-2.5 text-sm font-medium">
+              <div className="flex items-center gap-1.5">
+                <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                <span>文件导航</span>
+              </div>
             </div>
-            <div className="relative min-w-56">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="搜索当前目录" className="h-8 pl-8" />
+            <div className="flex-1 overflow-auto p-2">
+              {treeRoot ? (
+                <FileTreeNode
+                  node={treeRoot}
+                  depth={0}
+                  expandedPaths={expandedPaths}
+                  activePath={currentPath}
+                  onToggle={(path) => setExpandedPaths((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(path)) next.delete(path);
+                    else next.add(path);
+                    return next;
+                  })}
+                  onFileClick={(path) => handleOpenFile(path)}
+                  onDirClick={(path) => navigateTo(path)}
+                  onLoadChildren={loadTreeChildren}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  加载中...
+                </div>
+              )}
             </div>
           </div>
+        )}
 
-          <div className="flex min-h-8 flex-wrap items-center gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="outline" onClick={() => { setCreateKind("file"); setCreateOpen(true); }}>
-                <FilePlus className="h-4 w-4" />
-                新建文件
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => { setCreateKind("folder"); setCreateOpen(true); }}>
-                <FolderPlus className="h-4 w-4" />
-                新建文件夹
-              </Button>
-              <Button size="sm" variant="outline" disabled={selectedEntries.length === 0} onClick={() => setClipboard({ mode: "copy", paths: selectedEntries.map((entry) => entry.path) })}>
-                <Copy className="h-4 w-4" />
-                复制
-              </Button>
-              <Button size="sm" variant="outline" disabled={selectedEntries.length === 0} onClick={() => setClipboard({ mode: "move", paths: selectedEntries.map((entry) => entry.path) })}>
-                <Scissors className="h-4 w-4" />
-                剪切
-              </Button>
-              <Button size="sm" variant="outline" disabled={!clipboard} onClick={handlePaste}>
-                <ClipboardPaste className="h-4 w-4" />
-                粘贴
-              </Button>
-              <Button size="sm" variant="outline" disabled={selectedEntries.length === 0} onClick={openArchiveDialog}>
-                <Archive className="h-4 w-4" />
-                压缩
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+          {/* Header row: Nav + Search + Node Select */}
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-2.5 bg-muted/10">
+            <div className="flex items-center gap-1.5 overflow-hidden">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="hidden h-8 w-8 md:flex shrink-0 text-muted-foreground"
+                title={treeSidebarOpen ? "隐藏文件树" : "显示文件树"}
+                onClick={() => setTreeSidebarOpen((value) => !value)}
+              >
+                {treeSidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
               </Button>
               <Button
-                size="sm"
-                variant="outline"
-                disabled={!mainActionEntry || !isArchive(mainActionEntry)}
-                onClick={() => mainActionEntry && handleExtract(mainActionEntry)}
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 text-muted-foreground"
+                onClick={() => currentPath && navigateTo(parentPath(currentPath))}
+                disabled={!currentPath}
               >
-                <FileArchive className="h-4 w-4" />
-                解压
+                <ArrowLeft className="h-4 w-4" />
               </Button>
-              {!isWindowsNode && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!mainActionEntry}
-                  onClick={() => {
-                    if (!mainActionEntry) return;
-                    setChmodTarget(mainActionEntry);
-                    setChmodMode(mainActionEntry.mode || "755");
-                    setChmodRecursive(mainActionEntry.isDirectory);
-                  }}
-                >
-                  <ShieldCheck className="h-4 w-4" />
-                  权限
-                </Button>
-              )}
-              <Button size="sm" variant="destructive" disabled={selectedEntries.length === 0} onClick={() => setDeleteOpen(true)}>
-                <Trash2 className="h-4 w-4" />
-                删除
-              </Button>
+              <div className="min-w-0 flex-1 border-l pl-3 ml-1 border-border">
+                <Breadcrumb path={currentPath} root={rootPath} onNavigate={navigateTo} />
+              </div>
             </div>
-            <div className="ml-auto flex h-6 min-w-64 items-center justify-end gap-2 overflow-hidden text-xs text-muted-foreground">
-              <Badge variant="outline" className={clipboard ? "" : "invisible"}>
-                {clipboard ? `${clipboard.mode === "copy" ? "复制" : "剪切"} ${clipboard.paths.length} 项` : "占位"}
-              </Badge>
-              <Badge variant="secondary" className={selectedEntries.length > 0 ? "" : "invisible"}>
-                {selectedEntries.length > 0 ? `已选 ${selectedEntries.length} 项 · ${formatBytes(totalSelectedSize)}` : "占位"}
-              </Badge>
+
+            <div className="flex shrink-0 items-center gap-2">
+              <div className="relative w-64 max-w-sm hidden sm:block">
+                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input 
+                  value={searchTerm} 
+                  onChange={(event) => setSearchTerm(event.target.value)} 
+                  placeholder="搜索文件..." 
+                  className="h-8 pl-8 bg-background border-muted rounded-full text-xs shadow-sm focus-visible:ring-1" 
+                />
+              </div>
+              <div className="h-4 w-px bg-border mx-1 hidden sm:block"></div>
+              <select
+                value={selectedNodeId || ""}
+                onChange={(event) => {
+                  setSelectedNodeId(event.target.value || null);
+                  setCurrentPath("");
+                  setClipboard(null);
+                  setTreeRoot(null);
+                  setExpandedPaths(new Set());
+                }}
+                className="h-8 max-w-32 truncate rounded-full border border-input bg-background px-3 text-xs outline-none focus:ring-1 focus:ring-ring shadow-sm"
+              >
+                <option value="">主节点</option>
+                {nodes.map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name}
+                  </option>
+                ))}
+              </select>
+              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => { fetchDir(currentPath); if(treeRoot) loadTreeChildren(currentPath); }} disabled={fetching}>
+                <RefreshCw className={`h-4 w-4 ${fetching ? "animate-spin" : ""}`} />
+              </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
 
-      <div className="min-h-0 flex-1">
-        <Card className="h-full min-h-0">
-          <CardContent className="flex h-full min-h-0 flex-col p-0">
+          {/* Contextual Action Bar */}
+          <div className={`flex shrink-0 items-center gap-2 px-4 py-2 transition-colors duration-300 ${selectedEntries.length > 0 ? "bg-primary/5 border-b border-primary/10" : "bg-background border-b"}`}>
+            {selectedEntries.length > 0 ? (
+              <div className="flex flex-1 items-center justify-between animate-in fade-in slide-in-from-top-1">
+                <div className="flex items-center gap-2">
+                  <Badge variant="default" className="rounded-sm px-1.5 font-mono text-xs shadow-sm">
+                    {selectedEntries.length} 
+                  </Badge>
+                  <span className="text-sm font-medium text-foreground">项已选择</span>
+                  <span className="text-xs text-muted-foreground ml-2 hidden sm:inline-block">({formatBytes(totalSelectedSize)})</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Button size="sm" variant="ghost" className="h-8 text-primary hover:bg-primary/10 hover:text-primary" onClick={() => setClipboard({ mode: "copy", paths: selectedEntries.map((entry) => entry.path) })}>
+                    <Copy className="h-4 w-4 sm:mr-1.5" />
+                    <span className="hidden sm:inline">复制</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-8 text-primary hover:bg-primary/10 hover:text-primary" onClick={() => setClipboard({ mode: "move", paths: selectedEntries.map((entry) => entry.path) })}>
+                    <Scissors className="h-4 w-4 sm:mr-1.5" />
+                    <span className="hidden sm:inline">剪切</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-8 text-primary hover:bg-primary/10 hover:text-primary" onClick={openArchiveDialog}>
+                    <Archive className="h-4 w-4 sm:mr-1.5" />
+                    <span className="hidden sm:inline">压缩</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 text-primary hover:bg-primary/10 hover:text-primary"
+                    disabled={!mainActionEntry || !isArchive(mainActionEntry)}
+                    onClick={() => mainActionEntry && handleExtract(mainActionEntry)}
+                  >
+                    <FileArchive className="h-4 w-4 sm:mr-1.5" />
+                    <span className="hidden sm:inline">解压</span>
+                  </Button>
+                  {!isWindowsNode && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 text-primary hover:bg-primary/10 hover:text-primary"
+                      disabled={!mainActionEntry}
+                      onClick={() => {
+                        if (!mainActionEntry) return;
+                        setChmodTarget(mainActionEntry);
+                        setChmodMode(mainActionEntry.mode || "755");
+                        setChmodRecursive(mainActionEntry.isDirectory);
+                      }}
+                    >
+                      <ShieldCheck className="h-4 w-4 sm:mr-1.5" />
+                      <span className="hidden sm:inline">权限</span>
+                    </Button>
+                  )}
+                  <div className="h-4 w-px bg-primary/20 mx-1"></div>
+                  <Button size="sm" variant="ghost" className="h-8 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setDeleteOpen(true)}>
+                    <Trash2 className="h-4 w-4 sm:mr-1.5" />
+                    <span className="hidden sm:inline">删除</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-8 ml-1" onClick={() => setSelectedPaths(new Set())}>
+                    取消
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-between animate-in fade-in slide-in-from-top-1">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    ref={uploadInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(event) => {
+                      if (event.target.files) uploadFiles(event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-full" onClick={() => uploadInputRef.current?.click()}>
+                    <UploadCloud className="h-4 w-4" />
+                    上传
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-full shadow-sm bg-background hover:bg-muted" onClick={() => setTransferDialogOpen(true)}>
+                    <ArrowLeftRight className="h-4 w-4 text-primary" />
+                    节点互传
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button size="sm" className="h-8 gap-1.5 rounded-full px-4 shadow-sm bg-primary text-primary-foreground hover:bg-primary/90">
+                        <FilePlus className="h-4 w-4" />
+                        新建 <ChevronDown className="h-3 w-3 opacity-50" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-40">
+                      <DropdownMenuItem onClick={() => { setCreateKind("file"); setCreateOpen(true); }}>
+                        <FileText className="mr-2 h-4 w-4 text-blue-500" />
+                        新建文件
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => { setCreateKind("folder"); setCreateOpen(true); }}>
+                        <FolderPlus className="mr-2 h-4 w-4 text-yellow-500" />
+                        新建文件夹
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  <div className="h-4 w-px bg-border mx-1 hidden sm:block"></div>
+
+                  <Button size="sm" variant="ghost" className="h-8 gap-1.5 text-muted-foreground" disabled={!clipboard} onClick={handlePaste}>
+                    <ClipboardPaste className="h-4 w-4" />
+                    粘贴
+                    {clipboard && (
+                      <Badge variant="secondary" className="ml-1 h-5 px-1 font-mono text-[10px]">
+                        {clipboard.paths.length}
+                      </Badge>
+                    )}
+                  </Button>
+                </div>
+                
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {clipboard && (
+                    <span className="flex items-center gap-1 bg-muted/50 rounded-full px-2 py-0.5">
+                      <span className="text-[10px]">
+                        剪贴板: {clipboard.mode === "copy" ? "复制" : "剪切"} {clipboard.paths.length} 项
+                      </span>
+                      <Button variant="ghost" size="icon" className="h-4 w-4 ml-1 rounded-full hover:bg-muted" onClick={() => setClipboard(null)}>
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          <CardContent
+            className="relative flex min-h-0 flex-1 flex-col p-0"
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
+            {dragActive && (
+              <div className="pointer-events-none absolute inset-3 z-30 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-primary bg-primary/10 text-primary shadow-sm backdrop-blur-sm">
+                <UploadCloud className="mb-3 h-10 w-10" />
+                <div className="text-base font-medium">释放文件上传到当前目录</div>
+                <div className="mt-1 text-xs text-primary/80">{currentPath || "/"}</div>
+              </div>
+            )}
             <div
               ref={fileListScrollRef}
               className="min-h-0 flex-1 overflow-auto"
@@ -1042,7 +1313,7 @@ export default function FilesPage() {
                         <TableRow
                           key={entry.path}
                           data-state={selected ? "selected" : undefined}
-                          className="cursor-pointer"
+                          className="cursor-pointer group"
                           onDoubleClick={() => !entry.isDirectory && handleOpenFile(entry)}
                           onClick={() => {
                             if (entry.isDirectory) navigateTo(entry.path);
@@ -1075,7 +1346,7 @@ export default function FilesPage() {
                             </TableCell>
                           )}
                           <TableCell>
-                            <div className="flex justify-end gap-1">
+                            <div className={`flex justify-end gap-1 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
                               {entry.isDirectory ? (
                                 <Button variant="ghost" size="icon-sm" title="打开" onClick={(event) => { event.stopPropagation(); navigateTo(entry.path); }}>
                                   <Eye className="h-4 w-4" />
@@ -1105,13 +1376,47 @@ export default function FilesPage() {
                 </TableBody>
               </Table>
             </div>
+            {uploadTasks.length > 0 && (
+              <div className="max-h-44 shrink-0 overflow-auto border-t bg-muted/20 px-4 py-2">
+                <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                  <span>上传队列</span>
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setUploadTasks((prev) => prev.filter((task) => task.status === "uploading"))}>
+                    清除完成项
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {uploadTasks.map((task) => {
+                    const progress = task.size > 0 ? Math.min(100, Math.round((task.uploaded / task.size) * 100)) : 100;
+                    return (
+                      <div key={task.id} className="rounded-md border bg-background px-3 py-2 text-xs shadow-sm">
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <span className="truncate font-medium">{task.name}</span>
+                          <span className={task.status === "error" ? "text-destructive" : task.status === "success" ? "text-emerald-600" : "text-muted-foreground"}>
+                            {task.status === "error" ? task.message || "失败" : task.status === "success" ? "完成" : `${progress}%`}
+                          </span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={`h-full transition-all ${task.status === "error" ? "bg-destructive" : task.status === "success" ? "bg-emerald-500" : "bg-primary"}`}
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          {formatBytes(task.uploaded)} / {formatBytes(task.size)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div className="flex shrink-0 items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
               <span>{entries.filter((entry) => entry.isDirectory).length} 个文件夹 · {entries.filter((entry) => !entry.isDirectory).length} 个文件</span>
               <span>排序：{sortField} {sortAsc ? "升序" : "降序"}</span>
             </div>
           </CardContent>
-        </Card>
-      </div>
+        </div>
+      </Card>
 
       {contextMenu && (
         <div
@@ -1467,6 +1772,12 @@ export default function FilesPage() {
       </Dialog>
 
       {toast && <Toast toast={toast} onClose={() => setToast(null)} />}
+      
+      <NodeFileTransferDialog 
+        open={transferDialogOpen} 
+        onOpenChange={setTransferDialogOpen} 
+        nodes={nodes} 
+      />
     </div>
   );
 }

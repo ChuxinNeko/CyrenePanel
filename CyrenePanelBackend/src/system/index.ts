@@ -3,8 +3,74 @@ import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } fr
 import { readFileSync, existsSync } from "fs";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
 import { getMemoryInfo } from "../memory";
+import { CYRENE_VERSION } from "../version";
 
 const startTime = Date.now();
+
+interface OfficialPanelRelease {
+  version?: unknown;
+  latestVersion?: unknown;
+  changelog?: unknown;
+  changes?: unknown;
+  content?: unknown;
+  releaseDate?: unknown;
+  downloadUrl?: unknown;
+}
+
+function getOfficialServerUrl(): string {
+  return (
+    process.env.CYRENE_OFFICIAL_SERVER_URL ||
+    process.env.OFFICIAL_SERVER_URL ||
+    "https://dockerhub.nekofun.top"
+  ).replace(/\/+$/, "");
+}
+
+function normalizeVersion(version: string): number[] {
+  const match = version.trim().replace(/^v/i, "").match(/\d+(?:\.\d+)*/);
+  if (!match) return [0];
+  return match[0].split(".").map((part) => Number.parseInt(part, 10) || 0);
+}
+
+function compareVersions(a: string, b: string): number {
+  const left = normalizeVersion(a);
+  const right = normalizeVersion(b);
+  const len = Math.max(left.length, right.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function normalizeChangelog(release: OfficialPanelRelease): string[] {
+  const source = release.changelog ?? release.changes ?? release.content;
+  if (Array.isArray(source)) {
+    return source
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (typeof source === "string") {
+    return source
+      .split(/\r?\n/)
+      .map((item) => item.replace(/^[-*]\s*/, "").trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+async function fetchOfficialPanelRelease(): Promise<OfficialPanelRelease> {
+  const url = `${getOfficialServerUrl()}/panel/latest`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`official server responded ${res.status}`);
+    return await res.json() as OfficialPanelRelease;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function getCpuUsage(): number {
   const cpuInfo = cpus();
@@ -165,6 +231,42 @@ function formatUptime(seconds: number): string {
 }
 
 export const systemRoutes = new Elysia()
+  .get("/api/system/version", () => ({ success: true, version: CYRENE_VERSION }))
+  .get("/api/system/update", async () => {
+    try {
+      const release = await fetchOfficialPanelRelease();
+      const latestVersion =
+        typeof release.version === "string"
+          ? release.version
+          : typeof release.latestVersion === "string"
+            ? release.latestVersion
+            : "";
+
+      if (!latestVersion) {
+        return {
+          success: false,
+          message: "官方服务器未返回有效版本号",
+          currentVersion: CYRENE_VERSION,
+        };
+      }
+
+      return {
+        success: true,
+        currentVersion: CYRENE_VERSION,
+        latestVersion,
+        hasUpdate: compareVersions(latestVersion, CYRENE_VERSION) > 0,
+        changelog: normalizeChangelog(release),
+        releaseDate: typeof release.releaseDate === "string" ? release.releaseDate : null,
+        downloadUrl: typeof release.downloadUrl === "string" ? release.downloadUrl : null,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        message: `检查更新失败: ${e?.message || "unknown error"}`,
+        currentVersion: CYRENE_VERSION,
+      };
+    }
+  })
   .get("/api/system", async ({ jwt, request }: any) => {
     const authHeader = request.headers.get("authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -193,7 +295,7 @@ export const systemRoutes = new Elysia()
         uptimeSeconds: Math.floor(uptime()),
         serverUptime: formatUptime((Date.now() - startTime) / 1000),
         runtimeVersion: `Bun ${bunVersion}`,
-        panelVersion: "1.0.50",
+        panelVersion: CYRENE_VERSION,
         cpu: {
           cores: cpus().length,
           model: cpus()[0]?.model || "Unknown",

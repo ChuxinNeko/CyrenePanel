@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { compare } from "bcryptjs";
 import { dbGetUser, getConfig } from "../db";
 import { logger } from "../logger/index";
+import { CYRENE_VERSION } from "../version";
 
 export const accountRoutes = new Elysia()
   .post(
@@ -46,7 +47,7 @@ export const accountRoutes = new Elysia()
     }
 
     logger.debug(`GET /api/me | 鉴权成功: ${profile.username}`);
-    return { success: true, profile };
+    return { success: true, profile, version: CYRENE_VERSION };
   })
   // ── 通过 API Key 换取 JWT token ────────────────────────────────
   .post(

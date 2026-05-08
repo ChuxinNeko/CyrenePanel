@@ -1,0 +1,132 @@
+name: Build Release Artifacts
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.package_os }}-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_os: windows
+            arch: x64
+            bun_target: bun-windows-x64
+            backend_binary: server.exe
+          - package_os: windows
+            arch: arm64
+            bun_target: bun-windows-arm64
+            backend_binary: server.exe
+          - package_os: linux
+            arch: x64
+            bun_target: bun-linux-x64
+            backend_binary: server
+          - package_os: linux
+            arch: arm64
+            bun_target: bun-linux-arm64
+            backend_binary: server
+          - package_os: macos
+            arch: x64
+            bun_target: bun-darwin-x64
+            backend_binary: server
+          - package_os: macos
+            arch: arm64
+            bun_target: bun-darwin-arm64
+            backend_binary: server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Resolve package name
+        id: package
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./CyrenePanelBackend/package.json').version")"
+          PACKAGE_NAME="CyrenePanel${VERSION}-${{ matrix.package_os }}-${{ matrix.arch }}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "name=${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Install frontend dependencies
+        working-directory: CyrenePanelFrontend
+        run: bun install
+
+      - name: Build frontend
+        working-directory: CyrenePanelFrontend
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: bun run build
+
+      - name: Install backend dependencies
+        working-directory: CyrenePanelBackend
+        run: bun install
+
+      - name: Build backend binary
+        working-directory: CyrenePanelBackend
+        run: |
+          bun build \
+            --compile \
+            --minify-whitespace \
+            --minify-syntax \
+            --target=${{ matrix.bun_target }} \
+            --outfile server \
+            src/index.ts
+
+      - name: Assemble release directory
+        shell: bash
+        run: |
+          PACKAGE_NAME="${{ steps.package.outputs.name }}"
+          RELEASE_DIR="release/${PACKAGE_NAME}"
+
+          rm -rf release
+          mkdir -p "${RELEASE_DIR}/backend/data" "${RELEASE_DIR}/backend/logs" "${RELEASE_DIR}/frontend"
+
+          cp "CyrenePanelBackend/${{ matrix.backend_binary }}" "${RELEASE_DIR}/backend/${{ matrix.backend_binary }}"
+          cp CyrenePanelBackend/package.json "${RELEASE_DIR}/backend/package.json"
+          cp CyrenePanelBackend/README.md "${RELEASE_DIR}/backend/README.md"
+          touch "${RELEASE_DIR}/backend/data/.gitkeep" "${RELEASE_DIR}/backend/logs/.gitkeep"
+
+          cp -R CyrenePanelFrontend/.next "${RELEASE_DIR}/frontend/.next"
+          cp -R CyrenePanelFrontend/public "${RELEASE_DIR}/frontend/public"
+          cp CyrenePanelFrontend/package.json "${RELEASE_DIR}/frontend/package.json"
+          cp CyrenePanelFrontend/next.config.mjs "${RELEASE_DIR}/frontend/next.config.mjs"
+
+          cat > "${RELEASE_DIR}/README.md" <<EOF
+          # ${PACKAGE_NAME}
+
+          Backend binary:
+          - backend/${{ matrix.backend_binary }}
+
+          Frontend build:
+          - frontend/.next
+          - frontend/public
+
+          Target:
+          - ${{ matrix.package_os }}-${{ matrix.arch }}
+          EOF
+
+      - name: Create zip archive
+        shell: bash
+        run: |
+          cd release
+          zip -r "${{ steps.package.outputs.name }}.zip" "${{ steps.package.outputs.name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: release/${{ steps.package.outputs.name }}.zip
+          if-no-files-found: error

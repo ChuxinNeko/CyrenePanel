@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -26,7 +27,19 @@ import {
   Check,
   Code,
   PackageCheck,
+  ExternalLink,
 } from "lucide-react";
+
+interface PanelUpdateInfo {
+  success: boolean;
+  currentVersion?: string;
+  latestVersion?: string;
+  hasUpdate?: boolean;
+  changelog?: string[];
+  releaseDate?: string | null;
+  downloadUrl?: string | null;
+  message?: string;
+}
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -45,6 +58,11 @@ export default function SettingsPage() {
 
   // 页脚代码
   const [footerCode, setFooterCode] = useState("");
+
+  // Version update
+  const [currentVersion, setCurrentVersion] = useState("");
+  const [updateInfo, setUpdateInfo] = useState<PanelUpdateInfo | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   // API Key
   const [apiKey, setApiKey] = useState("");
@@ -86,6 +104,9 @@ export default function SettingsPage() {
         }
         const p = data.profile as { username: string; role: string };
         setProfile(p);
+        if ((data as any).version) {
+          setCurrentVersion((data as any).version);
+        }
         if (p.role !== "admin") {
           toast.error("仅管理员可访问设置页面");
           router.push("/dashboard");
@@ -198,6 +219,30 @@ export default function SettingsPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    try {
+      const { data, error } = await api.api.system.update.get();
+      if (error || !data?.success) {
+        toast.error((data as PanelUpdateInfo | undefined)?.message || "检查更新失败");
+        return;
+      }
+
+      const info = data as PanelUpdateInfo;
+      setUpdateInfo(info);
+      setCurrentVersion(info.currentVersion || currentVersion);
+      if (info.hasUpdate) {
+        toast.info(`检测到新版本 ${info.latestVersion}`);
+      } else {
+        toast.success("当前已是最新版本");
+      }
+    } catch {
+      toast.error("检查更新失败");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="max-w-4xl mx-auto w-full">
@@ -238,6 +283,10 @@ export default function SettingsPage() {
           <TabsTrigger value="environment" className="gap-1.5">
             <PackageCheck className="h-4 w-4" />
             环境检测
+          </TabsTrigger>
+          <TabsTrigger value="version" className="gap-1.5">
+            <RefreshCw className="h-4 w-4" />
+            版本更新
           </TabsTrigger>
           <TabsTrigger value="security" className="gap-1.5">
             <Shield className="h-4 w-4" />
@@ -414,6 +463,85 @@ export default function SettingsPage() {
                   </Button>
                 }
               />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── 版本更新 ────────────────────────────────────────────── */}
+        <TabsContent value="version">
+          <Card>
+            <CardHeader>
+              <CardTitle>版本更新</CardTitle>
+              <CardDescription>
+                查看当前面板版本，并手动连接官方服务器检测新版和更新内容。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-6">
+              <div className="flex flex-col gap-4 rounded-lg border bg-muted/30 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-col gap-1">
+                    <div className="font-medium">当前版本</div>
+                    <p className="text-sm text-muted-foreground">
+                      后端当前运行的 CyrenePanel 版本。
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="font-mono">
+                    {currentVersion || "未知"}
+                  </Badge>
+                </div>
+
+                {updateInfo && (
+                  <>
+                    <Separator />
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-col gap-1">
+                        <div className="font-medium">检测结果</div>
+                        <p className="text-sm text-muted-foreground">
+                          {updateInfo.hasUpdate
+                            ? "官方服务器检测到可用的新版本。"
+                            : "当前版本已是官方服务器返回的最新版本。"}
+                        </p>
+                      </div>
+                      <Badge variant={updateInfo.hasUpdate ? "default" : "secondary"} className="font-mono">
+                        {updateInfo.hasUpdate ? `可更新到 ${updateInfo.latestVersion}` : "已是最新"}
+                      </Badge>
+                    </div>
+
+                    {updateInfo.releaseDate && (
+                      <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                        <span className="text-muted-foreground">发布日期</span>
+                        <span>{updateInfo.releaseDate}</span>
+                      </div>
+                    )}
+
+                    {updateInfo.changelog && updateInfo.changelog.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        <div className="text-sm font-medium">更新内容</div>
+                        <ul className="flex flex-col gap-1 text-sm text-muted-foreground">
+                          {updateInfo.changelog.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="flex flex-wrap justify-end gap-2">
+                {updateInfo?.downloadUrl && (
+                  <Button variant="outline" asChild>
+                    <a href={updateInfo.downloadUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink className="h-4 w-4 mr-1.5" />
+                      查看更新
+                    </a>
+                  </Button>
+                )}
+                <Button onClick={handleCheckUpdate} disabled={checkingUpdate}>
+                  <RefreshCw className={`h-4 w-4 mr-1.5 ${checkingUpdate ? "animate-spin" : ""}`} />
+                  {checkingUpdate ? "检测中..." : "手动检测更新"}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

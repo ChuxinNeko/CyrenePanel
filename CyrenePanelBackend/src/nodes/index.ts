@@ -1090,6 +1090,37 @@ export const nodeRoutes = new Elysia()
     }
   })
 
+  .get("/api/nodes/:id/files/upload/status", async ({ params, query, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    const pathParam = query.path as string;
+    if (!pathParam) return { success: false, message: "缺少 path 参数" };
+    const totalSize = query.totalSize !== undefined ? `&totalSize=${encodeURIComponent(String(query.totalSize))}` : "";
+    try {
+      return await proxyNodeJson(
+        params.id,
+        `/api/files/upload/status?path=${encodeURIComponent(pathParam)}${totalSize}`,
+        {},
+        30000,
+      );
+    } catch (e: any) {
+      logger.err(`子节点上传进度查询代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/files/upload/chunk", async ({ params, body, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/files/upload/chunk", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, 120000);
+    } catch (e: any) {
+      logger.err(`子节点分片上传代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
   // ── 子节点文件代理：下载文件 ─────────────────────────────────────
   .get("/api/nodes/:id/files/download", async ({ params, query, profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };
