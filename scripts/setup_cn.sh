@@ -13,6 +13,8 @@
 #    CYRENE_HOME=/opt/CyrenePanel
 #    BACKEND_PORT=5677
 #    FRONTEND_PORT=3000
+#    CYRENE_DOWNLOAD_SOURCE=mirror  # github 或 mirror；mirror 使用 gh-proxy.org
+#    GH_PROXY_PREFIX=https://gh-proxy.org/
 # ============================================================
 
 set -Eeuo pipefail
@@ -30,12 +32,15 @@ CYRENE_HOME="${CYRENE_HOME:-/opt/CyrenePanel}"
 CYRENE_USER="${CYRENE_USER:-cyrene}"
 BACKEND_PORT="${BACKEND_PORT:-5677}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+CYRENE_DOWNLOAD_SOURCE="${CYRENE_DOWNLOAD_SOURCE:-}"
+GH_PROXY_PREFIX="${GH_PROXY_PREFIX:-https://gh-proxy.org/}"
 TMP_DIR="${TMPDIR:-/tmp}/cyrene-install.$$"
 RUNTIME_PATH="/usr/local/bin:/usr/bin:/bin"
 BACKEND_START_SINCE=""
 ADMIN_USERNAME=""
 ADMIN_PASSWORD=""
 API_KEY=""
+DOWNLOAD_SOURCE="github"
 
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC}   $*"; }
@@ -216,6 +221,59 @@ install_bun() {
   success "Bun 安装完成：$($BUN_BIN --version)"
 }
 
+select_download_source() {
+  step "选择 Release 下载源"
+
+  case "${CYRENE_DOWNLOAD_SOURCE,,}" in
+    github|"")
+      DOWNLOAD_SOURCE="github"
+      ;;
+    mirror|proxy|gh-proxy|gh_proxy)
+      DOWNLOAD_SOURCE="mirror"
+      ;;
+    *)
+      warn "未知下载源 CYRENE_DOWNLOAD_SOURCE=$CYRENE_DOWNLOAD_SOURCE，将使用 GitHub 官方源"
+      DOWNLOAD_SOURCE="github"
+      ;;
+  esac
+
+  if [ -z "$CYRENE_DOWNLOAD_SOURCE" ] && [ -r /dev/tty ]; then
+    echo "请选择安装包下载源："
+    echo "  1) GitHub 官方源"
+    echo "  2) gh-proxy.org 镜像源（大陆网络推荐）"
+    printf "请输入选项 [1/2]，默认 1: " > /dev/tty
+    local choice
+    read -r choice < /dev/tty || choice=""
+    case "$choice" in
+      2)
+        DOWNLOAD_SOURCE="mirror"
+        ;;
+      1|"")
+        DOWNLOAD_SOURCE="github"
+        ;;
+      *)
+        warn "无效选项，将使用 GitHub 官方源"
+        DOWNLOAD_SOURCE="github"
+        ;;
+    esac
+  fi
+
+  if [ "$DOWNLOAD_SOURCE" = "mirror" ]; then
+    info "下载源：gh-proxy.org 镜像源"
+  else
+    info "下载源：GitHub 官方源"
+  fi
+}
+
+build_download_url() {
+  local github_url="$1"
+  if [ "$DOWNLOAD_SOURCE" = "mirror" ]; then
+    printf '%s%s' "${GH_PROXY_PREFIX%/}/" "$github_url"
+  else
+    printf '%s' "$github_url"
+  fi
+}
+
 resolve_release() {
   step "解析 GitHub Release"
   mkdir -p "$TMP_DIR"
@@ -224,7 +282,8 @@ resolve_release() {
     RELEASE_VERSION="${CYRENE_VERSION#v}"
     RELEASE_TAG="v${RELEASE_VERSION}"
   else
-    local api_url="https://api.github.com/repos/${CYRENE_REPO}/releases/latest"
+    local api_url
+    api_url="$(build_download_url "https://api.github.com/repos/${CYRENE_REPO}/releases/latest")"
     local release_json="$TMP_DIR/latest-release.json"
     curl -fsSL "$api_url" -o "$release_json"
     RELEASE_TAG="$(grep -m1 '"tag_name"' "$release_json" | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
@@ -236,7 +295,9 @@ resolve_release() {
   fi
 
   ASSET_NAME="CyrenePanel${RELEASE_VERSION}-${SYSTEM_OS}-${SYSTEM_ARCH}.zip"
-  DOWNLOAD_URL="https://github.com/${CYRENE_REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
+  GITHUB_DOWNLOAD_URL="https://github.com/${CYRENE_REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
+  DOWNLOAD_URL="$(build_download_url "$GITHUB_DOWNLOAD_URL")"
+  info "下载地址：$DOWNLOAD_URL"
 
   info "Release：$RELEASE_TAG"
   info "安装包：$ASSET_NAME"
@@ -999,6 +1060,7 @@ main() {
   echo -e "${CYAN}${BOLD}CyrenePanel Release 一键部署脚本${NC}"
   require_root
   detect_os
+  select_download_source
   install_packages
   install_nodejs
   install_bun
