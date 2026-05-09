@@ -334,16 +334,44 @@ stop_services() {
   systemctl stop cyrene-backend 2>/dev/null || true
 }
 
-backup_existing_install() {
-  if [ ! -d "$CYRENE_HOME" ]; then
+uninstall_existing_install() {
+  local has_existing="false"
+  if [ -d "$CYRENE_HOME" ]; then
+    has_existing="true"
+  elif systemctl list-unit-files --no-legend cyrene-backend.service 2>/dev/null | grep -q '^cyrene-backend\.service'; then
+    has_existing="true"
+  elif systemctl list-unit-files --no-legend cyrene-frontend.service 2>/dev/null | grep -q '^cyrene-frontend\.service'; then
+    has_existing="true"
+  elif [ -f /etc/systemd/system/cyrene-backend.service ] || [ -f /etc/systemd/system/cyrene-frontend.service ]; then
+    has_existing="true"
+  elif [ -x /usr/local/bin/cyp ]; then
+    has_existing="true"
+  fi
+
+  if [ "$has_existing" != "true" ]; then
     return
   fi
 
-  step "备份已有安装"
+  step "检测到已有 CyrenePanel，自动卸载旧版本"
   stop_services
-  BACKUP_DIR="${CYRENE_HOME}.bak.$(date +%Y%m%d%H%M%S)"
-  cp -a "$CYRENE_HOME" "$BACKUP_DIR"
-  success "已备份到：$BACKUP_DIR"
+  systemctl stop cyrene-updater.path cyrene-updater.service 2>/dev/null || true
+  systemctl disable cyrene-backend cyrene-frontend cyrene-updater.path 2>/dev/null || true
+  rm -f /etc/systemd/system/cyrene-backend.service
+  rm -f /etc/systemd/system/cyrene-frontend.service
+  rm -f /etc/systemd/system/cyrene-updater.service
+  rm -f /etc/systemd/system/cyrene-updater.path
+  systemctl daemon-reload
+
+  if [ -n "$CYRENE_HOME" ] && [ "$CYRENE_HOME" != "/" ] && [ -d "$CYRENE_HOME" ]; then
+    rm -rf "$CYRENE_HOME"
+  fi
+  rm -f /usr/local/bin/cyp
+
+  if id "$CYRENE_USER" >/dev/null 2>&1; then
+    userdel "$CYRENE_USER" 2>/dev/null || warn "无法删除用户 $CYRENE_USER，将复用该用户继续安装"
+  fi
+
+  success "旧版本已卸载，继续安装最新版本"
 }
 
 extract_release() {
@@ -363,24 +391,11 @@ extract_release() {
     exit 1
   fi
 
-  local old_data=""
-  if [ -d "$CYRENE_HOME/backend/data" ]; then
-    old_data="$TMP_DIR/data"
-    cp -a "$CYRENE_HOME/backend/data" "$old_data"
-  elif [ -d "$CYRENE_HOME/CyrenePanelBackend/data" ]; then
-    old_data="$TMP_DIR/data"
-    cp -a "$CYRENE_HOME/CyrenePanelBackend/data" "$old_data"
-  fi
-
   rm -rf "$CYRENE_HOME"
   mkdir -p "$CYRENE_HOME"
   cp -a "$package_root/." "$CYRENE_HOME/"
 
   mkdir -p "$CYRENE_HOME/backend/data" "$CYRENE_HOME/backend/logs"
-  if [ -n "$old_data" ]; then
-    rm -rf "$CYRENE_HOME/backend/data"
-    cp -a "$old_data" "$CYRENE_HOME/backend/data"
-  fi
 
   chmod +x "$CYRENE_HOME/backend/server" 2>/dev/null || true
   success "文件已部署到：$CYRENE_HOME"
@@ -394,6 +409,13 @@ create_user_and_permissions() {
     success "已创建用户：$CYRENE_USER"
   else
     info "用户已存在：$CYRENE_USER"
+  fi
+
+  if getent group docker >/dev/null 2>&1; then
+    usermod -aG docker "$CYRENE_USER" || warn "Failed to add $CYRENE_USER to docker group"
+    info "Docker group detected; $CYRENE_USER can access /var/run/docker.sock after service restart"
+  else
+    warn "Docker group not found; install Docker first or add $CYRENE_USER to the Docker socket group later"
   fi
 
   chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME"
@@ -914,6 +936,11 @@ EOF
 
 write_systemd_services() {
   step "注册 systemd 服务"
+  local backend_supplementary_groups=""
+  if getent group docker >/dev/null 2>&1; then
+    backend_supplementary_groups="SupplementaryGroups=docker"
+  fi
+
   cat > /etc/systemd/system/cyrene-backend.service <<EOF
 [Unit]
 Description=CyrenePanel Backend Server
@@ -924,6 +951,7 @@ Wants=network-online.target
 Type=simple
 User=$CYRENE_USER
 Group=$CYRENE_USER
+$backend_supplementary_groups
 WorkingDirectory=$CYRENE_HOME/backend
 Environment=NODE_ENV=production
 Environment=PORT=$BACKEND_PORT
@@ -1084,7 +1112,7 @@ main() {
   install_bun
   resolve_release
   download_release
-  backup_existing_install
+  uninstall_existing_install
   extract_release
   create_user_and_permissions
   install_frontend_dependencies
