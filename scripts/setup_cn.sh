@@ -517,6 +517,20 @@ restart_panel() {
   success "面板已重启。"
 }
 
+start_panel() {
+  require_root
+  systemctl start cyrene-backend
+  systemctl start cyrene-frontend
+  success "面板已启动。"
+}
+
+stop_panel() {
+  require_root
+  systemctl stop cyrene-frontend
+  systemctl stop cyrene-backend
+  success "面板已停止。"
+}
+
 restart_backend() {
   systemctl restart cyrene-backend
 }
@@ -623,24 +637,28 @@ menu() {
     echo ""
     echo -e "${CYAN}${BOLD}CyrenePanel 管理菜单${NC}"
     echo "  1. 重启面板"
-    echo "  2. 修改管理员用户名"
-    echo "  3. 修改管理员密码"
-    echo "  4. 重置 API Key"
-    echo "  5. 查看面板状态"
-    echo "  6. 查看访问信息"
-    echo "  7. 查看实时日志"
+    echo "  2. 启动面板"
+    echo "  3. 停止面板"
+    echo "  4. 修改管理员用户名"
+    echo "  5. 修改管理员密码"
+    echo "  6. 重置 API Key"
+    echo "  7. 查看面板状态"
+    echo "  8. 查看访问信息"
+    echo "  9. 查看实时日志"
     echo "  0. 退出"
     echo ""
     read -r -p "请输入选项: " choice
 
     case "$choice" in
       1) restart_panel ;;
-      2) change_username ;;
-      3) change_password ;;
-      4) reset_api_key ;;
-      5) show_status ;;
-      6) show_info ;;
-      7) show_logs ;;
+      2) start_panel ;;
+      3) stop_panel ;;
+      4) change_username ;;
+      5) change_password ;;
+      6) reset_api_key ;;
+      7) show_status ;;
+      8) show_info ;;
+      9) show_logs ;;
       0) exit 0 ;;
       *) warn "无效选项，请重新输入。" ;;
     esac
@@ -652,6 +670,8 @@ usage() {
 用法:
   cyp                打开管理菜单
   cyp restart        重启面板
+  cyp start          启动面板
+  cyp stop           停止面板
   cyp username       修改管理员用户名
   cyp password       修改管理员密码
   cyp apikey         重置 API Key
@@ -664,6 +684,8 @@ USAGE
 case "${1:-menu}" in
   menu|"") menu ;;
   restart) restart_panel ;;
+  start) start_panel ;;
+  stop) stop_panel ;;
   username) change_username ;;
   password) change_password ;;
   apikey|api-key) reset_api_key ;;

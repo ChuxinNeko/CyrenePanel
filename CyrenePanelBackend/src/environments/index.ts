@@ -85,7 +85,8 @@ function getOfficialScriptCommand(
   } else if (version && action !== "remove") {
     args.push(version);
   }
-  return `curl -fsSL ${scriptUrl} | sudo bash -s -- ${args.join(" ")}`;
+  const scriptArgs = args.join(" ");
+  return `tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT; curl -fsSL ${scriptUrl} -o "$tmp"; if [ "$(id -u)" -eq 0 ]; then bash "$tmp" ${scriptArgs}; elif sudo -n true >/dev/null 2>&1; then sudo bash "$tmp" ${scriptArgs}; else echo "Current panel process is not root and sudo is unavailable. Please run the panel backend as root or install from the host shell." >&2; exit 1; fi`;
 }
 
 const NGINX_VERSION_OPTIONS = [
