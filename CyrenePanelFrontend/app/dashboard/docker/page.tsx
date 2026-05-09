@@ -46,6 +46,7 @@ import {
   Settings2,
   Trash2,
   Plus,
+  Wrench,
 } from "lucide-react";
 import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
@@ -244,6 +245,8 @@ export default function DockerPage() {
   const [mirrorUrl, setMirrorUrl] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [dockerInstallVersion, setDockerInstallVersion] = useState("28.5.1");
+  const [dockerInstallTaskId, setDockerInstallTaskId] = useState<string | null>(null);
 
   // 添加容器
   const [addContainerOpen, setAddContainerOpen] = useState(false);
@@ -263,7 +266,12 @@ export default function DockerPage() {
     () => tasks.find((task) => task.id === deployingTaskId) || null,
     [tasks, deployingTaskId],
   );
+  const activeDockerInstallTask = useMemo(
+    () => tasks.find((task) => task.id === dockerInstallTaskId) || null,
+    [tasks, dockerInstallTaskId],
+  );
   const deploying = activeDeployTask?.status === "running";
+  const dockerInstalling = activeDockerInstallTask?.status === "running";
   const deployLog = activeDeployTask?.logs || [];
 
   // 初始化：获取用户信息和节点列表
@@ -550,6 +558,29 @@ export default function DockerPage() {
     }
   };
 
+  const startDockerInstall = (installMethod: "quick" | "compile") => {
+    if (!selectedNodeId || dockerInstalling) return;
+    const basePath = isRemoteNode
+      ? `/api/nodes/${selectedNodeId}/environments/docker`
+      : "/api/environments/docker";
+    const taskId = startDeployTask({
+      title: `${installMethod === "quick" ? "快速安装" : "编译安装"} Docker`,
+      icon: "logos:docker-icon",
+      url: `${API_BASE}${basePath}/install/stream`,
+      headers: authHeaders(),
+      body: JSON.stringify({
+        installMethod,
+        version: installMethod === "compile" ? dockerInstallVersion : undefined,
+      }),
+      onDone: async () => {
+        await fetchDockerData();
+        toast.success("Docker 安装完成");
+      },
+    });
+    setDockerInstallTaskId(taskId);
+    toast.success("Docker 安装任务已加入消息盒子");
+  };
+
   const handleDeploy = async (config: {
     name: string;
     ports: { hostPort: number; containerPort: number; protocol: string }[];
@@ -685,13 +716,49 @@ export default function DockerPage() {
           {/* Docker 不可用 */}
           {dockerError && (
             <Card className="border-destructive/50">
-              <CardContent className="flex items-center gap-3 py-6">
-                <div className="shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
-                  <Server className="h-5 w-5 text-destructive" />
+              <CardContent className="flex flex-col gap-4 py-6 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+                    <Server className="h-5 w-5 text-destructive" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-destructive">Docker 不可用</p>
+                    <p className="text-sm text-muted-foreground">{dockerError}</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="font-medium text-destructive">Docker 不可用</p>
-                  <p className="text-sm text-muted-foreground">{dockerError}</p>
+                <div className="flex flex-col gap-2 sm:min-w-[320px]">
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => startDockerInstall("quick")}
+                      disabled={dockerInstalling || (isRemoteNode && !selectedNode?.online)}
+                      className="flex-1"
+                    >
+                      {dockerInstalling ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5 mr-1.5" />
+                      )}
+                      快速安装
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => startDockerInstall("compile")}
+                      disabled={dockerInstalling || (isRemoteNode && !selectedNode?.online)}
+                      className="flex-1"
+                    >
+                      <Wrench className="h-3.5 w-3.5 mr-1.5" />
+                      编译安装
+                    </Button>
+                  </div>
+                  <Input
+                    value={dockerInstallVersion}
+                    onChange={(e) => setDockerInstallVersion(e.target.value)}
+                    disabled={dockerInstalling}
+                    placeholder="编译版本，如 28.5.1"
+                    className="h-8 text-xs"
+                  />
                 </div>
               </CardContent>
             </Card>

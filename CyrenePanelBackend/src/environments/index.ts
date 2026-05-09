@@ -24,10 +24,10 @@ interface EnvInfo {
   installMethods?: InstallMethodOption[];
 }
 
-type NginxInstallMethod = "quick" | "compile";
+type EnvironmentInstallMethod = "quick" | "compile";
 
 interface InstallMethodOption {
-  value: NginxInstallMethod;
+  value: EnvironmentInstallMethod;
   label: string;
   description: string;
   recommended?: boolean;
@@ -73,11 +73,11 @@ function getOfficialScriptCommand(
   envId: string,
   action: "install" | "update" | "remove",
   version?: string | null,
-  installMethod?: NginxInstallMethod | null,
+  installMethod?: EnvironmentInstallMethod | null,
 ): string {
   const scriptUrl = `${getOfficialServerUrl()}/environments/${envId}/script`;
   const args: string[] = [action];
-  if (envId === "nginx" && installMethod) {
+  if ((envId === "nginx" || envId === "docker") && installMethod) {
     args.push(installMethod);
     if (installMethod === "compile" && version && action !== "remove") {
       args.push(version);
@@ -117,6 +117,31 @@ const NGINX_INSTALL_METHOD_OPTIONS: InstallMethodOption[] = [
   },
 ];
 
+const DOCKER_VERSION_OPTIONS = [
+  { value: "27.5.1", label: "27.5.1" },
+  { value: "28.0.4", label: "28.0.4" },
+  { value: "28.1.1", label: "28.1.1" },
+  { value: "28.2.2", label: "28.2.2" },
+  { value: "28.3.3", label: "28.3.3" },
+  { value: "28.5.1", label: "28.5.1", recommended: true },
+];
+
+const DOCKER_INSTALL_METHOD_OPTIONS: InstallMethodOption[] = [
+  {
+    value: "quick",
+    label: "快速安装",
+    description: "使用 Docker 官方 apt/yum/dnf 仓库安装 Docker Engine",
+    recommended: true,
+    supportsVersion: false,
+  },
+  {
+    value: "compile",
+    label: "编译安装",
+    description: "从 Moby 源码编译 dockerd 并安装为系统服务",
+    supportsVersion: true,
+  },
+];
+
 function normalizeNginxVersion(version?: string): string {
   const selected = version || "1.24";
   const found = NGINX_VERSION_OPTIONS.find((item) => item.value === selected);
@@ -124,13 +149,29 @@ function normalizeNginxVersion(version?: string): string {
   return found.value;
 }
 
-function normalizeNginxInstallMethod(method?: string): NginxInstallMethod {
+function normalizeEnvironmentInstallMethod(method?: string, envName = "环境"): EnvironmentInstallMethod {
   if (!method) return "quick";
   if (method === "quick" || method === "compile") return method;
-  throw new Error(`不支持的 Nginx 安装方式: ${method}`);
+  throw new Error(`不支持的 ${envName} 安装方式: ${method}`);
 }
 
-function detectNginxInstallMethod(): NginxInstallMethod | null {
+function normalizeNginxInstallMethod(method?: string): EnvironmentInstallMethod {
+  return normalizeEnvironmentInstallMethod(method, "Nginx");
+}
+
+function normalizeDockerVersion(version?: string): string {
+  const selected = version || "28.5.1";
+  if (!/^\d+\.\d+\.\d+$/.test(selected)) {
+    throw new Error(`不支持的 Docker 版本: ${selected}`);
+  }
+  return selected;
+}
+
+function normalizeDockerInstallMethod(method?: string): EnvironmentInstallMethod {
+  return normalizeEnvironmentInstallMethod(method, "Docker");
+}
+
+function detectNginxInstallMethod(): EnvironmentInstallMethod | null {
   if (execCmdSafe("test -x /www/server/nginx/sbin/nginx && echo compile")) {
     return "compile";
   }
@@ -139,6 +180,16 @@ function detectNginxInstallMethod(): NginxInstallMethod | null {
     execCmdSafe("test -x /usr/local/sbin/nginx && echo quick") ||
     execCmdSafe(isLinuxPlatform() ? "command -v nginx" : "where nginx")
   ) {
+    return "quick";
+  }
+  return null;
+}
+
+function detectDockerInstallMethod(): EnvironmentInstallMethod | null {
+  if (execCmdSafe("test -f /etc/systemd/system/cyrene-docker.service && echo compile")) {
+    return "compile";
+  }
+  if (execCmdSafe(isLinuxPlatform() ? "command -v docker" : "where docker")) {
     return "quick";
   }
   return null;
@@ -594,16 +645,26 @@ function getDockerDetector(): EnvDetector {
     getLatestVersion: () => null,
     getInstallInfo: () => {
       if (isLinuxPlatform()) {
-        return { packageManager: "apt", installCommand: "curl -fsSL https://get.docker.com | sh" };
+        return {
+          packageManager: "Docker official repo / source build",
+          installCommand: getOfficialScriptCommand("docker", "install", null, "quick"),
+        };
       }
       return { packageManager: "winget", installCommand: "winget install Docker.DockerDesktop" };
     },
-    getUpdateInfo: () => isLinuxPlatform()
-      ? "curl -fsSL https://get.docker.com | sh"
-      : "winget upgrade Docker.DockerDesktop",
-    getRemoveInfo: () => isLinuxPlatform()
-      ? "sudo apt-get remove -y docker-ce docker-ce-cli containerd.io"
-      : "winget uninstall Docker.DockerDesktop",
+    getUpdateInfo: () => {
+      if (!isLinuxPlatform()) return "winget upgrade Docker.DockerDesktop";
+      const method = detectDockerInstallMethod() || "quick";
+      return getOfficialScriptCommand("docker", "update", "28.5.1", method);
+    },
+    getRemoveInfo: () => {
+      if (!isLinuxPlatform()) return "winget uninstall Docker.DockerDesktop";
+      const method = detectDockerInstallMethod() || "quick";
+      return getOfficialScriptCommand("docker", "remove", null, method);
+    },
+    getDefaultVersion: () => "28.5.1",
+    getVersionOptions: () => DOCKER_VERSION_OPTIONS,
+    getInstallMethods: () => DOCKER_INSTALL_METHOD_OPTIONS,
   };
 }
 
@@ -706,12 +767,17 @@ function getActionCommand(
   version?: string,
   installMethod?: string,
 ): string | null {
-  if (detector.id === "nginx") {
-    const method = normalizeNginxInstallMethod(
-      installMethod || detectNginxInstallMethod() || "quick",
-    );
+  if (detector.id === "nginx" || detector.id === "docker") {
+    const detectedMethod = detector.id === "nginx"
+      ? detectNginxInstallMethod()
+      : detectDockerInstallMethod();
+    const method = detector.id === "nginx"
+      ? normalizeNginxInstallMethod(installMethod || detectedMethod || "quick")
+      : normalizeDockerInstallMethod(installMethod || detectedMethod || "quick");
     const selectedVersion = method === "compile" && action !== "remove"
-      ? normalizeNginxVersion(version)
+      ? detector.id === "nginx"
+        ? normalizeNginxVersion(version)
+        : normalizeDockerVersion(version)
       : null;
     return getOfficialScriptCommand(detector.id, action, selectedVersion, method);
   }
@@ -763,8 +829,8 @@ function createEnvironmentActionStream(
     });
   }
 
-  if (detector.id === "nginx" && !isLinuxPlatform()) {
-    return new Response(JSON.stringify({ success: false, message: "Nginx 安装脚本仅支持 Linux 节点" }), {
+  if ((detector.id === "nginx" || detector.id === "docker") && !isLinuxPlatform()) {
+    return new Response(JSON.stringify({ success: false, message: `${detector.displayName} 安装脚本仅支持 Linux 节点` }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
