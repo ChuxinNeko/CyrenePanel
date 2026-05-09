@@ -46,7 +46,6 @@ import {
   Settings2,
   Trash2,
   Plus,
-  Wrench,
 } from "lucide-react";
 import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
@@ -245,7 +244,6 @@ export default function DockerPage() {
   const [mirrorUrl, setMirrorUrl] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
-  const [dockerInstallVersion, setDockerInstallVersion] = useState("28.5.1");
   const [dockerInstallTaskId, setDockerInstallTaskId] = useState<string | null>(null);
 
   // 添加容器
@@ -558,19 +556,18 @@ export default function DockerPage() {
     }
   };
 
-  const startDockerInstall = (installMethod: "quick" | "compile") => {
+  const startDockerInstall = () => {
     if (!selectedNodeId || dockerInstalling) return;
     const basePath = isRemoteNode
       ? `/api/nodes/${selectedNodeId}/environments/docker`
       : "/api/environments/docker";
     const taskId = startDeployTask({
-      title: `${installMethod === "quick" ? "快速安装" : "编译安装"} Docker`,
+      title: "快速安装 Docker",
       icon: "logos:docker-icon",
       url: `${API_BASE}${basePath}/install/stream`,
       headers: authHeaders(),
       body: JSON.stringify({
-        installMethod,
-        version: installMethod === "compile" ? dockerInstallVersion : undefined,
+        installMethod: "quick",
       }),
       onDone: async () => {
         await fetchDockerData();
@@ -727,38 +724,18 @@ export default function DockerPage() {
                   </div>
                 </div>
                 <div className="flex flex-col gap-2 sm:min-w-[320px]">
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => startDockerInstall("quick")}
-                      disabled={dockerInstalling || (isRemoteNode && !selectedNode?.online)}
-                      className="flex-1"
-                    >
-                      {dockerInstalling ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                      ) : (
-                        <Download className="h-3.5 w-3.5 mr-1.5" />
-                      )}
-                      快速安装
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => startDockerInstall("compile")}
-                      disabled={dockerInstalling || (isRemoteNode && !selectedNode?.online)}
-                      className="flex-1"
-                    >
-                      <Wrench className="h-3.5 w-3.5 mr-1.5" />
-                      编译安装
-                    </Button>
-                  </div>
-                  <Input
-                    value={dockerInstallVersion}
-                    onChange={(e) => setDockerInstallVersion(e.target.value)}
-                    disabled={dockerInstalling}
-                    placeholder="编译版本，如 28.5.1"
-                    className="h-8 text-xs"
-                  />
+                  <Button
+                    size="sm"
+                    onClick={startDockerInstall}
+                    disabled={dockerInstalling || (isRemoteNode && !selectedNode?.online)}
+                  >
+                    {dockerInstalling ? (
+                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5 mr-1.5" />
+                    )}
+                    快速安装
+                  </Button>
                 </div>
               </CardContent>
             </Card>
