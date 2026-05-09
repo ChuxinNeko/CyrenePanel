@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { API_BASE } from "@/lib/api-base";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -68,6 +69,33 @@ interface PanelUpdateLogs {
     updatedAt?: string;
   } | null;
   message?: string;
+}
+
+function updateAuthHeaders(): HeadersInit {
+  const token =
+    typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+async function updateRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(updateAuthHeaders());
+  new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+  });
+  const data = await res.json().catch(() => ({ success: false, message: `HTTP ${res.status}` }));
+  if (!res.ok) {
+    return {
+      success: false,
+      message: data?.message || `HTTP ${res.status}`,
+    } as T;
+  }
+  return data as T;
 }
 
 export default function SettingsPage() {
@@ -273,14 +301,12 @@ export default function SettingsPage() {
     setCheckingUpdate(true);
     setUpdatingNodeId(nodeId);
     try {
-      let data, error;
-      if (nodeId === "__main__") {
-        ({ data, error } = await api.api.system.update.get());
-      } else {
-        ({ data, error } = await (api as any).api.nodes({ id: nodeId }).system.update.get());
-      }
+      const path = nodeId === "__main__"
+        ? "/api/system/update"
+        : `/api/nodes/${encodeURIComponent(nodeId)}/system/update`;
+      const data = await updateRequest<PanelUpdateInfo>(path);
 
-      if (error || !data?.success) {
+      if (!data?.success) {
         toast.error((data as PanelUpdateInfo | undefined)?.message || "检查更新失败");
         return;
       }
@@ -319,14 +345,12 @@ export default function SettingsPage() {
 
   const pollUpdateLogs = async (nodeId: string) => {
     try {
-      let data, error;
-      if (nodeId === "__main__") {
-        ({ data, error } = await (api as any).api.system.update.logs.get());
-      } else {
-        ({ data, error } = await (api as any).api.nodes({ id: nodeId }).system.update.logs.get());
-      }
+      const path = nodeId === "__main__"
+        ? "/api/system/update/logs"
+        : `/api/nodes/${encodeURIComponent(nodeId)}/system/update/logs`;
+      const data = await updateRequest<PanelUpdateLogs>(path);
 
-      if (error || !data?.success) return;
+      if (!data?.success) return;
 
       const logInfo = data as PanelUpdateLogs;
       const id = updateToastIdRef.current || "panel-update-log";
@@ -394,14 +418,12 @@ export default function SettingsPage() {
     if (!updatingNodeId) return;
     setApplyingUpdate(true);
     try {
-      let data, error;
-      if (updatingNodeId === "__main__") {
-        ({ data, error } = await (api as any).api.system.update.apply.post());
-      } else {
-        ({ data, error } = await (api as any).api.nodes({ id: updatingNodeId }).system.update.apply.post());
-      }
+      const path = updatingNodeId === "__main__"
+        ? "/api/system/update/apply"
+        : `/api/nodes/${encodeURIComponent(updatingNodeId)}/system/update/apply`;
+      const data = await updateRequest<PanelUpdateInfo>(path, { method: "POST" });
 
-      if (error || !data?.success) {
+      if (!data?.success) {
         toast.error(data?.message || "提交更新失败");
         return;
       }
