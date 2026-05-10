@@ -38,6 +38,11 @@ interface AcmeRequestInput {
   forceHttps?: boolean;
 }
 
+interface RenewInput {
+  certificateId?: string;
+  forceHttps?: boolean;
+}
+
 interface AcmeInstallInput {
   email?: string;
 }
@@ -303,6 +308,7 @@ async function runStreamingCommand(
   args: string[],
   send: (data: Record<string, unknown>) => void,
   env?: Record<string, string>,
+  allowedExitCodes?: number[],
 ): Promise<void> {
   send({ type: "stage", stage: basename(command), message: `$ ${basename(command)} ${redactArgs(args)}` });
   const spawnEnv: Record<string, string> = {};
@@ -335,7 +341,9 @@ async function runStreamingCommand(
 
   await Promise.all([read(proc.stdout, "stdout"), read(proc.stderr, "stderr")]);
   const exitCode = await proc.exited;
-  if (exitCode !== 0) throw new Error(`${basename(command)} 执行失败，退出码 ${exitCode}`);
+  if (exitCode !== 0 && !(allowedExitCodes || []).includes(exitCode)) {
+    throw new Error(`${basename(command)} 执行失败，退出码 ${exitCode}`);
+  }
 }
 
 function saveIssuedCertificate(certPath: string, keyPath: string, name: string): CertificateInfo {
@@ -433,7 +441,7 @@ async function requestCertificate(
     if (body.staging) issueArgs.push("--staging");
     if (challenge === "http") prepareHttpChallengeConfig(layout, site, send);
 
-    await runStreamingCommand(acmeSh, issueArgs, send, challenge === "dns" ? sanitizeDnsEnv(body.dnsEnv) : undefined);
+    await runStreamingCommand(acmeSh, issueArgs, send, challenge === "dns" ? sanitizeDnsEnv(body.dnsEnv) : undefined, [2]);
     await runStreamingCommand(
       acmeSh,
       ["--install-cert", "-d", domains[0], "--ecc", "--fullchain-file", issuedCertPath, "--key-file", issuedKeyPath],
@@ -736,6 +744,72 @@ function getSiteCertificate(siteName: string) {
   };
 }
 
+async function renewCertificate(
+  certificateId: string,
+  forceHttps: boolean,
+  send: (data: Record<string, unknown>) => void,
+) {
+  const cert = loadCertificate(certificateId);
+  if (!cert) throw new Error("证书不存在");
+
+  const acmeSh = detectCommand("acme.sh");
+  if (!acmeSh) throw new Error("未检测到 acme.sh，无法续签证书");
+
+  if (cert.domains.length === 0) throw new Error("证书未包含域名信息，无法续签");
+
+  send({ type: "stage", stage: "prepare", message: `准备续签证书: ${cert.domains.join(", ")}` });
+
+  const domainArgs = cert.domains.flatMap((domain) => ["-d", domain]);
+
+  const id = `${Date.now()}-${randomBytes(3).toString("hex")}`;
+  const workDir = join(DATA_DIR, id);
+  mkdirSync(workDir, { recursive: true });
+  const issuedCertPath = join(workDir, "issued-fullchain.pem");
+  const issuedKeyPath = join(workDir, "issued-privkey.pem");
+
+  // Use acme.sh --renew --force to force renewal
+  const renewArgs = ["--renew", ...domainArgs, "--ecc", "--force"];
+  await runStreamingCommand(acmeSh, renewArgs, send, undefined, [2]);
+
+  // Install the renewed cert
+  await runStreamingCommand(
+    acmeSh,
+    ["--install-cert", "-d", cert.domains[0], "--ecc", "--fullchain-file", issuedCertPath, "--key-file", issuedKeyPath],
+    send,
+  );
+
+  if (!existsSync(issuedCertPath) || !existsSync(issuedKeyPath)) {
+    throw new Error("续签完成，但未找到证书文件");
+  }
+
+  send({ type: "stage", stage: "save", message: "证书续签成功，正在保存并部署" });
+  const newCert = saveIssuedCertificate(issuedCertPath, issuedKeyPath, cert.name);
+
+  // Find all sites that use this certificate and redeploy
+  const layout = ensureLayout();
+  if (layout.availableDir) {
+    const siteFiles = readdirSync(layout.availableDir).filter((f) => f.endsWith(".conf") && !f.endsWith(".disabled"));
+    for (const file of siteFiles) {
+      try {
+        const siteContent = readFileSync(join(layout.availableDir, file), "utf-8");
+        if (siteContent.includes(SSL_START) && siteContent.includes(cert.certPath)) {
+          const siteName = file.replace(/\.conf$/, "");
+          send({ type: "stage", stage: "deploy", message: `重新部署到站点: ${siteName}` });
+          deployCertificate(siteName, { certificateId: newCert.id, forceHttps });
+        }
+      } catch {
+        // skip sites that fail
+      }
+    }
+  }
+
+  send({
+    type: "done",
+    message: `证书续签成功并已部署`,
+    certificateId: newCert.id,
+  });
+}
+
 async function authProfile(jwt: any, request: Request) {
   const authHeader = request.headers.get("authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -843,6 +917,24 @@ export const certificateRoutes = new Elysia()
       } catch (e: any) {
         logger.err(`自动申请证书失败: ${e.message}`);
         send({ type: "error", message: e.message || "自动申请证书失败" });
+      }
+    });
+  })
+
+  .post("/api/certificates/:id/renew-stream", async ({ jwt, request, params, body }: any) => {
+    const profile = await authProfile(jwt, request);
+    if (!profile) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return createSseResponse(async (send) => {
+      try {
+        await renewCertificate(params.id, body?.forceHttps !== false, send);
+      } catch (e: any) {
+        logger.err(`证书续签失败: ${e.message}`);
+        send({ type: "error", message: e.message || "证书续签失败" });
       }
     });
   });

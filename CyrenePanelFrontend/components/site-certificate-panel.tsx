@@ -7,14 +7,24 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { useTasks } from "@/lib/task-store";
 import { API_BASE } from "@/lib/api-base";
 import {
   CalendarClock,
+  FileKey,
+  FileText,
+  FolderArchive,
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   ShieldOff,
   Trash2,
@@ -129,16 +139,18 @@ export function SiteCertificatePanel({
   const [certificates, setCertificates] = useState<CertificateInfo[]>([]);
   const [status, setStatus] = useState<SiteCertificateStatus | null>(null);
   const [acmeEnv, setAcmeEnv] = useState<AcmeEnvironment | null>(null);
-  const [selectedId, setSelectedId] = useState("");
   const [forceHttps, setForceHttps] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    certificate: "",
+  const [activeTab, setActiveTab] = useState("current");
+
+  // 当前证书 Tab: 手动部署
+  const [manualForm, setManualForm] = useState({
     privateKey: "",
+    certificate: "",
   });
-  const [acmeOpen, setAcmeOpen] = useState(false);
+  const [manualName, setManualName] = useState("");
+
+  // 申请证书 Tab
   const [acmeForm, setAcmeForm] = useState({
     domains: domains.join("\n"),
     email: "",
@@ -148,6 +160,11 @@ export function SiteCertificatePanel({
     staging: false,
     forceHttps: true,
   });
+
+  // 证书夹 Tab
+  const [vaultSelectedId, setVaultSelectedId] = useState("");
+  const [vaultForceHttps, setVaultForceHttps] = useState(true);
+  const [renewing, setRenewing] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -159,7 +176,7 @@ export function SiteCertificatePanel({
       ]);
       if (certRes.success) {
         setCertificates(certRes.certificates || []);
-        setSelectedId((current) => current || certRes.certificates?.[0]?.id || "");
+        setVaultSelectedId((current) => current || certRes.certificates?.[0]?.id || "");
       } else {
         toast.error(certRes.message || "证书列表读取失败");
       }
@@ -205,6 +222,49 @@ export function SiteCertificatePanel({
     }));
   }, [domains]);
 
+  // === Tab 1: 当前证书 - 手动部署 ===
+  const deployManualCertificate = async () => {
+    if (!manualForm.privateKey.trim() || !manualForm.certificate.trim()) {
+      toast.error("请填写私钥和证书内容");
+      return;
+    }
+    setSaving("manual-deploy");
+    try {
+      // 先保存证书到证书夹
+      const createRes = await apiPost<{ success: boolean; message?: string; certificate?: CertificateInfo }>(
+        certBase,
+        {
+          name: manualName || siteName,
+          certificate: manualForm.certificate,
+          privateKey: manualForm.privateKey,
+        }
+      );
+      if (createRes.success && createRes.certificate) {
+        // 再部署到站点
+        const deployRes = await apiPost<{ success: boolean; message?: string }>(
+          `${basePath}/${encodeURIComponent(siteName)}/certificate/deploy`,
+          { certificateId: createRes.certificate.id, forceHttps }
+        );
+        if (deployRes.success) {
+          toast.success(deployRes.message || "证书已部署");
+          setManualForm({ privateKey: "", certificate: "" });
+          setManualName("");
+          await fetchData();
+          await onDeployed?.();
+        } else {
+          toast.error(deployRes.message || "证书部署失败");
+        }
+      } else {
+        toast.error(createRes.message || "证书保存失败");
+      }
+    } catch (e: any) {
+      toast.error(e.message || "证书部署失败");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // === Tab 2: 申请证书 ===
   const installAcmeSh = () => {
     if (!acmeForm.email.trim()) {
       toast.error("请先填写 ACME 邮箱");
@@ -282,39 +342,17 @@ export function SiteCertificatePanel({
     toast.success("证书申请任务已发送到消息中心");
   };
 
-  const createCertificate = async () => {
-    setSaving("create");
-    try {
-      const res = await apiPost<{ success: boolean; message?: string; certificate?: CertificateInfo }>(
-        certBase,
-        form
-      );
-      if (res.success) {
-        toast.success(res.message || "证书已保存");
-        setForm({ name: "", certificate: "", privateKey: "" });
-        setShowCreate(false);
-        setSelectedId(res.certificate?.id || "");
-        await fetchData();
-      } else {
-        toast.error(res.message || "证书保存失败");
-      }
-    } catch (e: any) {
-      toast.error(e.message || "证书保存失败");
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const deployCertificate = async () => {
-    if (!selectedId) {
+  // === Tab 3: 证书夹 - 部署 ===
+  const deployFromVault = async () => {
+    if (!vaultSelectedId) {
       toast.error("请选择一个证书");
       return;
     }
-    setSaving("deploy");
+    setSaving("vault-deploy");
     try {
       const res = await apiPost<{ success: boolean; message?: string }>(
         `${basePath}/${encodeURIComponent(siteName)}/certificate/deploy`,
-        { certificateId: selectedId, forceHttps }
+        { certificateId: vaultSelectedId, forceHttps: vaultForceHttps }
       );
       if (res.success) {
         toast.success(res.message || "证书已部署");
@@ -338,7 +376,7 @@ export function SiteCertificatePanel({
       );
       if (res.success) {
         toast.success(res.message || "证书已删除");
-        if (selectedId === id) setSelectedId("");
+        if (vaultSelectedId === id) setVaultSelectedId("");
         await fetchData();
       } else {
         toast.error(res.message || "证书删除失败");
@@ -348,6 +386,27 @@ export function SiteCertificatePanel({
     } finally {
       setSaving(null);
     }
+  };
+
+  // === Tab 3: 证书夹 - 续签 ===
+  const renewCertificate = (certId: string) => {
+    setRenewing(certId);
+    startDeployTask({
+      title: "续签证书",
+      icon: "/favicon.ico",
+      url: `${API_BASE}${certBase}/${encodeURIComponent(certId)}/renew-stream`,
+      headers: authHeaders(),
+      body: JSON.stringify({ forceHttps: vaultForceHttps }),
+      targetUrl: "/dashboard/sites",
+      onDone: async () => {
+        setRenewing(null);
+        toast.success("证书续签完成");
+        await fetchData();
+        await onDeployed?.();
+      },
+    });
+    toast.success("证书续签任务已发送到消息中心");
+    setRenewing(null);
   };
 
   if (loading) {
@@ -360,180 +419,200 @@ export function SiteCertificatePanel({
   }
 
   return (
-    <div className="h-full overflow-y-auto pr-1">
-      <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                {status?.enabled ? (
-                  <ShieldCheck className="h-4 w-4 text-emerald-500" />
-                ) : (
-                  <ShieldOff className="h-4 w-4 text-muted-foreground" />
-                )}
-                当前站点证书
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid gap-3 text-sm md:grid-cols-2">
-                <div className="rounded-md border p-3">
-                  <div className="text-xs text-muted-foreground">证书状态</div>
-                  <div className="mt-1 font-medium">{status?.enabled ? "已部署" : "未部署"}</div>
-                </div>
-                <div className="rounded-md border p-3">
-                  <div className="text-xs text-muted-foreground">强制 HTTPS</div>
-                  <div className="mt-1 font-medium">{status?.forceHttps ? "已启用" : "未启用"}</div>
-                </div>
-                <div className="rounded-md border p-3 md:col-span-2">
-                  <div className="text-xs text-muted-foreground">证书路径</div>
-                  <div className="mt-1 break-all font-mono text-xs">{status?.certPath || "-"}</div>
-                </div>
-                <div className="rounded-md border p-3">
-                  <div className="text-xs text-muted-foreground">到期时间</div>
-                  <div className="mt-1">{formatDate(status?.certificate?.validTo || null)}</div>
-                </div>
-                <div className="rounded-md border p-3">
-                  <div className="text-xs text-muted-foreground">剩余天数</div>
-                  <Badge variant="outline" className={expiryColor(status?.certificate?.expiresInDays ?? null)}>
-                    {status?.certificate?.expiresInDays ?? "-"} 天
-                  </Badge>
-                </div>
-              </div>
-              <div className="flex justify-end">
-                <Button variant="outline" onClick={fetchData}>
-                  <RefreshCw className="h-4 w-4" />
-                  刷新
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+    <div className="h-full overflow-hidden">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex h-full flex-col">
+        <TabsList className="w-full justify-start gap-1">
+          <TabsTrigger value="current" className="gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            当前证书
+          </TabsTrigger>
+          <TabsTrigger value="apply" className="gap-1.5">
+            <Plus className="h-3.5 w-3.5" />
+            申请证书
+          </TabsTrigger>
+          <TabsTrigger value="vault" className="gap-1.5">
+            <FolderArchive className="h-3.5 w-3.5" />
+            证书夹
+          </TabsTrigger>
+        </TabsList>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">证书列表</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {certificates.length === 0 ? (
-                <div className="rounded-md border border-dashed py-10 text-center text-sm text-muted-foreground">
-                  暂无证书，请先粘贴 PEM 证书和私钥
+        {/* Tab 1: 当前证书 */}
+        <TabsContent value="current" className="mt-3 min-h-0 flex-1 overflow-y-auto">
+          <div className="space-y-4">
+            {/* 当前证书状态 */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  {status?.enabled ? (
+                    <ShieldCheck className="h-4 w-4 text-emerald-500" />
+                  ) : (
+                    <ShieldOff className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  当前站点证书
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid gap-3 text-sm md:grid-cols-2">
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">证书状态</div>
+                    <div className="mt-1 font-medium">{status?.enabled ? "已部署" : "未部署"}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">强制 HTTPS</div>
+                    <div className="mt-1 font-medium">{status?.forceHttps ? "已启用" : "未启用"}</div>
+                  </div>
+                  <div className="rounded-md border p-3 md:col-span-2">
+                    <div className="text-xs text-muted-foreground">证书路径</div>
+                    <div className="mt-1 break-all font-mono text-xs">{status?.certPath || "-"}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">到期时间</div>
+                    <div className="mt-1">{formatDate(status?.certificate?.validTo || null)}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">剩余天数</div>
+                    <Badge variant="outline" className={expiryColor(status?.certificate?.expiresInDays ?? null)}>
+                      {status?.certificate?.expiresInDays ?? "-"} 天
+                    </Badge>
+                  </div>
                 </div>
-              ) : (
-                certificates.map((cert) => (
-                  <div
-                    key={cert.id}
-                    className={`rounded-md border p-3 transition-colors ${
-                      selectedId === cert.id ? "border-primary bg-primary/5" : ""
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <button
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => setSelectedId(cert.id)}
-                      >
-                        <div className="truncate font-medium">{cert.name}</div>
-                        <div className="mt-1 truncate text-xs text-muted-foreground">
-                          {cert.domains.join(", ") || cert.subject || "未解析到域名"}
-                        </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <Badge variant="outline" className={expiryColor(cert.expiresInDays)}>
-                            <CalendarClock className="mr-1 h-3 w-3" />
-                            {cert.expiresInDays ?? "-"} 天
-                          </Badge>
-                          <span className="text-xs text-muted-foreground">
-                            到期：{formatDate(cert.validTo)}
-                          </span>
-                        </div>
-                      </button>
-                      <Button
-                        variant="destructive"
-                        size="icon-sm"
-                        title="删除证书"
-                        disabled={saving === `delete:${cert.id}`}
-                        onClick={() => deleteCertificate(cert.id)}
-                      >
-                        {saving === `delete:${cert.id}` ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-4 w-4" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                <div className="flex justify-end">
+                  <Button variant="outline" onClick={fetchData}>
+                    <RefreshCw className="h-4 w-4" />
+                    刷新
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
 
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center justify-between text-base">
-                ACME 环境
-                <Button variant="outline" size="sm" onClick={refreshAcmeEnvironment}>
-                  <RefreshCw className="h-4 w-4" />
-                  检查
-                </Button>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">ACME 邮箱</label>
-                <Input
-                  type="email"
-                  value={acmeForm.email}
-                  onChange={(e) => setAcmeForm({ ...acmeForm, email: e.target.value })}
-                  placeholder="admin@example.com"
-                />
-              </div>
-              <div className="grid gap-2 text-sm">
-                {[
-                  ["acme.sh", acmeEnv?.tools?.acmeSh],
-                  ["certbot", acmeEnv?.tools?.certbot],
-                  ["openssl", acmeEnv?.tools?.openssl],
-                  ["curl", acmeEnv?.tools?.curl],
-                  ["wget", acmeEnv?.tools?.wget],
-                  ["sh", acmeEnv?.tools?.sh],
-                ].map(([name, path]) => (
-                  <div key={name} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                    <span className="font-medium">{name}</span>
-                    <span className="truncate font-mono text-xs text-muted-foreground">{path || "未检测到"}</span>
+            {/* 手动部署证书 */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">部署证书到当前站点</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">证书名称（可选）</label>
+                  <Input
+                    value={manualName}
+                    onChange={(e) => setManualName(e.target.value)}
+                    placeholder={siteName}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-1.5 text-sm font-medium">
+                    <FileKey className="h-3.5 w-3.5" />
+                    密钥 (KEY)
+                  </label>
+                  <Textarea
+                    className="h-32 resize-none font-mono text-xs"
+                    value={manualForm.privateKey}
+                    onChange={(e) => setManualForm({ ...manualForm, privateKey: e.target.value })}
+                    placeholder="-----BEGIN PRIVATE KEY-----"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-1.5 text-sm font-medium">
+                    <FileText className="h-3.5 w-3.5" />
+                    证书 (PEM)
+                  </label>
+                  <Textarea
+                    className="h-32 resize-none font-mono text-xs"
+                    value={manualForm.certificate}
+                    onChange={(e) => setManualForm({ ...manualForm, certificate: e.target.value })}
+                    placeholder="-----BEGIN CERTIFICATE-----"
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-md border p-3">
+                  <div>
+                    <div className="text-sm font-medium">强制 HTTPS</div>
+                    <div className="text-xs text-muted-foreground">HTTP 访问自动跳转到 HTTPS</div>
                   </div>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline" className={acmeEnv?.ready?.http ? expiryColor(30) : expiryColor(-1)}>
-                  文件验证 {acmeEnv?.ready?.http ? "可用" : "不可用"}
-                </Badge>
-                <Badge variant="outline" className={acmeEnv?.ready?.dns ? expiryColor(30) : expiryColor(-1)}>
-                  DNS 验证 {acmeEnv?.ready?.dns ? "可用" : "不可用"}
-                </Badge>
-              </div>
-              {!acmeEnv?.tools?.acmeSh && (
+                  <Switch checked={forceHttps} onCheckedChange={setForceHttps} />
+                </div>
                 <Button
                   className="w-full"
-                  variant="outline"
-                  onClick={installAcmeSh}
-                  disabled={!acmeEnv?.ready?.installAcmeSh || !acmeForm.email.trim()}
+                  onClick={deployManualCertificate}
+                  disabled={saving === "manual-deploy" || !manualForm.privateKey.trim() || !manualForm.certificate.trim()}
                 >
-                  <UploadCloud className="h-4 w-4" />
-                  安装 acme.sh
+                  {saving === "manual-deploy" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <UploadCloud className="h-4 w-4" />
+                  )}
+                  保存并部署到当前站点
                 </Button>
-              )}
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center justify-between text-base">
-                自动申请 SSL
-                <Button variant="outline" size="sm" onClick={() => setAcmeOpen((value) => !value)}>
-                  <ShieldCheck className="h-4 w-4" />
-                  {acmeOpen ? "收起" : "申请"}
-                </Button>
-              </CardTitle>
-            </CardHeader>
-            {acmeOpen && (
+        {/* Tab 2: 申请证书 */}
+        <TabsContent value="apply" className="mt-3 min-h-0 flex-1 overflow-y-auto">
+          <div className="space-y-4">
+            {/* ACME 环境 */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center justify-between text-base">
+                  ACME 环境
+                  <Button variant="outline" size="sm" onClick={refreshAcmeEnvironment}>
+                    <RefreshCw className="h-4 w-4" />
+                    检查
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">ACME 邮箱</label>
+                  <Input
+                    type="email"
+                    value={acmeForm.email}
+                    onChange={(e) => setAcmeForm({ ...acmeForm, email: e.target.value })}
+                    placeholder="admin@example.com"
+                  />
+                </div>
+                <div className="grid gap-2 text-sm">
+                  {[
+                    ["acme.sh", acmeEnv?.tools?.acmeSh],
+                    ["certbot", acmeEnv?.tools?.certbot],
+                    ["openssl", acmeEnv?.tools?.openssl],
+                    ["curl", acmeEnv?.tools?.curl],
+                    ["wget", acmeEnv?.tools?.wget],
+                    ["sh", acmeEnv?.tools?.sh],
+                  ].map(([name, path]) => (
+                    <div key={name} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <span className="font-medium">{name}</span>
+                      <span className="truncate font-mono text-xs text-muted-foreground">{path || "未检测到"}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline" className={acmeEnv?.ready?.http ? expiryColor(30) : expiryColor(-1)}>
+                    文件验证 {acmeEnv?.ready?.http ? "可用" : "不可用"}
+                  </Badge>
+                  <Badge variant="outline" className={acmeEnv?.ready?.dns ? expiryColor(30) : expiryColor(-1)}>
+                    DNS 验证 {acmeEnv?.ready?.dns ? "可用" : "不可用"}
+                  </Badge>
+                </div>
+                {!acmeEnv?.tools?.acmeSh && (
+                  <Button
+                    className="w-full"
+                    variant="outline"
+                    onClick={installAcmeSh}
+                    disabled={!acmeEnv?.ready?.installAcmeSh || !acmeForm.email.trim()}
+                  >
+                    <UploadCloud className="h-4 w-4" />
+                    安装 acme.sh
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* 申请表单 */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">自动申请 SSL</CardTitle>
+              </CardHeader>
               <CardContent className="space-y-3">
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium">申请域名</label>
@@ -612,98 +691,123 @@ export function SiteCertificatePanel({
                   开始申请并推送日志
                 </Button>
               </CardContent>
-            )}
-          </Card>
+            </Card>
+          </div>
+        </TabsContent>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">一键部署到站点</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">选择证书</label>
-                <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  value={selectedId}
-                  onChange={(e) => setSelectedId(e.target.value)}
-                >
-                  <option value="">请选择证书</option>
-                  {certificates.map((cert) => (
-                    <option key={cert.id} value={cert.id}>
-                      {cert.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center justify-between rounded-md border p-3">
-                <div>
-                  <div className="text-sm font-medium">强制 HTTPS</div>
-                  <div className="text-xs text-muted-foreground">HTTP 访问自动跳转到 HTTPS</div>
-                </div>
-                <Switch checked={forceHttps} onCheckedChange={setForceHttps} />
-              </div>
-              <Button className="w-full" onClick={deployCertificate} disabled={!selectedId || saving === "deploy"}>
-                {saving === "deploy" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <UploadCloud className="h-4 w-4" />
-                )}
-                部署到当前站点
-              </Button>
-            </CardContent>
-          </Card>
+        {/* Tab 3: 证书夹 */}
+        <TabsContent value="vault" className="mt-3 min-h-0 flex-1 overflow-y-auto">
+          <div className="space-y-4">
+            {certificates.length === 0 ? (
+              <Card>
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
+                  <FolderArchive className="mb-3 h-10 w-10 opacity-40" />
+                  <p className="text-sm">证书夹为空</p>
+                  <p className="mt-1 text-xs">请先通过「申请证书」或「当前证书」添加证书</p>
+                </CardContent>
+              </Card>
+            ) : (
+              <>
+                {/* 证书列表 */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">
+                      已保存证书 ({certificates.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {certificates.map((cert) => (
+                      <div
+                        key={cert.id}
+                        className={`rounded-md border p-3 transition-colors ${
+                          vaultSelectedId === cert.id ? "border-primary bg-primary/5" : ""
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <button
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => setVaultSelectedId(cert.id)}
+                          >
+                            <div className="truncate font-medium">{cert.name}</div>
+                            <div className="mt-1 truncate text-xs text-muted-foreground">
+                              {cert.domains.join(", ") || cert.subject || "未解析到域名"}
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <Badge variant="outline" className={expiryColor(cert.expiresInDays)}>
+                                <CalendarClock className="mr-1 h-3 w-3" />
+                                {cert.expiresInDays ?? "-"} 天
+                              </Badge>
+                              <span className="text-xs text-muted-foreground">
+                                到期：{formatDate(cert.validTo)}
+                              </span>
+                            </div>
+                          </button>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <Button
+                              variant="outline"
+                              size="icon-sm"
+                              title="续签证书"
+                              disabled={renewing === cert.id}
+                              onClick={() => renewCertificate(cert.id)}
+                            >
+                              {renewing === cert.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <RotateCcw className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="icon-sm"
+                              title="删除证书"
+                              disabled={saving === `delete:${cert.id}`}
+                              onClick={() => deleteCertificate(cert.id)}
+                            >
+                              {saving === `delete:${cert.id}` ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center justify-between text-base">
-                添加证书
-                <Button variant="outline" size="sm" onClick={() => setShowCreate((value) => !value)}>
-                  <Plus className="h-4 w-4" />
-                  {showCreate ? "收起" : "添加"}
-                </Button>
-              </CardTitle>
-            </CardHeader>
-            {showCreate && (
-              <CardContent className="space-y-3">
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">证书名称</label>
-                  <Input
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    placeholder="example.com"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">证书 PEM</label>
-                  <Textarea
-                    className="h-32 resize-none font-mono text-xs"
-                    value={form.certificate}
-                    onChange={(e) => setForm({ ...form, certificate: e.target.value })}
-                    placeholder="-----BEGIN CERTIFICATE-----"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">私钥 PEM</label>
-                  <Textarea
-                    className="h-32 resize-none font-mono text-xs"
-                    value={form.privateKey}
-                    onChange={(e) => setForm({ ...form, privateKey: e.target.value })}
-                    placeholder="-----BEGIN PRIVATE KEY-----"
-                  />
-                </div>
-                <Button
-                  className="w-full"
-                  onClick={createCertificate}
-                  disabled={saving === "create" || !form.certificate.trim() || !form.privateKey.trim()}
-                >
-                  {saving === "create" && <Loader2 className="h-4 w-4 animate-spin" />}
-                  保存证书
-                </Button>
-              </CardContent>
+                {/* 一键部署 */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">一键部署到站点</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex items-center justify-between rounded-md border p-3">
+                      <div>
+                        <div className="text-sm font-medium">强制 HTTPS</div>
+                        <div className="text-xs text-muted-foreground">HTTP 访问自动跳转到 HTTPS</div>
+                      </div>
+                      <Switch checked={vaultForceHttps} onCheckedChange={setVaultForceHttps} />
+                    </div>
+                    <Button
+                      className="w-full"
+                      onClick={deployFromVault}
+                      disabled={!vaultSelectedId || saving === "vault-deploy"}
+                    >
+                      {saving === "vault-deploy" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <UploadCloud className="h-4 w-4" />
+                      )}
+                      部署到当前站点
+                    </Button>
+                  </CardContent>
+                </Card>
+              </>
             )}
-          </Card>
-        </div>
-      </div>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

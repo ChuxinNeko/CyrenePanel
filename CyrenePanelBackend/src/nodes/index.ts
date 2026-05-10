@@ -589,7 +589,6 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
     process.env.CYRENE_PUBLIC_API_URL ||
     process.env.BACKEND_PUBLIC_URL ||
     `http://127.0.0.1:${port}`;
-  const bunVersion = typeof Bun !== "undefined" ? Bun.version : "unknown";
 
   results.push({
     id: "__main__",
@@ -607,7 +606,7 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
     },
     runningInstances: localInstances.filter((i) => i.status === "running").length,
     totalInstances: localInstances.length,
-    version: `Bun ${bunVersion}`,
+    version: CYRENE_VERSION,
     panelVersion: CYRENE_VERSION,
     metrics: [...localMetrics],
   });
@@ -654,7 +653,7 @@ export async function getNodesOverview(): Promise<NodeOverview[]> {
             totalFormatted: sys.memory?.totalFormatted ?? "—",
             percentage: sys.memory?.percentage ?? 0,
           };
-          overview.version = sys.runtimeVersion ?? "未知";
+          overview.version = sys.panelVersion ?? "未知";
           overview.panelVersion = sys.panelVersion ?? "未知";
           if (Array.isArray(sys.metrics)) {
             overview.metrics = sys.metrics;
@@ -2178,6 +2177,54 @@ export const nodeRoutes = new Elysia()
       });
     } catch (e: any) {
       logger.err(`子节点自动申请证书代理失败: ${e.message}`);
+      return new Response(JSON.stringify({ success: false, message: `子节点请求失败: ${e.message}` }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  })
+
+  .post("/api/nodes/:id/certificates/:cid/renew-stream", async ({ params, body, profile }: any) => {
+    if (!profile) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const node = dbGetNode(params.id);
+    if (!node) {
+      return new Response(JSON.stringify({ success: false, message: "节点不存在" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    try {
+      const token = await exchangeApiKeyForToken(node.address, node.apiKey);
+      if (!token) {
+        return new Response(JSON.stringify({ success: false, message: "子节点不可达" }), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const res = await fetch(`${node.address}/api/certificates/${encodeURIComponent(params.cid)}/renew-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body || {}),
+      });
+      const streamRes = await ensureEventStreamResponse(res, "子节点证书续签接口");
+      return new Response(streamRes.body, {
+        status: streamRes.status,
+        headers: {
+          "Content-Type": streamRes.headers.get("Content-Type") || "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (e: any) {
+      logger.err(`子节点证书续签代理失败: ${e.message}`);
       return new Response(JSON.stringify({ success: false, message: `子节点请求失败: ${e.message}` }), {
         status: 502,
         headers: { "Content-Type": "application/json" },
