@@ -60,6 +60,13 @@ export function getRequestIp(request: Request, server?: any): string {
   return "";
 }
 
+// 告警钩子（由 alerts 模块注入，避免循环依赖）
+let alertHook: ((entry: AuditEntry) => void) | null = null;
+
+export function setAuditAlertHook(fn: ((entry: AuditEntry) => void) | null): void {
+  alertHook = fn;
+}
+
 export function auditLog(entry: AuditEntry): void {
   try {
     dbInsertAuditLog({
@@ -74,6 +81,12 @@ export function auditLog(entry: AuditEntry): void {
     });
   } catch (e: any) {
     logger.warn(`审计日志写入失败: ${e.message}`);
+  }
+
+  try {
+    alertHook?.(entry);
+  } catch (e: any) {
+    logger.debug(`告警钩子执行异常: ${e.message}`);
   }
 }
 

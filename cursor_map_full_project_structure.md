@@ -111,8 +111,12 @@ d:\CyrenePanel\
 │       ├── account/                    # 认证模块
 │       │   └── index.ts                # POST /api/login, GET /api/me, POST /api/auth/key (API Key 换 JWT)
 │       │
+│       ├── alerts/                     # 告警/通知模块（主节点 SMTP 发送）
+│       │   ├── index.ts                # 路由(SMTP/规则 CRUD、测试发送)、审计钩子、周期性 CPU/内存阈值检查器
+│       │   └── smtp.ts                 # 极简 SMTP 客户端（SSL/STARTTLS/明文，AUTH LOGIN，MIME 编码）
+│       │
 │       ├── audit/                      # 审计日志模块
-│       │   └── index.ts                # 审计日志写入、查询、节点聚合（本地+远程子节点）
+│       │   └── index.ts                # 审计日志写入、查询、节点聚合（本地+远程子节点）、可注入告警钩子
 │       │
 │       ├── certificates/               # SSL/TLS 证书管理
 │       │   └── index.ts                # 证书 CRUD、ACME 自动申请（acme.sh/certbot）、部署到 Nginx、续签
@@ -141,6 +145,9 @@ d:\CyrenePanel\
 │       │
 │       ├── self-check/                 # 环境自检
 │       │   └── index.ts                # 检查 tar/zip/unzip/PowerShell 等系统工具，自动安装缺失依赖
+│       │
+│       ├── security/                   # 安全模块（防火墙 + SSH 管理）
+│       │   └── index.ts                # 防火墙后端检测(ufw/firewalld/iptables/netsh)、端口规则 CRUD、启停、禁ping、SSH 状态/启停/Port/PermitRootLogin/PasswordAuthentication
 │       │
 │       ├── services/                   # 系统服务管理
 │       │   └── index.ts                # Linux systemd + Windows 服务管理：列表、启停、创建、日志
@@ -196,6 +203,7 @@ d:\CyrenePanel\
 │   │       │   ├── page.tsx            # 实例列表页
 │   │       │   └── [id]/page.tsx       # 实例详情页（动态路由）
 │   │       ├── nodes/page.tsx          # 节点管理页
+│   │       ├── security/page.tsx       # 安全页（系统防火墙 + SSH 管理，支持多节点切换）
 │   │       ├── services/page.tsx       # 服务管理页
 │   │       ├── settings/page.tsx       # 系统设置页
 │   │       ├── sites/page.tsx          # 网站管理页
@@ -208,11 +216,12 @@ d:\CyrenePanel\
 │   │   ├── app-detail-dialog.tsx       # 应用详情对话框
 │   │   ├── app-sidebar.tsx             # 侧边导航栏（概览/实例/文件/节点/Docker/服务/网站/环境/终端/用户/设置）
 │   │   ├── compose-deploy-dialog.tsx   # Docker Compose 部署对话框（YAML 编辑器 + 流式部署）
-│   │   ├── dashboard-content.tsx       # 仪表盘内容包装器（SidebarProvide+ Header + Footer）
+│   │   ├── dashboard-content.tsx       # 仪表盘内容包装器（SidebarProvide+ Header + Footer，Header 含重启按钮）
 │   │   ├── dashboard-footer.tsx        # 仪表盘页脚（版权信息 + 自定义 HTML）
 │   │   ├── deploy-app-dialog.tsx       # 应用商店部署对话框（拉取镜像、流式进度）
 │   │   ├── environment-self-check-dialog.tsx  # 环境自检对话框
 │   │   ├── node-file-transfer-dialog.tsx      # 节点文件传输对话框
+│   │   ├── restart-button.tsx                 # 全局 Header 重启按钮（重启面板 / 重启服务器，含确认对话框，跨 Linux/Windows）
 │   │   ├── site-certificate-panel.tsx         # 站点 SSL 证书面板（ACME 申请/部署/续签）
 │   │   ├── task-center.tsx             # 任务中心（后台任务进度、成功/失败状态、日志查看）
 │   │   ├── task-log-terminal.tsx       # 任务日志终端（实时输出显示）
@@ -278,6 +287,8 @@ d:\CyrenePanel\
 | `/api/system` | system | GET 系统信息+指标 |
 | `/api/system/version` | system | GET 版本号 |
 | `/api/system/update` | system | GET 检查更新, POST 应用更新 |
+| `/api/system/restart/panel` | system | POST 重启面板（Linux: systemctl 拉起；其他: 进程退出） |
+| `/api/system/restart/server` | system | POST 重启整机（Linux: systemctl reboot 回退 shutdown -r；Windows: shutdown /r） |
 | `/api/instances` | instances | GET 列表, POST 创建 |
 | `/api/instances/:id` | instances | GET 详情, PUT 更新, DELETE 删除 |
 | `/api/instances/:id/start\|stop\|restart` | instances | POST 启动/停止/重启 |
@@ -325,9 +336,21 @@ d:\CyrenePanel\
 | `/api/environments/:id/:action/stream` | environments | POST SSE 流式操作 |
 | `/api/self-check/environment` | self-check | GET 环境依赖检测 |
 | `/api/self-check/environment/install` | self-check | POST 安装缺失依赖 |
+| `/api/security/info` | security | GET 防火墙后端 + SSH 综合状态 |
+| `/api/security/firewall/rules` | security | GET 规则列表，POST 添加规则 |
+| `/api/security/firewall/rules/:id` | security | DELETE 删除规则 |
+| `/api/security/firewall/toggle` | security | POST 启用/禁用防火墙 |
+| `/api/security/firewall/ping` | security | POST 禁/允 ping（sysctl 持久化） |
+| `/api/security/ssh/status` | security | GET SSH 服务状态 + sshd_config 关键项 |
+| `/api/security/ssh/:action` | security | POST start/stop/restart/enable/disable |
+| `/api/security/ssh/config` | security | PUT 更新 Port / PermitRootLogin / PasswordAuthentication（带 sshd -t 校验和回滚） |
+| `/api/nodes/:id/security/*` | nodes | 上述安全接口的子节点代理 |
 | `/api/terminal` | terminal | WebSocket PTY 终端 |
 | `/api/audit/logs` | audit | GET 本地审计日志 |
 | `/api/audit/aggregate` | audit | GET 汇总日志（本地+所有子节点） |
+| `/api/alerts/settings` | alerts | GET 获取 SMTP 配置和规则（密码遮蔽） |
+| `/api/alerts/settings` | alerts | PUT 保存 SMTP 配置和规则 |
+| `/api/alerts/test` | alerts | POST 发送测试邮件 |
 | `/api/key` | nodes | GET 获取主节点 API Key |
 | `/api/key/regenerate` | nodes | POST 重新生成 API Key |
 
@@ -342,6 +365,10 @@ d:\CyrenePanel\
 | `users` | 用户账号 | id, username, password (bcrypt), role, createdAt |
 | `nodes` | 子节点信息 | id, name, address, apiKey, isMain |
 | `audit_logs` | 审计日志 | id, timestamp, username, category, action, target, detail, ip, success |
+
+`app_config` 中告警相关键值：
+- `alerts_smtp`：JSON，包含 host/port/encryption(ssl|starttls|none)/user/pass/from/to
+- `alerts_rules`：JSON 数组，规则类型 `auth_login_success` / `auth_login_failed` / `sensitive_action` / `cpu_high` / `memory_high`，含 enabled、threshold、cooldownMin
 
 ---
 
@@ -359,9 +386,10 @@ d:\CyrenePanel\
 | `/dashboard/services` | 服务管理 | 服务列表、启停操作 |
 | `/dashboard/sites` | 网站管理 | 站点列表、SiteCertificatePanel |
 | `/dashboard/environments` | 环境管理 | 环境检测、安装/更新 |
+| `/dashboard/security` | 安全 | 防火墙后端检测/规则 CRUD/禁ping、SSH 状态&配置（支持节点切换） |
 | `/dashboard/terminal` | Web 终端 | XtermTerminal (系统 Shell) |
 | `/dashboard/users` | 用户管理 | 用户表格、创建/删除/修改密码 |
-| `/dashboard/settings` | 系统设置 | 面板名称、日志级别、Docker 镜像仓库、页脚代码 |
+| `/dashboard/settings` | 系统设置 | 面板名称、日志级别、Docker 镜像仓库、页脚代码、告警设置(SMTP+规则) |
 
 ---
 
@@ -376,4 +404,6 @@ d:\CyrenePanel\
 7. **跨平台**：后端和前端均支持 Linux 和 Windows（文件管理、服务管理、终端有平台适配）
 8. **审计日志**：所有敏感操作记录到 audit_logs 表，支持主节点汇总子节点日志
 9. **任务中心**：前端全局任务管理器，后台异步执行长时间操作并显示进度
+10. **告警通知**：`alerts` 模块在主节点上运行，周期性检查 CPU/内存阈值，并通过审计钩子捕获登录/敏感操作事件，达到条件时通过自带极简 SMTP 客户端发送邮件；每条规则可配置阈值与冷却时间
+11. **安全管理**：`security` 模块统一抽象 ufw / firewalld / iptables / Windows Defender，提供端口规则 CRUD、防火墙启停、禁 ping（sysctl 持久化）、SSH 服务启停 + sshd_config(Port/PermitRootLogin/PasswordAuthentication) 安全编辑（写入前 `sshd -t` 校验，失败自动回滚），并支持节点代理远程管理
 

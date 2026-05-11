@@ -38,6 +38,7 @@ import {
   Settings2,
   Layers,
   Globe2,
+  ShieldCheck,
 } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
@@ -106,6 +107,11 @@ const navGroups = [
         title: "用户管理",
         url: "/dashboard/users",
         icon: Users,
+      },
+      {
+        title: "安全",
+        url: "/dashboard/security",
+        icon: ShieldCheck,
       },
       {
         title: "系统设置",

@@ -2,9 +2,12 @@ import { Elysia } from "elysia";
 import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } from "os";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import { spawn } from "child_process";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
 import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
+import { auditLog, getRequestIp } from "../audit/index";
+import { logger } from "../logger/index";
 
 const startTime = Date.now();
 
@@ -495,5 +498,95 @@ export const systemRoutes = new Elysia()
         onlineNodeCount,
         metrics,
       },
+    };
+  })
+
+  // ── 重启面板（仅当前节点） ────────────────────────────────────────
+  .post("/api/system/restart/panel", async ({ jwt, request, server }: any) => {
+    const auth = await requireAdmin(jwt, request);
+    if (!auth.ok) return { success: false, message: auth.message };
+    const ip = getRequestIp(request, server);
+    auditLog({
+      username: auth.profile.username,
+      category: "system",
+      action: "重启面板",
+      target: hostname(),
+      ip,
+    });
+    logger.warn(`管理员 ${auth.profile.username} 触发了面板重启`);
+
+    setTimeout(() => {
+      try {
+        if (platform() === "linux") {
+          // systemd 会重新拉起进程
+          spawn("systemctl", ["restart", "cyrene-backend", "cyrene-frontend"], {
+            detached: true,
+            stdio: "ignore",
+          }).unref();
+        } else {
+          // Windows / 其他平台：直接退出，依赖外部进程管理器拉起
+          process.exit(0);
+        }
+      } catch (e: any) {
+        logger.err(`面板重启失败: ${e.message}`);
+      }
+    }, 500);
+
+    return {
+      success: true,
+      message:
+        platform() === "linux"
+          ? "面板重启指令已发送，约 5 秒后服务恢复"
+          : "面板进程将退出，请确认有外部进程管理器（如服务/守护进程）会重新拉起。",
+    };
+  })
+
+  // ── 重启服务器（整机） ─────────────────────────────────────────────
+  .post("/api/system/restart/server", async ({ jwt, request, server }: any) => {
+    const auth = await requireAdmin(jwt, request);
+    if (!auth.ok) return { success: false, message: auth.message };
+    const ip = getRequestIp(request, server);
+    auditLog({
+      username: auth.profile.username,
+      category: "system",
+      action: "重启服务器",
+      target: hostname(),
+      ip,
+    });
+    logger.warn(`管理员 ${auth.profile.username} 触发了服务器重启`);
+
+    setTimeout(() => {
+      try {
+        if (platform() === "win32") {
+          spawn("shutdown", ["/r", "/t", "5", "/c", "CyrenePanel restart"], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+          }).unref();
+        } else {
+          // 优先 systemctl reboot；失败回退到 /sbin/shutdown
+          const child = spawn("systemctl", ["reboot"], {
+            detached: true,
+            stdio: "ignore",
+          });
+          child.on("error", () => {
+            spawn("shutdown", ["-r", "now"], {
+              detached: true,
+              stdio: "ignore",
+            }).unref();
+          });
+          child.unref();
+        }
+      } catch (e: any) {
+        logger.err(`服务器重启失败: ${e.message}`);
+      }
+    }, 500);
+
+    return {
+      success: true,
+      message:
+        platform() === "win32"
+          ? "服务器将在约 5 秒后重启"
+          : "重启指令已发送，服务器即将重启",
     };
   });

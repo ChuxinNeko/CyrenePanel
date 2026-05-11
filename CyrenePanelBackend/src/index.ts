@@ -21,7 +21,9 @@ import { environmentRoutes } from "./environments/index";
 import { siteRoutes } from "./sites/index";
 import { certificateRoutes } from "./certificates/index";
 import { selfCheckRoutes } from "./self-check/index";
-import { auditRoutes } from "./audit/index";
+import { auditRoutes, setAuditAlertHook } from "./audit/index";
+import { alertRoutes, notifyAlertOnAudit, startAlertChecker } from "./alerts/index";
+import { securityRoutes } from "./security/index";
 
 // ── 初始化 admin 账号（首次启动） ──────────────────────────────────
 
@@ -124,7 +126,12 @@ export const app = new Elysia()
   .use(certificateRoutes)
   .use(selfCheckRoutes)
   .use(auditRoutes)
+  .use(alertRoutes)
+  .use(securityRoutes)
   .listen({ port: Number(process.env.PORT || 5677), hostname: "0.0.0.0" });
+
+setAuditAlertHook(notifyAlertOnAudit);
+startAlertChecker();
 
 export type App = typeof app;
 

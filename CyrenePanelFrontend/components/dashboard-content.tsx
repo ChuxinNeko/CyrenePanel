@@ -4,6 +4,7 @@ import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/s
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TaskCenter } from "@/components/task-center";
+import { RestartButton } from "@/components/restart-button";
 import { usePanelName } from "@/lib/panel-name-context";
 import { DashboardFooter } from "@/components/dashboard-footer";
 
@@ -13,6 +14,7 @@ function DashboardHeader() {
     <header className="sticky top-0 z-10 flex h-16 shrink-0 items-center gap-2 border-b bg-background/80 backdrop-blur-xl px-4 justify-between">
       <div className="flex items-center gap-2">
         <SidebarTrigger />
+        <RestartButton />
         <span className="font-semibold text-sm text-muted-foreground">{panelName}</span>
       </div>
       <div className="flex items-center gap-1">

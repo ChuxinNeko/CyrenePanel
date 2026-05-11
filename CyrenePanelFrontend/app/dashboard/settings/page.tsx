@@ -40,6 +40,8 @@ import {
   Download,
   Loader2,
   Server,
+  Bell,
+  Send,
 } from "lucide-react";
 
 interface PanelUpdateInfo {
@@ -134,6 +136,40 @@ export default function SettingsPage() {
   const [copied, setCopied] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
 
+  // 告警设置
+  type AlertRuleType =
+    | "auth_login_success"
+    | "auth_login_failed"
+    | "sensitive_action"
+    | "cpu_high"
+    | "memory_high";
+  interface AlertRule {
+    type: AlertRuleType;
+    enabled: boolean;
+    threshold?: number;
+    cooldownMin?: number;
+    label?: string;
+  }
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState<number>(465);
+  const [smtpEncryption, setSmtpEncryption] = useState<"ssl" | "starttls" | "none">("ssl");
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
+  const [smtpPassConfigured, setSmtpPassConfigured] = useState(false);
+  const [smtpFrom, setSmtpFrom] = useState("");
+  const [smtpTo, setSmtpTo] = useState("");
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
+  const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
+  const [testingAlert, setTestingAlert] = useState(false);
+
+  const RULE_DESCRIPTIONS: Record<AlertRuleType, string> = {
+    auth_login_success: "用户登录成功时发送邮件通知。",
+    auth_login_failed: "用户登录失败时发送邮件通知（密码错误、用户不存在等）。",
+    sensitive_action: "敏感操作（用户/证书/节点/系统类、含删除/重置/重新生成等关键字）触发时发送通知。",
+    cpu_high: "本机 CPU 使用率持续高于阈值时发送通知。",
+    memory_high: "本机内存使用率高于阈值时发送通知。",
+  };
+
   const fetchSettings = useCallback(async () => {
     try {
       const { data, error } = await (api as any).api.settings.get();
@@ -158,6 +194,39 @@ export default function SettingsPage() {
     }
   }, [updatePanelName]);
 
+  const fetchAlerts = useCallback(async () => {
+    try {
+      const data = await updateRequest<{
+        success: boolean;
+        smtp?: {
+          host: string;
+          port: number;
+          encryption: "ssl" | "starttls" | "none";
+          user: string;
+          from: string;
+          to: string;
+          passConfigured: boolean;
+        };
+        rules?: AlertRule[];
+        message?: string;
+      }>("/api/alerts/settings");
+      if (!data?.success) return;
+      if (data.smtp) {
+        setSmtpHost(data.smtp.host || "");
+        setSmtpPort(data.smtp.port || 465);
+        setSmtpEncryption(data.smtp.encryption || "ssl");
+        setSmtpUser(data.smtp.user || "");
+        setSmtpFrom(data.smtp.from || "");
+        setSmtpTo(data.smtp.to || "");
+        setSmtpPassConfigured(!!data.smtp.passConfigured);
+        setSmtpPass("");
+      }
+      if (Array.isArray(data.rules)) setAlertRules(data.rules);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -177,6 +246,7 @@ export default function SettingsPage() {
           return;
         }
         await fetchSettings();
+        await fetchAlerts();
         try {
           const overviewRes = await (api as any).api.nodes.overview.get();
           if (overviewRes?.data?.success) {
@@ -190,7 +260,7 @@ export default function SettingsPage() {
       }
     };
     init();
-  }, [router, fetchSettings]);
+    }, [router, fetchSettings]);
 
   useEffect(() => {
     return () => {
@@ -295,6 +365,81 @@ export default function SettingsPage() {
     setCopied(true);
     toast.success("API Key 已复制到剪贴板");
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const buildAlertPayload = (includePass: boolean) => ({
+    smtp: {
+      host: smtpHost.trim(),
+      port: Number(smtpPort) || 0,
+      encryption: smtpEncryption,
+      user: smtpUser,
+      ...(includePass ? { pass: smtpPass } : {}),
+      from: smtpFrom.trim(),
+      to: smtpTo.trim(),
+    },
+  });
+
+  const handleSaveAlerts = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        ...buildAlertPayload(smtpPass.length > 0),
+        rules: alertRules.map((r) => ({
+          type: r.type,
+          enabled: r.enabled,
+          threshold: r.threshold,
+          cooldownMin: r.cooldownMin,
+        })),
+      };
+      const data = await updateRequest<{ success: boolean; message?: string }>(
+        "/api/alerts/settings",
+        {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        },
+      );
+      if (data?.success) {
+        toast.success("告警设置已保存");
+        setSmtpPass("");
+        await fetchAlerts();
+      } else {
+        toast.error(data?.message || "保存失败");
+      }
+    } catch {
+      toast.error("发生意外错误");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTestAlert = async () => {
+    if (!smtpHost.trim() || !smtpFrom.trim() || !smtpTo.trim()) {
+      toast.error("请先填写 SMTP 主机、发件人和收件人");
+      return;
+    }
+    setTestingAlert(true);
+    try {
+      const data = await updateRequest<{ success: boolean; message?: string }>(
+        "/api/alerts/test",
+        {
+          method: "POST",
+          body: JSON.stringify(buildAlertPayload(smtpPass.length > 0)),
+        },
+      );
+      if (data?.success) {
+        toast.success("测试邮件发送成功，请查收");
+      } else {
+        toast.error(data?.message || "测试邮件发送失败");
+      }
+    } catch {
+      toast.error("发生意外错误");
+    } finally {
+      setTestingAlert(false);
+    }
+  };
+
+  const updateRule = (type: AlertRuleType, patch: Partial<AlertRule>) => {
+    setAlertRules((prev) => prev.map((r) => (r.type === type ? { ...r, ...patch } : r)));
   };
 
   const handleCheckNodeUpdate = async (nodeId: string) => {
@@ -484,6 +629,10 @@ export default function SettingsPage() {
           <TabsTrigger value="security" className="gap-1.5">
             <Shield className="h-4 w-4" />
             安全设置
+          </TabsTrigger>
+          <TabsTrigger value="alerts" className="gap-1.5">
+            <Bell className="h-4 w-4" />
+            告警设置
           </TabsTrigger>
         </TabsList>
 
@@ -827,6 +976,212 @@ export default function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* ── 告警设置 ────────────────────────────────────────────── */}
+        <TabsContent value="alerts">
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>SMTP 邮件配置</CardTitle>
+                <CardDescription>
+                  配置发送告警邮件的 SMTP 服务器。告警邮件将从当前节点（主节点）通过此 SMTP 服务器发出。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="smtp-host">SMTP 主机</Label>
+                    <Input
+                      id="smtp-host"
+                      value={smtpHost}
+                      onChange={(e) => setSmtpHost(e.target.value)}
+                      placeholder="例如：smtp.example.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="smtp-port">端口</Label>
+                    <Input
+                      id="smtp-port"
+                      type="number"
+                      value={smtpPort}
+                      onChange={(e) => setSmtpPort(Number(e.target.value) || 0)}
+                      placeholder="465 / 587 / 25"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="smtp-encryption">加密方式</Label>
+                    <select
+                      id="smtp-encryption"
+                      value={smtpEncryption}
+                      onChange={(e) =>
+                        setSmtpEncryption(e.target.value as "ssl" | "starttls" | "none")
+                      }
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="ssl">SSL/TLS（隐式 TLS，常用端口 465）</option>
+                      <option value="starttls">STARTTLS（常用端口 587）</option>
+                      <option value="none">不加密（不推荐，端口 25）</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="smtp-from">发件人地址</Label>
+                    <Input
+                      id="smtp-from"
+                      value={smtpFrom}
+                      onChange={(e) => setSmtpFrom(e.target.value)}
+                      placeholder='例如：CyrenePanel <noreply@example.com>'
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="smtp-user">用户名</Label>
+                    <Input
+                      id="smtp-user"
+                      value={smtpUser}
+                      onChange={(e) => setSmtpUser(e.target.value)}
+                      placeholder="SMTP 登录用户名"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="smtp-pass">密码 / 授权码</Label>
+                    <div className="relative">
+                      <Input
+                        id="smtp-pass"
+                        type={showSmtpPass ? "text" : "password"}
+                        value={smtpPass}
+                        onChange={(e) => setSmtpPass(e.target.value)}
+                        placeholder={smtpPassConfigured ? "（已设置，留空表示不修改）" : "请输入密码或授权码"}
+                        className="pr-10"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        type="button"
+                        className="absolute right-0 top-0 h-full px-3"
+                        onClick={() => setShowSmtpPass((v) => !v)}
+                      >
+                        {showSmtpPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="smtp-to">告警收件人</Label>
+                  <Input
+                    id="smtp-to"
+                    value={smtpTo}
+                    onChange={(e) => setSmtpTo(e.target.value)}
+                    placeholder="多个邮箱以逗号分隔，例如：admin@example.com, ops@example.com"
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    所有触发的告警都会发送到这些邮箱。
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap justify-end gap-2 pt-2">
+                  <Button variant="outline" onClick={handleTestAlert} disabled={testingAlert || saving}>
+                    {testingAlert ? (
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4 mr-1.5" />
+                    )}
+                    {testingAlert ? "发送中..." : "发送测试邮件"}
+                  </Button>
+                  <Button onClick={handleSaveAlerts} disabled={saving}>
+                    <Save className="h-4 w-4 mr-1.5" />
+                    {saving ? "保存中..." : "保存设置"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>告警规则</CardTitle>
+                <CardDescription>
+                  开启需要监控的事件。CPU / 内存类规则会每 30 秒检查一次本机指标。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {alertRules.length === 0 ? (
+                  <div className="text-sm text-muted-foreground py-2">加载规则中...</div>
+                ) : (
+                  alertRules.map((rule, idx) => (
+                    <div key={rule.type}>
+                      {idx > 0 && <Separator className="my-2" />}
+                      <div className="flex items-start justify-between gap-3 py-2">
+                        <div className="space-y-1 flex-1 min-w-0">
+                          <div className="font-medium">{rule.label || rule.type}</div>
+                          <p className="text-sm text-muted-foreground">
+                            {RULE_DESCRIPTIONS[rule.type]}
+                          </p>
+                          {(rule.type === "cpu_high" || rule.type === "memory_high") && (
+                            <div className="flex flex-wrap items-center gap-3 pt-1">
+                              <Label htmlFor={`threshold-${rule.type}`} className="text-xs text-muted-foreground">
+                                阈值(%)
+                              </Label>
+                              <Input
+                                id={`threshold-${rule.type}`}
+                                type="number"
+                                min={1}
+                                max={100}
+                                value={rule.threshold ?? 90}
+                                onChange={(e) =>
+                                  updateRule(rule.type, {
+                                    threshold: Math.max(1, Math.min(100, Number(e.target.value) || 0)),
+                                  })
+                                }
+                                className="h-8 w-24"
+                                disabled={!rule.enabled}
+                              />
+                            </div>
+                          )}
+                          <div className="flex flex-wrap items-center gap-3 pt-1">
+                            <Label htmlFor={`cooldown-${rule.type}`} className="text-xs text-muted-foreground">
+                              冷却时间(分钟)
+                            </Label>
+                            <Input
+                              id={`cooldown-${rule.type}`}
+                              type="number"
+                              min={0}
+                              value={rule.cooldownMin ?? 0}
+                              onChange={(e) =>
+                                updateRule(rule.type, {
+                                  cooldownMin: Math.max(0, Number(e.target.value) || 0),
+                                })
+                              }
+                              className="h-8 w-24"
+                              disabled={!rule.enabled}
+                            />
+                            <span className="text-xs text-muted-foreground">
+                              同一规则在该时间内只发送一次。
+                            </span>
+                          </div>
+                        </div>
+                        <Switch
+                          checked={rule.enabled}
+                          onCheckedChange={(v) => updateRule(rule.type, { enabled: v })}
+                        />
+                      </div>
+                    </div>
+                  ))
+                )}
+                <div className="flex justify-end pt-2">
+                  <Button onClick={handleSaveAlerts} disabled={saving}>
+                    <Save className="h-4 w-4 mr-1.5" />
+                    {saving ? "保存中..." : "保存规则"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
       </Tabs>
 
