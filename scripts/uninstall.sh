@@ -83,6 +83,12 @@ if [ -f /etc/polkit-1/rules.d/49-cyrene.rules ]; then
     systemctl reload polkit 2>/dev/null || true
 fi
 
+# 删除 sudoers 配置
+if [ -f /etc/sudoers.d/cyrene ]; then
+    info "删除 sudoers 配置..."
+    rm -f /etc/sudoers.d/cyrene
+fi
+
 # 删除安装目录
 if [ -d "$CYRENE_HOME" ]; then
     info "删除安装目录..."

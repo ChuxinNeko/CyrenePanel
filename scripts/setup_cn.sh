@@ -366,6 +366,7 @@ uninstall_existing_install() {
     rm -rf "$CYRENE_HOME"
   fi
   rm -f /usr/local/bin/cyp
+  rm -f /etc/sudoers.d/$CYRENE_USER
 
   if id "$CYRENE_USER" >/dev/null 2>&1; then
     userdel "$CYRENE_USER" 2>/dev/null || warn "无法删除用户 $CYRENE_USER，将复用该用户继续安装"
@@ -459,6 +460,30 @@ EOF
   fi
 
   success "polkit 规则已写入：$rules_file"
+}
+
+install_sudoers() {
+  step "配置 sudoers（允许 $CYRENE_USER 新建系统服务）"
+  local sudoers_file="/etc/sudoers.d/$CYRENE_USER"
+  cat > "$sudoers_file" <<EOF
+# CyrenePanel: allow $CYRENE_USER to create and manage new systemd services
+$CYRENE_USER ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/*
+$CYRENE_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
+$CYRENE_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable *
+$CYRENE_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl start *
+EOF
+  chmod 0440 "$sudoers_file"
+
+  # 语法校验：防止错误 sudoers 配置导致系统不可用
+  if command -v visudo >/dev/null 2>&1; then
+    visudo -c -f "$sudoers_file" >/dev/null 2>&1 || {
+      error "sudoers 配置语法错误，已删除 $sudoers_file"
+      rm -f "$sudoers_file"
+      exit 1
+    }
+  fi
+
+  success "sudoers 配置已写入：$sudoers_file"
 }
 
 install_frontend_dependencies() {
@@ -1020,9 +1045,8 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=$CYRENE_HOME/backend/data $CYRENE_HOME/backend/logs
+ReadWritePaths=$CYRENE_HOME/backend/data $CYRENE_HOME/backend/logs /etc/systemd/system
 PrivateTmp=true
 
 [Install]
@@ -1176,6 +1200,7 @@ main() {
   extract_release
   create_user_and_permissions
   install_polkit_rules
+  install_sudoers
   install_frontend_dependencies
   write_systemd_services
   install_cyp_command
