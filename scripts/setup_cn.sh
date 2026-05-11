@@ -423,6 +423,44 @@ create_user_and_permissions() {
   success "权限设置完成"
 }
 
+install_polkit_rules() {
+  # cyrene 是 system user，不在 sudoers 里，对系统 systemd 单元执行 stop/start 会被 polkit 拒绝。
+  # 这里写一份 polkit 规则放行它对 systemd D-Bus 接口的 manage-units / manage-unit-files /
+  # reload-daemon 调用，使面板"服务管理"功能能正常启停 ufw 等系统服务。
+  step "配置 polkit 规则（允许 $CYRENE_USER 管理 systemd 单元）"
+
+  if [ ! -d /etc/polkit-1/rules.d ]; then
+    if [ -d /etc/polkit-1 ]; then
+      mkdir -p /etc/polkit-1/rules.d
+    else
+      warn "未检测到 polkit (/etc/polkit-1)，跳过规则安装。系统服务的启停可能失败。"
+      return
+    fi
+  fi
+
+  local rules_file="/etc/polkit-1/rules.d/49-cyrene.rules"
+  cat > "$rules_file" <<EOF
+// CyrenePanel: allow ${CYRENE_USER} to manage systemd units without password.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "${CYRENE_USER}") return;
+    if (action.id === "org.freedesktop.systemd1.manage-units" ||
+        action.id === "org.freedesktop.systemd1.manage-unit-files" ||
+        action.id === "org.freedesktop.systemd1.reload-daemon") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+  chmod 0644 "$rules_file"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl reload polkit 2>/dev/null \
+      || systemctl restart polkit 2>/dev/null \
+      || true
+  fi
+
+  success "polkit 规则已写入：$rules_file"
+}
+
 install_frontend_dependencies() {
   step "安装前端生产依赖"
   cd "$CYRENE_HOME/frontend"
@@ -1137,6 +1175,7 @@ main() {
   uninstall_existing_install
   extract_release
   create_user_and_permissions
+  install_polkit_rules
   install_frontend_dependencies
   write_systemd_services
   install_cyp_command

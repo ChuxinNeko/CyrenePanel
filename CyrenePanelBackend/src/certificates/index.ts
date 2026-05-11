@@ -14,6 +14,7 @@ import {
 import { basename, join } from "path";
 import { execSync } from "child_process";
 import { logger } from "../logger/index";
+import { auditLog, getRequestIp } from "../audit/index";
 
 interface CertificateInput {
   name?: string;
@@ -838,7 +839,7 @@ export const certificateRoutes = new Elysia()
     }
   })
 
-  .post("/api/certificates/acme/install-stream", async ({ jwt, request, body }: any) => {
+  .post("/api/certificates/acme/install-stream", async ({ jwt, request, body, server }: any) => {
     const profile = await authProfile(jwt, request);
     if (!profile) {
       return new Response(JSON.stringify({ success: false, message: "未授权" }), {
@@ -846,6 +847,13 @@ export const certificateRoutes = new Elysia()
         headers: { "Content-Type": "application/json" },
       });
     }
+    auditLog({
+      username: profile.username,
+      category: "certificate",
+      action: "安装 acme.sh",
+      target: "ACME 客户端",
+      ip: getRequestIp(request, server),
+    });
     return createSseResponse(async (send) => {
       try {
         await installAcmeSh(body || {}, send);
@@ -856,18 +864,26 @@ export const certificateRoutes = new Elysia()
     });
   })
 
-  .post("/api/certificates", async ({ jwt, request, body }: any) => {
+  .post("/api/certificates", async ({ jwt, request, body, server }: any) => {
     const profile = await authProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     try {
-      return { success: true, message: "证书已保存", certificate: createCertificate(body || {}) };
+      const cert = createCertificate(body || {});
+      auditLog({
+        username: profile.username,
+        category: "certificate",
+        action: "添加证书",
+        target: cert?.name || "(未命名)",
+        ip: getRequestIp(request, server),
+      });
+      return { success: true, message: "证书已保存", certificate: cert };
     } catch (e: any) {
       logger.err(`证书保存失败: ${e.message}`);
       return { success: false, message: e.message || "证书保存失败" };
     }
   })
 
-  .delete("/api/certificates/:id", async ({ jwt, request, params }: any) => {
+  .delete("/api/certificates/:id", async ({ jwt, request, params, server }: any) => {
     const profile = await authProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     try {
@@ -876,6 +892,13 @@ export const certificateRoutes = new Elysia()
       const dir = join(DATA_DIR, id);
       if (!existsSync(dir)) return { success: false, message: "证书不存在" };
       rmSync(dir, { recursive: true, force: true });
+      auditLog({
+        username: profile.username,
+        category: "certificate",
+        action: "删除证书",
+        target: id,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "证书已删除" };
     } catch (e: any) {
       return { success: false, message: e.message || "证书删除失败" };
@@ -892,18 +915,27 @@ export const certificateRoutes = new Elysia()
     }
   })
 
-  .post("/api/sites/:name/certificate/deploy", async ({ jwt, request, params, body }: any) => {
+  .post("/api/sites/:name/certificate/deploy", async ({ jwt, request, params, body, server }: any) => {
     const profile = await authProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     try {
-      return deployCertificate(params.name, body || {});
+      const result = deployCertificate(params.name, body || {});
+      auditLog({
+        username: profile.username,
+        category: "certificate",
+        action: "部署证书",
+        target: params.name,
+        detail: body?.certificateId ? `证书 ${body.certificateId}` : "",
+        ip: getRequestIp(request, server),
+      });
+      return result;
     } catch (e: any) {
       logger.err(`证书部署失败: ${e.message}`);
       return { success: false, message: e.message || "证书部署失败" };
     }
   })
 
-  .post("/api/sites/:name/certificate/request-stream", async ({ jwt, request, params, body }: any) => {
+  .post("/api/sites/:name/certificate/request-stream", async ({ jwt, request, params, body, server }: any) => {
     const profile = await authProfile(jwt, request);
     if (!profile) {
       return new Response(JSON.stringify({ success: false, message: "未授权" }), {
@@ -911,6 +943,14 @@ export const certificateRoutes = new Elysia()
         headers: { "Content-Type": "application/json" },
       });
     }
+    auditLog({
+      username: profile.username,
+      category: "certificate",
+      action: "申请证书",
+      target: params.name,
+      detail: body?.challenge ? `验证: ${body.challenge}` : "",
+      ip: getRequestIp(request, server),
+    });
     return createSseResponse(async (send) => {
       try {
         await requestCertificate(params.name, body || {}, send);
@@ -921,7 +961,7 @@ export const certificateRoutes = new Elysia()
     });
   })
 
-  .post("/api/certificates/:id/renew-stream", async ({ jwt, request, params, body }: any) => {
+  .post("/api/certificates/:id/renew-stream", async ({ jwt, request, params, body, server }: any) => {
     const profile = await authProfile(jwt, request);
     if (!profile) {
       return new Response(JSON.stringify({ success: false, message: "未授权" }), {
@@ -929,6 +969,13 @@ export const certificateRoutes = new Elysia()
         headers: { "Content-Type": "application/json" },
       });
     }
+    auditLog({
+      username: profile.username,
+      category: "certificate",
+      action: "续签证书",
+      target: params.id,
+      ip: getRequestIp(request, server),
+    });
     return createSseResponse(async (send) => {
       try {
         await renewCertificate(params.id, body?.forceHttps !== false, send);

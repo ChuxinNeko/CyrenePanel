@@ -60,17 +60,28 @@ fi
 info "停止服务..."
 systemctl stop cyrene-backend 2>/dev/null || true
 systemctl stop cyrene-frontend 2>/dev/null || true
+systemctl stop cyrene-updater.path cyrene-updater.service 2>/dev/null || true
 
 # 禁用服务
 info "禁用服务..."
 systemctl disable cyrene-backend 2>/dev/null || true
 systemctl disable cyrene-frontend 2>/dev/null || true
+systemctl disable cyrene-updater.path 2>/dev/null || true
 
 # 删除 systemd 服务文件
 info "删除服务配置..."
 rm -f /etc/systemd/system/cyrene-backend.service
 rm -f /etc/systemd/system/cyrene-frontend.service
+rm -f /etc/systemd/system/cyrene-updater.service
+rm -f /etc/systemd/system/cyrene-updater.path
 systemctl daemon-reload
+
+# 删除 polkit 规则
+if [ -f /etc/polkit-1/rules.d/49-cyrene.rules ]; then
+    info "删除 polkit 规则..."
+    rm -f /etc/polkit-1/rules.d/49-cyrene.rules
+    systemctl reload polkit 2>/dev/null || true
+fi
 
 # 删除安装目录
 if [ -d "$CYRENE_HOME" ]; then
@@ -88,6 +99,17 @@ for bak in $(ls -d ${BACKUP_DIR}/CyrenePanel.bak.* 2>/dev/null || true); do
     fi
 done
 
+# 删除 CLI 工具
+if [ -f /usr/local/bin/cyp ]; then
+    info "删除 CLI 管理工具..."
+    rm -f /usr/local/bin/cyp
+fi
+
+if [ -f /usr/local/bin/cyp-update-apply ]; then
+    info "删除更新助手..."
+    rm -f /usr/local/bin/cyp-update-apply
+fi
+
 # 删除用户
 if id "$BACKEND_USER" &>/dev/null; then
     info "删除用户 $BACKEND_USER..."
@@ -104,5 +126,5 @@ echo "  ║                                                   ║"
 echo "  ╚═══════════════════════════════════════════════════╝"
 echo -e "${NC}"
 echo ""
-echo -e "  ${YELLOW}提示: Bun 未被移除，如需卸载请手动处理${NC}"
+echo -e "  ${YELLOW}提示: Bun 与 Node.js 未被移除（系统级共享依赖），如需卸载请手动处理${NC}"
 echo ""

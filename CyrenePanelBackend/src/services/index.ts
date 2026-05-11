@@ -418,9 +418,9 @@ export const serviceRoutes = new Elysia()
         // 使用 tee 写入需要 sudo
         const escapedContent = unitContent.replace(/'/g, "'\\''");
         execCmd(`echo '${escapedContent}' | sudo tee ${unitPath} > /dev/null`, 10000);
-        execCmd("sudo systemctl daemon-reload", 10000);
-        execCmd(`sudo systemctl enable "${serviceName}"`, 10000);
-        execCmd(`sudo systemctl start "${serviceName}"`, 30000);
+        execCmd("systemctl daemon-reload", 10000);
+        execCmd(`systemctl enable "${serviceName}"`, 10000);
+        execCmd(`systemctl start "${serviceName}"`, 30000);
 
         return { success: true, message: `服务 ${serviceName} 已创建并启动` };
       } catch (e: any) {

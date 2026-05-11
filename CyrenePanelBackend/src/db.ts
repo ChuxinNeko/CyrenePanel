@@ -52,6 +52,22 @@ db.exec(`
     createdAt INTEGER NOT NULL
   );
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    username  TEXT NOT NULL,
+    category  TEXT NOT NULL,
+    action    TEXT NOT NULL,
+    target    TEXT NOT NULL DEFAULT '',
+    detail    TEXT NOT NULL DEFAULT '',
+    ip        TEXT NOT NULL DEFAULT '',
+    success   INTEGER NOT NULL DEFAULT 1
+  );
+`);
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
+`);
 
 // ── 迁移：添加 nodeId / nodeName 列 ────────────────────────────────
 
@@ -371,4 +387,71 @@ export function dbUpdateNode(
     id
   );
   return true;
+}
+
+// ── audit_logs 辅助函数 ────────────────────────────────────────────
+
+export interface AuditLogRow {
+  id: number;
+  timestamp: number;
+  username: string;
+  category: string;
+  action: string;
+  target: string;
+  detail: string;
+  ip: string;
+  success: number;
+}
+
+const auditInsertStmt = db.prepare(
+  "INSERT INTO audit_logs (timestamp, username, category, action, target, detail, ip, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+);
+const auditQueryStmt = db.prepare(
+  "SELECT * FROM audit_logs ORDER BY timestamp DESC, id DESC LIMIT ?"
+);
+const auditQueryBeforeStmt = db.prepare(
+  "SELECT * FROM audit_logs WHERE timestamp < ? ORDER BY timestamp DESC, id DESC LIMIT ?"
+);
+const auditPruneStmt = db.prepare(
+  "DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs ORDER BY timestamp ASC, id ASC LIMIT ?)"
+);
+const auditCountStmt = db.prepare("SELECT COUNT(*) as count FROM audit_logs");
+
+const AUDIT_LOGS_MAX = 5000;
+
+export function dbInsertAuditLog(entry: {
+  timestamp: number;
+  username: string;
+  category: string;
+  action: string;
+  target?: string;
+  detail?: string;
+  ip?: string;
+  success?: boolean;
+}): void {
+  auditInsertStmt.run(
+    entry.timestamp,
+    entry.username,
+    entry.category,
+    entry.action,
+    entry.target ?? "",
+    entry.detail ?? "",
+    entry.ip ?? "",
+    entry.success === false ? 0 : 1
+  );
+
+  // 容量上限：保持最多 AUDIT_LOGS_MAX 条
+  const row = auditCountStmt.get() as { count: number };
+  if (row.count > AUDIT_LOGS_MAX) {
+    auditPruneStmt.run(row.count - AUDIT_LOGS_MAX);
+  }
+}
+
+export function dbQueryAuditLogs(limit: number, before?: number): AuditLogRow[] {
+  const cap = Math.min(Math.max(limit, 1), 500);
+  return (
+    before
+      ? (auditQueryBeforeStmt.all(before, cap) as AuditLogRow[])
+      : (auditQueryStmt.all(cap) as AuditLogRow[])
+  );
 }

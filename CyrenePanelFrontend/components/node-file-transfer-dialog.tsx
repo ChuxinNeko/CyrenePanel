@@ -193,45 +193,54 @@ export function NodeFileTransferDialog({
       } else {
         // Cross-node transfer (Frontend Proxy)
         const selectedItems = sourceEntries.filter(e => sourceSelected.has(e.path));
-        
+
         for (let i = 0; i < selectedItems.length; i++) {
           const item = selectedItems[i];
           setProgressText(`处理中 (${i+1}/${selectedItems.length}): ${item.name}`);
-          
+
           let downloadPath = item.path;
           let isFolder = item.isDirectory;
           let tempArchive = "";
 
-          // 1. If folder, compress first
+          // 1. If folder, compress first.
+          //    Use useTempDir so the source node writes to its OS temp directory —
+          //    avoids ENOSPC / read-only filesystem on the source folder, and lets
+          //    the backend pick the right format (.zip on Windows / .tar.gz on Linux).
           if (isFolder) {
             setProgressText(`压缩文件夹: ${item.name}...`);
-            tempArchive = joinPath(sourcePath, `${item.name}-transfer-${Date.now()}.tar.gz`);
-            const compRes = await fileFetch<{success: boolean}>(`${getNodeApiPrefix(sourceNodeId)}/files/compress`, {
-              method: "POST",
-              body: JSON.stringify({ paths: [item.path], targetPath: tempArchive })
-            });
-            if (!compRes.success) throw new Error(`无法压缩文件夹 ${item.name}`);
+            const compRes = await fileFetch<{ success: boolean; message?: string; path?: string }>(
+              `${getNodeApiPrefix(sourceNodeId)}/files/compress`,
+              {
+                method: "POST",
+                body: JSON.stringify({ paths: [item.path], useTempDir: true }),
+              }
+            );
+            if (!compRes.success || !compRes.path) {
+              throw new Error(`压缩文件夹 ${item.name} 失败：${compRes.message || "未知错误"}`);
+            }
+            tempArchive = compRes.path;
             downloadPath = tempArchive;
           }
 
           // 2. Download from Source
           setProgressText(`下载: ${item.name}...`);
-          const dlRes = await fileFetch<{success: boolean; data?: string; size?: number; fileName?: string}>(
+          const dlRes = await fileFetch<{success: boolean; data?: string; size?: number; fileName?: string; message?: string}>(
             `${getNodeApiPrefix(sourceNodeId)}/files/download?path=${encodeURIComponent(downloadPath)}`
           );
-          
+
           if (!dlRes.success || !dlRes.data) {
-            throw new Error(`下载失败 (可能超过100MB限制): ${item.name}`);
+            throw new Error(`下载失败 (${item.name}): ${dlRes.message || "可能超过 100MB 限制"}`);
           }
 
           // 3. Upload to Target
           setProgressText(`上传: ${item.name}...`);
-          const targetFilePath = joinPath(targetPath, isFolder ? tempArchive.split('/').pop()! : item.name);
+          const uploadName = isFolder ? tempArchive.split('/').pop()!.split('\\').pop()! : item.name;
+          const targetFilePath = joinPath(targetPath, uploadName);
           const totalSize = dlRes.size || 0;
-          
+
           // Using chunk upload to bypass normal write limit, but since we have it in base64 memory, we can just send it as one chunk if small, or split it.
           // For simplicity, we send the whole base64 as one chunk.
-          const ulRes = await fileFetch<{success: boolean}>(`${getNodeApiPrefix(targetNodeId)}/files/upload/chunk`, {
+          const ulRes = await fileFetch<{success: boolean; message?: string}>(`${getNodeApiPrefix(targetNodeId)}/files/upload/chunk`, {
             method: "POST",
             body: JSON.stringify({
               path: targetFilePath,
@@ -241,15 +250,21 @@ export function NodeFileTransferDialog({
             })
           });
 
-          if (!ulRes.success) throw new Error(`上传失败: ${item.name}`);
+          if (!ulRes.success) throw new Error(`上传失败 (${item.name}): ${ulRes.message || "未知错误"}`);
 
           // 4. If folder, extract on Target and clean up
           if (isFolder) {
             setProgressText(`解压文件夹: ${item.name}...`);
-            await fileFetch(`${getNodeApiPrefix(targetNodeId)}/files/extract`, {
-              method: "POST",
-              body: JSON.stringify({ path: targetFilePath, targetDir: targetPath, overwrite: false })
-            });
+            const exRes = await fileFetch<{ success: boolean; message?: string }>(
+              `${getNodeApiPrefix(targetNodeId)}/files/extract`,
+              {
+                method: "POST",
+                body: JSON.stringify({ path: targetFilePath, targetDir: targetPath, overwrite: false }),
+              }
+            );
+            if (!exRes.success) {
+              throw new Error(`解压失败 (${item.name}): ${exRes.message || "未知错误"}`);
+            }
             // Delete temp archive on target
             await fileFetch(`${getNodeApiPrefix(targetNodeId)}/files`, {
               method: "DELETE",

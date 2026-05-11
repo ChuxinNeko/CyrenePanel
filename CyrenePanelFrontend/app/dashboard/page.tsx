@@ -32,6 +32,11 @@ import {
   Download as DownloadIcon,
   Upload as UploadIcon,
   Activity,
+  ShieldAlert,
+  LogIn,
+  FileText,
+  KeyRound,
+  Network,
 } from "lucide-react";
 
 function authHeaders(): HeadersInit {
@@ -142,6 +147,70 @@ interface NodeOverview {
   runningInstances?: number;
   totalInstances?: number;
   version?: string;
+}
+
+interface AuditLogItem {
+  id: string;
+  timestamp: number;
+  username: string;
+  category: string;
+  action: string;
+  target: string;
+  detail: string;
+  ip: string;
+  success: boolean;
+  nodeId: string;
+  nodeName: string;
+}
+
+const AUDIT_CATEGORY_META: Record<
+  string,
+  { label: string; icon: React.ComponentType<{ className?: string }>; color: string }
+> = {
+  auth: { label: "认证", icon: LogIn, color: "text-blue-500" },
+  file: { label: "文件", icon: FileText, color: "text-amber-500" },
+  certificate: { label: "证书", icon: KeyRound, color: "text-emerald-500" },
+  user: { label: "用户", icon: User, color: "text-violet-500" },
+  node: { label: "节点", icon: Network, color: "text-cyan-500" },
+  instance: { label: "实例", icon: Box, color: "text-orange-500" },
+  service: { label: "服务", icon: Activity, color: "text-rose-500" },
+  site: { label: "网站", icon: Monitor, color: "text-sky-500" },
+  docker: { label: "Docker", icon: Box, color: "text-indigo-500" },
+  system: { label: "系统", icon: Server, color: "text-slate-500" },
+};
+
+function getCategoryMeta(category: string) {
+  return (
+    AUDIT_CATEGORY_META[category] ?? {
+      label: category || "其他",
+      icon: ShieldAlert,
+      color: "text-muted-foreground",
+    }
+  );
+}
+
+function formatRelativeTime(timestamp: number): string {
+  const now = Date.now();
+  const diff = Math.max(0, now - timestamp);
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
+  const d = new Date(timestamp);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatAbsoluteTime(timestamp: number): string {
+  const d = new Date(timestamp);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function displayUsername(username: string): string {
+  if (!username) return "(匿名)";
+  if (username === "__api_node__") return "主节点代理";
+  return username;
 }
 
 function getProgressColor(pct: number) {
@@ -287,6 +356,9 @@ export default function DashboardPage() {
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [nodesOverview, setNodesOverview] = useState<NodeOverview[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
+  const [auditNodeFilter, setAuditNodeFilter] = useState<string>("__all__");
+  const [auditCategoryFilter, setAuditCategoryFilter] = useState<string>("__all__");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -327,6 +399,19 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const fetchAuditLogs = useCallback(async () => {
+    try {
+      const data = await apiGet<{ success: boolean; logs: AuditLogItem[] }>(
+        "/api/audit/aggregate?limit=100"
+      );
+      if (data.success) {
+        setAuditLogs(data.logs);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -336,7 +421,7 @@ export default function DashboardPage() {
           return;
         }
         setProfile(data.profile as { username: string });
-        await Promise.all([fetchSystem(), fetchInstances(), fetchNodesOverview()]);
+        await Promise.all([fetchSystem(), fetchInstances(), fetchNodesOverview(), fetchAuditLogs()]);
       } catch {
         router.push("/login");
       } finally {
@@ -344,17 +429,21 @@ export default function DashboardPage() {
       }
     };
     init();
-  }, [router, fetchSystem, fetchInstances, fetchNodesOverview]);
+  }, [router, fetchSystem, fetchInstances, fetchNodesOverview, fetchAuditLogs]);
 
   useEffect(() => {
     if (loading) return;
     const timer = setInterval(fetchSystem, 5000);
-    return () => clearInterval(timer);
-  }, [loading, fetchSystem]);
+    const auditTimer = setInterval(fetchAuditLogs, 15000);
+    return () => {
+      clearInterval(timer);
+      clearInterval(auditTimer);
+    };
+  }, [loading, fetchSystem, fetchAuditLogs]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([fetchSystem(), fetchInstances(), fetchNodesOverview()]);
+    await Promise.all([fetchSystem(), fetchInstances(), fetchNodesOverview(), fetchAuditLogs()]);
     setRefreshing(false);
   };
 
@@ -575,6 +664,134 @@ export default function DashboardPage() {
               </TableBody>
             </Table>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Sensitive action audit log */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShieldAlert className="h-4 w-4" />
+              敏感操作日志
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1">
+                {auditLogs.length}
+              </Badge>
+            </CardTitle>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <select
+                value={auditNodeFilter}
+                onChange={(e) => setAuditNodeFilter(e.target.value)}
+                className="h-7 rounded border bg-background px-2 text-xs"
+              >
+                <option value="__all__">全部节点</option>
+                {Array.from(new Set(auditLogs.map((log) => log.nodeId))).map((nodeId) => {
+                  const sample = auditLogs.find((l) => l.nodeId === nodeId);
+                  return (
+                    <option key={nodeId} value={nodeId}>
+                      {sample?.nodeName ?? nodeId}
+                    </option>
+                  );
+                })}
+              </select>
+              <select
+                value={auditCategoryFilter}
+                onChange={(e) => setAuditCategoryFilter(e.target.value)}
+                className="h-7 rounded border bg-background px-2 text-xs"
+              >
+                <option value="__all__">全部分类</option>
+                {Array.from(new Set(auditLogs.map((log) => log.category))).map((cat) => (
+                  <option key={cat} value={cat}>
+                    {getCategoryMeta(cat).label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {(() => {
+            const filtered = auditLogs.filter(
+              (log) =>
+                (auditNodeFilter === "__all__" || log.nodeId === auditNodeFilter) &&
+                (auditCategoryFilter === "__all__" || log.category === auditCategoryFilter),
+            );
+            if (filtered.length === 0) {
+              return (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  {auditLogs.length === 0 ? "暂无操作记录" : "当前筛选下无记录"}
+                </p>
+              );
+            }
+            return (
+              <div className="max-h-96 overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[140px]">时间</TableHead>
+                      <TableHead className="w-[110px]">用户</TableHead>
+                      <TableHead className="w-[100px]">分类</TableHead>
+                      <TableHead className="w-[110px]">操作</TableHead>
+                      <TableHead>对象</TableHead>
+                      <TableHead className="w-[140px]">节点</TableHead>
+                      <TableHead className="w-[110px]">来源 IP</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filtered.map((log) => {
+                      const meta = getCategoryMeta(log.category);
+                      const Icon = meta.icon;
+                      return (
+                        <TableRow key={log.id}>
+                          <TableCell
+                            className="font-mono text-xs text-muted-foreground"
+                            title={formatAbsoluteTime(log.timestamp)}
+                          >
+                            {formatRelativeTime(log.timestamp)}
+                          </TableCell>
+                          <TableCell className="text-xs font-medium">
+                            {displayUsername(log.username)}
+                          </TableCell>
+                          <TableCell>
+                            <span className={`inline-flex items-center gap-1 text-xs ${meta.color}`}>
+                              <Icon className="h-3 w-3" />
+                              {meta.label}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            {log.success ? (
+                              log.action
+                            ) : (
+                              <span className="text-destructive">{log.action}（失败）</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="max-w-[260px]">
+                            <div className="truncate text-xs" title={log.target}>
+                              {log.target || "—"}
+                            </div>
+                            {log.detail && (
+                              <div
+                                className="truncate text-[10px] text-muted-foreground"
+                                title={log.detail}
+                              >
+                                {log.detail}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-muted-foreground">{log.nodeName}</span>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            {log.ip || "—"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
 

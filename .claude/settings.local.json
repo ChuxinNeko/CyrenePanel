@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun --bun build src/index.ts --target=bun --outdir /tmp/cyrene-build)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

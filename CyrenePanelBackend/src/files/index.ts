@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { logger } from "../logger/index";
+import { auditLog, getRequestIp } from "../audit/index";
 import {
   chmodSync,
   copyFileSync,
@@ -21,6 +22,35 @@ import {
 import { join, extname, basename, dirname, relative, resolve, sep } from "path";
 import { execFileSync } from "child_process";
 import { lookup } from "mime-types";
+import { tmpdir } from "os";
+import { randomBytes } from "crypto";
+
+// 节点互传产生的临时压缩包：通过 useTempDir 写入系统 temp，
+// 通过这个集合放行后续 download / extract / delete 的 safePath 检查。
+const TRANSFER_TEMP_DIR = join(tmpdir(), "cyrene-transfer");
+const transferTempPaths = new Set<string>();
+
+// 启动时清理上次运行残留的临时压缩包
+try {
+  if (existsSync(TRANSFER_TEMP_DIR)) {
+    rmSync(TRANSFER_TEMP_DIR, { recursive: true, force: true });
+  }
+} catch {
+  // ignore
+}
+
+function isTransferTempPath(realPath: string): boolean {
+  if (!realPath) return false;
+  return transferTempPaths.has(realPath);
+}
+
+function resolveAccessiblePath(requestedPath: string): string | null {
+  // 1. transfer 临时目录优先：直接绝对路径匹配
+  const direct = resolve(requestedPath);
+  if (isTransferTempPath(direct)) return direct;
+  // 2. 兜底走标准 safePath 检查
+  return safePath(requestedPath);
+}
 
 // Windows 使用虚拟根目录（空字符串），支持多盘符切换
 const IS_WINDOWS = process.platform === "win32";
@@ -506,7 +536,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 分片上传文件；客户端按 offset 顺序发送，服务端返回当前已写入字节数
-  .post("/api/files/upload/chunk", async ({ body, profile }: any) => {
+  .post("/api/files/upload/chunk", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { path: requestedPath, offset, totalSize, chunk } = body || {};
     if (!requestedPath) return { success: false, message: "缺少 path" };
@@ -514,7 +544,16 @@ export const fileRoutes = new Elysia()
 
     try {
       const result = writeUploadChunk(requestedPath, Number(offset), Number(totalSize), chunk);
-      if (result.success && result.complete) logger.info(`文件上传完成: ${requestedPath}`);
+      if (result.success && result.complete) {
+        logger.info(`文件上传完成: ${requestedPath}`);
+        auditLog({
+          username: profile.username,
+          category: "file",
+          action: "上传文件",
+          target: requestedPath,
+          ip: getRequestIp(request, server),
+        });
+      }
       return result;
     } catch (e: any) {
       logger.err(`文件上传失败: ${e.message}`);
@@ -523,7 +562,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 读取文件内容（文本文件）
-  .get("/api/files/read", ({ query, profile }: any) => {
+  .get("/api/files/read", ({ query, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const requestedPath = query.path as string;
     if (!requestedPath) return { success: false, message: "缺少 path 参数" };
@@ -539,6 +578,13 @@ export const fileRoutes = new Elysia()
       if (stats.size > MAX_TEXT_FILE_SIZE) return { success: false, message: `文件过大（${(stats.size / 1024 / 1024).toFixed(1)} MB），最大支持 10 MB` };
 
       const content = readFileSync(realPath, "utf-8");
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "查看文件",
+        target: requestedPath,
+        ip: getRequestIp(request, server),
+      });
       return {
         success: true,
         content,
@@ -554,7 +600,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 保存/写入文件内容
-  .put("/api/files/write", async ({ body, profile }: any) => {
+  .put("/api/files/write", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { path: requestedPath, content } = body;
     if (!requestedPath) return { success: false, message: "缺少 path" };
@@ -569,6 +615,13 @@ export const fileRoutes = new Elysia()
       }
       writeFileSync(realPath, content, "utf-8");
       logger.info(`文件已保存: ${requestedPath}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "编辑文件",
+        target: requestedPath,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "保存成功" };
     } catch (e: any) {
       logger.err(`文件写入失败: ${e.message}`);
@@ -577,7 +630,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 创建目录
-  .post("/api/files/mkdir", async ({ body, profile }: any) => {
+  .post("/api/files/mkdir", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { path: requestedPath } = body;
     if (!requestedPath) return { success: false, message: "缺少 path" };
@@ -589,6 +642,13 @@ export const fileRoutes = new Elysia()
       if (existsSync(realPath)) return { success: false, message: "路径已存在" };
       mkdirSync(realPath, { recursive: true });
       logger.info(`目录已创建: ${requestedPath}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "创建目录",
+        target: requestedPath,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "创建成功" };
     } catch (e: any) {
       logger.err(`目录创建失败: ${e.message}`);
@@ -597,12 +657,12 @@ export const fileRoutes = new Elysia()
   })
 
   // 删除文件或目录
-  .delete("/api/files", async ({ body, profile }: any) => {
+  .delete("/api/files", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { path: requestedPath } = body;
     if (!requestedPath) return { success: false, message: "缺少 path" };
 
-    const realPath = safePath(requestedPath);
+    const realPath = resolveAccessiblePath(requestedPath);
     if (!realPath) return { success: false, message: "路径不允许" };
     if (!existsSync(realPath)) return { success: false, message: "路径不存在" };
 
@@ -613,7 +673,16 @@ export const fileRoutes = new Elysia()
       } else {
         unlinkSync(realPath);
       }
+      // 清理 transfer 临时路径登记
+      transferTempPaths.delete(realPath);
       logger.info(`已删除: ${requestedPath}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: stats.isDirectory() ? "删除目录" : "删除文件",
+        target: requestedPath,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "删除成功" };
     } catch (e: any) {
       logger.err(`删除失败: ${e.message}`);
@@ -622,7 +691,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 重命名
-  .patch("/api/files/rename", async ({ body, profile }: any) => {
+  .patch("/api/files/rename", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { from, to } = body;
     if (!from || !to) return { success: false, message: "缺少 from/to 参数" };
@@ -636,6 +705,14 @@ export const fileRoutes = new Elysia()
     try {
       renameSync(fromPath, toPath);
       logger.info(`重命名: ${from} -> ${to}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "重命名",
+        target: from,
+        detail: `→ ${to}`,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "重命名成功" };
     } catch (e: any) {
       logger.err(`重命名失败: ${e.message}`);
@@ -644,7 +721,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 批量复制
-  .post("/api/files/copy", async ({ body, profile }: any) => {
+  .post("/api/files/copy", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { paths, targetDir, overwrite } = body || {};
     if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
@@ -660,6 +737,14 @@ export const fileRoutes = new Elysia()
         copyPath(ensureSafeFilePath(String(requestedPath)), targetRealPath, !!overwrite);
       }
       logger.info(`复制文件: ${paths.join(", ")} -> ${targetDir || "/"}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "复制文件",
+        target: paths.length === 1 ? String(paths[0]) : `${paths.length} 项`,
+        detail: `→ ${targetDir || "/"}`,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "复制成功" };
     } catch (e: any) {
       logger.err(`复制失败: ${e.message}`);
@@ -668,7 +753,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 批量移动
-  .post("/api/files/move", async ({ body, profile }: any) => {
+  .post("/api/files/move", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { paths, targetDir, overwrite } = body || {};
     if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
@@ -684,6 +769,14 @@ export const fileRoutes = new Elysia()
         movePath(ensureSafeFilePath(String(requestedPath)), targetRealPath, !!overwrite);
       }
       logger.info(`移动文件: ${paths.join(", ")} -> ${targetDir || "/"}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "移动文件",
+        target: paths.length === 1 ? String(paths[0]) : `${paths.length} 项`,
+        detail: `→ ${targetDir || "/"}`,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "移动成功" };
     } catch (e: any) {
       logger.err(`移动失败: ${e.message}`);
@@ -692,7 +785,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 批量删除
-  .delete("/api/files/batch", async ({ body, profile }: any) => {
+  .delete("/api/files/batch", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { paths } = body || {};
     if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
@@ -702,6 +795,14 @@ export const fileRoutes = new Elysia()
         removePath(ensureSafeFilePath(String(requestedPath)));
       }
       logger.info(`批量删除: ${paths.join(", ")}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "批量删除",
+        target: `${paths.length} 项`,
+        detail: paths.slice(0, 3).map(String).join(", ") + (paths.length > 3 ? " ..." : ""),
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "删除成功" };
     } catch (e: any) {
       logger.err(`批量删除失败: ${e.message}`);
@@ -710,7 +811,7 @@ export const fileRoutes = new Elysia()
   })
 
   // 修改 Linux/Unix 权限
-  .patch("/api/files/chmod", async ({ body, profile }: any) => {
+  .patch("/api/files/chmod", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     if (IS_WINDOWS) return { success: false, message: "Windows 节点不支持 chmod 权限设置" };
     const { path: requestedPath, mode, recursive } = body || {};
@@ -725,6 +826,14 @@ export const fileRoutes = new Elysia()
       if (recursive) applyModeRecursive(realPath, parsedMode);
       else chmodSync(realPath, parsedMode);
       logger.info(`修改权限: ${requestedPath} -> ${mode}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "修改权限",
+        target: requestedPath,
+        detail: `mode=${mode}${recursive ? " (递归)" : ""}`,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "权限已更新" };
     } catch (e: any) {
       logger.err(`修改权限失败: ${e.message}`);
@@ -733,22 +842,41 @@ export const fileRoutes = new Elysia()
   })
 
   // 压缩为 zip（Windows）或 tar.gz（Linux/Unix）
-  .post("/api/files/compress", async ({ body, profile }: any) => {
+  .post("/api/files/compress", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
-    const { paths, targetPath } = body || {};
+    const { paths, targetPath, useTempDir } = body || {};
     if (!Array.isArray(paths) || paths.length === 0) return { success: false, message: "缺少 paths" };
 
     try {
       const sourcePaths = paths.map((path: unknown) => ensureSafeFilePath(String(path)));
       const firstParentRequest = requestParentPath(String(paths[0]));
       const defaultName = `${basename(sourcePaths[0])}${paths.length > 1 ? "-bundle" : ""}${IS_WINDOWS ? ".zip" : ".tar.gz"}`;
-      const requestedTarget = typeof targetPath === "string" && targetPath.trim()
-        ? targetPath
-        : joinRequestPath(firstParentRequest, defaultName);
-      const targetRealPath = safePath(requestedTarget);
-      if (!targetRealPath) return { success: false, message: "压缩包路径不允许" };
-      const targetDir = dirname(targetRealPath);
-      if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+
+      // 节点互传场景：把临时压缩包写入 OS temp 目录，避免源目录只读、权限不足等问题。
+      let targetRealPath: string;
+      let requestedTarget: string;
+      let isTempArchive = false;
+
+      if (useTempDir) {
+        if (!existsSync(TRANSFER_TEMP_DIR)) {
+          mkdirSync(TRANSFER_TEMP_DIR, { recursive: true });
+        }
+        const uniquePrefix = `${Date.now()}-${randomBytes(4).toString("hex")}`;
+        const tempName = `${uniquePrefix}-${defaultName}`;
+        targetRealPath = join(TRANSFER_TEMP_DIR, tempName);
+        requestedTarget = targetRealPath;
+        isTempArchive = true;
+      } else {
+        const requested = typeof targetPath === "string" && targetPath.trim()
+          ? targetPath
+          : joinRequestPath(firstParentRequest, defaultName);
+        const resolved = safePath(requested);
+        if (!resolved) return { success: false, message: "压缩包路径不允许" };
+        targetRealPath = resolved;
+        requestedTarget = requested;
+        const targetDir = dirname(targetRealPath);
+        if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+      }
       if (existsSync(targetRealPath)) return { success: false, message: "压缩包已存在" };
 
       const kind = archiveKind(targetRealPath) || (IS_WINDOWS ? "zip" : "tar");
@@ -774,7 +902,17 @@ export const fileRoutes = new Elysia()
         return { success: false, message: "仅支持 zip、tar、tar.gz、tgz、tar.bz2、tar.xz" };
       }
 
+      if (isTempArchive) transferTempPaths.add(targetRealPath);
+
       logger.info(`压缩文件: ${paths.join(", ")} -> ${requestedTarget}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "压缩文件",
+        target: paths.length === 1 ? String(paths[0]) : `${paths.length} 项`,
+        detail: `→ ${requestedTarget}`,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "压缩成功", path: requestedTarget };
     } catch (e: any) {
       logger.err(`压缩失败: ${e.message}`);
@@ -783,14 +921,19 @@ export const fileRoutes = new Elysia()
   })
 
   // 解压 zip/tar 包
-  .post("/api/files/extract", async ({ body, profile }: any) => {
+  .post("/api/files/extract", async ({ body, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const { path: requestedPath, targetDir, overwrite } = body || {};
     if (!requestedPath) return { success: false, message: "缺少 path" };
 
     try {
-      const archivePath = ensureSafeFilePath(requestedPath);
-      if (statSync(archivePath).isDirectory()) return { success: false, message: "目录不能解压" };
+      // archivePath 可能是节点互传产生的 OS temp 临时压缩包，放行这种情形
+      const archiveReal = resolveAccessiblePath(requestedPath);
+      if (!archiveReal) return { success: false, message: "路径不允许" };
+      if (!existsSync(archiveReal)) return { success: false, message: "压缩包不存在" };
+      if (statSync(archiveReal).isDirectory()) return { success: false, message: "目录不能解压" };
+      const archivePath = archiveReal;
+
       const targetRequestPath = typeof targetDir === "string" && targetDir.trim()
         ? targetDir
         : requestParentPath(requestedPath);
@@ -826,6 +969,14 @@ export const fileRoutes = new Elysia()
       }
 
       logger.info(`解压文件: ${requestedPath} -> ${targetRequestPath || "/"}`);
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "解压文件",
+        target: requestedPath,
+        detail: `→ ${targetRequestPath || "/"}`,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "解压成功" };
     } catch (e: any) {
       logger.err(`解压失败: ${e.message}`);
@@ -834,12 +985,12 @@ export const fileRoutes = new Elysia()
   })
 
   // 下载文件（返回 base64 内容，避免 Elysia 不支持 Stream 的限制）
-  .get("/api/files/download", ({ query, profile }: any) => {
+  .get("/api/files/download", ({ query, profile, request, server }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     const requestedPath = query.path as string;
     if (!requestedPath) return { success: false, message: "缺少 path 参数" };
 
-    const realPath = safePath(requestedPath);
+    const realPath = resolveAccessiblePath(requestedPath);
     if (!realPath) return { success: false, message: "路径不允许" };
     if (!existsSync(realPath)) return { success: false, message: "文件不存在" };
 
@@ -854,6 +1005,15 @@ export const fileRoutes = new Elysia()
       const buffer = readFileSync(realPath);
       const base64 = buffer.toString("base64");
       const mimeType = lookup(realPath) || "application/octet-stream";
+
+      auditLog({
+        username: profile.username,
+        category: "file",
+        action: "下载文件",
+        target: requestedPath,
+        detail: `${(stats.size / 1024).toFixed(1)} KB`,
+        ip: getRequestIp(request, server),
+      });
 
       return {
         success: true,

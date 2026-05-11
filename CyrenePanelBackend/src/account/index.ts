@@ -3,25 +3,52 @@ import { compare } from "bcryptjs";
 import { dbGetUser, getConfig } from "../db";
 import { logger } from "../logger/index";
 import { CYRENE_VERSION } from "../version";
+import { auditLog, getRequestIp } from "../audit/index";
 
 export const accountRoutes = new Elysia()
   .post(
     "/api/login",
-    async ({ body, jwt }: any) => {
+    async ({ body, jwt, request, server }: any) => {
+      const ip = getRequestIp(request, server);
       const user = dbGetUser(body.username);
       if (!user) {
         logger.warn(`用户 ${body.username} 登录失败：用户不存在`);
+        auditLog({
+          username: body.username,
+          category: "auth",
+          action: "登录失败",
+          target: body.username,
+          detail: "用户不存在",
+          ip,
+          success: false,
+        });
         return { success: false, message: "用户名或密码错误" };
       }
 
       const valid = await compare(body.password, user.password);
       if (!valid) {
         logger.warn(`用户 ${body.username} 登录失败：密码错误`);
+        auditLog({
+          username: body.username,
+          category: "auth",
+          action: "登录失败",
+          target: body.username,
+          detail: "密码错误",
+          ip,
+          success: false,
+        });
         return { success: false, message: "用户名或密码错误" };
       }
 
       const token = await jwt.sign({ username: user.username, role: user.role });
       logger.debug(`用户 ${body.username} 登录成功，已返回 Token`);
+      auditLog({
+        username: user.username,
+        category: "auth",
+        action: "登录成功",
+        target: user.username,
+        ip,
+      });
       return { success: true, message: "登录成功", token };
     },
     {

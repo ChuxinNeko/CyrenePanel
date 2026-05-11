@@ -16,6 +16,7 @@ import { logger } from "../logger/index";
 import { getAllInstances } from "../instances/store";
 import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
+import { auditLog, getRequestIp } from "../audit/index";
 
 // ── 用 API Key 在远端节点换取 JWT token ────────────────────────────
 
@@ -720,13 +721,20 @@ export const nodeRoutes = new Elysia()
   })
 
   // ── 重新生成 API key ─────────────────────────────────────────────
-  .post("/api/key/regenerate", async ({ profile }: any) => {
+  .post("/api/key/regenerate", async ({ profile, request, server }: any) => {
     if (!profile || profile.role !== "admin") {
       return { success: false, message: "无权限" };
     }
     const newKey = randomBytes(16).toString("hex");
     setConfig("api_key", newKey);
     logger.info(`管理员 ${profile.username} 重新生成了 API key`);
+    auditLog({
+      username: profile.username,
+      category: "node",
+      action: "重置 API Key",
+      target: "主节点",
+      ip: getRequestIp(request, server),
+    });
     return { success: true, key: newKey };
   })
 
@@ -747,7 +755,7 @@ export const nodeRoutes = new Elysia()
   // ── 添加子节点（验证连通性后存入）────────────────────────────────
   .post(
     "/api/nodes",
-    async ({ body, profile }: any) => {
+    async ({ body, profile, request, server }: any) => {
       if (!profile || profile.role !== "admin") {
         return { success: false, message: "无权限" };
       }
@@ -783,6 +791,14 @@ export const nodeRoutes = new Elysia()
         createdAt: Date.now(),
       });
       logger.info(`管理员 ${profile.username} 添加了子节点 ${name}`);
+      auditLog({
+        username: profile.username,
+        category: "node",
+        action: "添加节点",
+        target: name,
+        detail: normalizedAddress,
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "节点添加成功", id };
     },
     {
@@ -795,7 +811,7 @@ export const nodeRoutes = new Elysia()
   )
 
   // ── 删除子节点 ───────────────────────────────────────────────────
-  .delete("/api/nodes/:id", async ({ params, profile }: any) => {
+  .delete("/api/nodes/:id", async ({ params, profile, request, server }: any) => {
     if (!profile || profile.role !== "admin") {
       return { success: false, message: "无权限" };
     }
@@ -805,13 +821,21 @@ export const nodeRoutes = new Elysia()
     }
     dbDeleteNode(params.id);
     logger.info(`管理员 ${profile.username} 删除了子节点 ${node.name}`);
+    auditLog({
+      username: profile.username,
+      category: "node",
+      action: "删除节点",
+      target: node.name,
+      detail: node.address,
+      ip: getRequestIp(request, server),
+    });
     return { success: true, message: "节点已删除" };
   })
 
   // ── 编辑子节点 ───────────────────────────────────────────────────
   .patch(
     "/api/nodes/:id",
-    async ({ params, body, profile }: any) => {
+    async ({ params, body, profile, request, server }: any) => {
       if (!profile || profile.role !== "admin") {
         return { success: false, message: "无权限" };
       }
@@ -831,6 +855,14 @@ export const nodeRoutes = new Elysia()
 
       dbUpdateNode(params.id, updates);
       logger.info(`管理员 ${profile.username} 编辑了子节点 ${node.name}`);
+      auditLog({
+        username: profile.username,
+        category: "node",
+        action: "编辑节点",
+        target: node.name,
+        detail: Object.keys(updates).join(", "),
+        ip: getRequestIp(request, server),
+      });
       return { success: true, message: "节点已更新" };
     },
     {
