@@ -1,5 +1,5 @@
 import { Elysia, t } from "elysia";
-import { randomBytes } from "crypto";
+import { createHmac, randomBytes } from "crypto";
 import { hostname, platform, cpus, totalmem } from "os";
 import { readFileSync } from "fs";
 import { execFileSync } from "child_process";
@@ -18,13 +18,43 @@ import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
 import { auditLog, getRequestIp } from "../audit/index";
 
-// ── 用 API Key 在远端节点换取 JWT token ────────────────────────────
+// ── 用 HMAC 挑战-响应在远端节点换取 JWT token ─────────────────────
+// 流程：先 GET /api/auth/challenge 获取 nonce，再用 HMAC-SHA256(challenge, apiKey) 签名
+// 如果远端节点不支持挑战接口（旧版本），回退到明文模式并记录警告
 
 export async function exchangeApiKeyForToken(
   address: string,
   apiKey: string
 ): Promise<string | null> {
   try {
+    // 尝试 HMAC 挑战-响应模式
+    const challengeRes = await fetch(`${address}/api/auth/challenge`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (challengeRes.ok) {
+      const challengeData = (await challengeRes.json()) as any;
+      if (challengeData?.success && challengeData.challenge) {
+        const signature = createHmac("sha256", apiKey)
+          .update(challengeData.challenge)
+          .digest("hex");
+        const res = await fetch(`${address}/api/auth/key`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ challenge: challengeData.challenge, signature }),
+          signal: AbortSignal.timeout(5000),
+        });
+        const data = (await res.json()) as any;
+        if (data?.success && data.token) return data.token;
+        return null;
+      }
+    }
+  } catch {
+    // 挑战接口不可用，回退到明文模式
+  }
+
+  // 回退：明文 API Key（兼容旧版节点）
+  try {
+    logger.warn(`[安全警告] 节点 ${address} 不支持 HMAC 认证，回退到明文 API Key 模式`);
     const res = await fetch(`${address}/api/auth/key`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2477,4 +2507,133 @@ export const nodeRoutes = new Elysia()
       logger.err(`子节点 SSH 配置代理失败: ${e.message}`);
       return { success: false, message: `子节点请求失败: ${e.message}` };
     }
+  })
+
+  // ── 子节点进程列表代理 ─────────────────────────────────────────────
+
+  .get("/api/nodes/:id/system/processes", async ({ params, profile }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return await proxyNodeJson(params.id, "/api/system/processes", {}, 10000);
+    } catch (e: any) {
+      logger.err(`子节点进程列表代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  .post("/api/nodes/:id/system/processes/:pid/kill", async ({ params, profile }: any) => {
+    if (!profile || profile.role !== "admin") return { success: false, message: "无权限" };
+    try {
+      return await proxyNodeJson(params.id, `/api/system/processes/${params.pid}/kill`, { method: "POST" }, 10000);
+    } catch (e: any) {
+      logger.err(`子节点终止进程代理失败: ${e.message}`);
+      return { success: false, message: `子节点请求失败: ${e.message}` };
+    }
+  })
+
+  // ── 子节点终端 WebSocket 代理 ──────────────────────────────────────
+
+  .ws("/api/nodes/:id/terminal", {
+    async beforeHandle({ jwt, request }: any) {
+      const url = new URL(request.url);
+      const token =
+        url.searchParams.get("token") ||
+        request.headers.get("authorization")?.replace("Bearer ", "");
+      if (!token) return new Response("Unauthorized", { status: 401 });
+      const profile = await jwt.verify(token);
+      if (!profile) return new Response("Unauthorized", { status: 401 });
+    },
+
+    async open(ws: any) {
+      const nodeId = ws.data.params?.id;
+      if (!nodeId) {
+        ws.send(JSON.stringify({ type: "error", message: "缺少节点 ID" }));
+        ws.close();
+        return;
+      }
+
+      const node = dbGetNode(nodeId);
+      if (!node) {
+        ws.send(JSON.stringify({ type: "error", message: "节点不存在" }));
+        ws.close();
+        return;
+      }
+
+      logger.info(`[终端代理] 正在连接子节点 ${node.name} (${node.address})`);
+
+      let remoteToken: string | null = null;
+      try {
+        remoteToken = await exchangeApiKeyForToken(node.address, node.apiKey);
+      } catch {
+        // ignore
+      }
+      if (!remoteToken) {
+        ws.send(JSON.stringify({ type: "error", message: "子节点不可达或认证失败" }));
+        ws.close();
+        return;
+      }
+
+      const remoteWsUrl = `${node.address.replace(/^http/, "ws")}/api/terminal?token=${remoteToken}`;
+      const remoteWs = new WebSocket(remoteWsUrl);
+      (ws.data as any)._remoteWs = remoteWs;
+      (ws.data as any)._alive = true;
+
+      remoteWs.addEventListener("open", () => {
+        logger.info(`[终端代理] 子节点 ${node.name} WebSocket 已连接`);
+      });
+
+      remoteWs.addEventListener("message", (event: any) => {
+        if ((ws.data as any)._alive) {
+          try {
+            const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+            ws.send(data);
+          } catch {
+            // ignore
+          }
+        }
+      });
+
+      remoteWs.addEventListener("close", () => {
+        if ((ws.data as any)._alive) {
+          try {
+            ws.send(JSON.stringify({ type: "exit", code: -1 }));
+          } catch {}
+          ws.close();
+        }
+      });
+
+      remoteWs.addEventListener("error", () => {
+        if ((ws.data as any)._alive) {
+          try {
+            ws.send(JSON.stringify({ type: "error", message: "子节点终端连接异常" }));
+          } catch {}
+        }
+      });
+    },
+
+    message(ws: any, message: any) {
+      const remoteWs: WebSocket | undefined = (ws.data as any)._remoteWs;
+      if (!remoteWs || remoteWs.readyState !== WebSocket.OPEN) return;
+
+      try {
+        if (typeof message === "string") {
+          remoteWs.send(message);
+        } else if (typeof message === "object" && message !== null && !(message instanceof ArrayBuffer) && !(message instanceof Uint8Array)) {
+          remoteWs.send(JSON.stringify(message));
+        } else {
+          remoteWs.send(message);
+        }
+      } catch {
+        // ignore
+      }
+    },
+
+    close(ws: any) {
+      (ws.data as any)._alive = false;
+      const remoteWs: WebSocket | undefined = (ws.data as any)._remoteWs;
+      if (remoteWs) {
+        try { remoteWs.close(); } catch {}
+      }
+      logger.info("[终端代理] 客户端断开，已关闭子节点连接");
+    },
   });

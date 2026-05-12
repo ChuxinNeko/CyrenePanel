@@ -276,16 +276,17 @@ function TerminalPageContent() {
     }
 
     if (selectedNodeId) {
-      // 子节点模式：通过子节点的 API 代理连接
+      // 子节点模式：通过主节点 WebSocket 代理连接
       const timer = setTimeout(() => {
         initTerminal();
         connectSubTerminal(selectedNodeId);
       }, 100);
       return () => clearTimeout(timer);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, authChecked, initTerminal]);
 
-  // 连接子节点终端（通过子节点代理）
+  // 连接子节点终端（通过主节点代理）
   const connectSubTerminal = useCallback(
     (nodeId: string) => {
       const token = getToken();
@@ -297,15 +298,15 @@ function TerminalPageContent() {
       const terminal = terminalRef.current;
       if (!terminal) return;
 
-      // 找到子节点信息
+      // 找到子节点信息（仅用于显示名称）
       const node = nodes.find((n) => n.id === nodeId);
       if (!node) {
         terminal.writeln(`\x1b[31m[节点信息未找到]\x1b[0m`);
         return;
       }
 
-      // 连接子节点的终端 WebSocket
-      const wsUrl = `${node.address.replace(/^http/, "ws")}/api/terminal?token=${token}`;
+      // 通过主节点 WebSocket 代理连接子节点终端
+      const wsUrl = getWebSocketUrl(`/api/nodes/${nodeId}/terminal?token=${token}`);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 

@@ -41,6 +41,7 @@ import {
   Globe,
 } from "lucide-react";
 import { API_BASE } from "@/lib/api-base";
+import { ProcessHoverCard, ProcessListDialog } from "@/components/node-processes";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
@@ -420,11 +421,13 @@ function NodeCard({
   isAdmin,
   onEdit,
   onDelete,
+  onOpenProcessDialog,
 }: {
   node: NodeOverview;
   isAdmin: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onOpenProcessDialog: (nodeId: string) => void;
 }) {
   const router = useRouter();
 
@@ -583,40 +586,42 @@ function NodeCard({
 
         {/* CPU & 内存概览 */}
         {node.online && (
-          <div className="space-y-2">
-            {node.cpu !== undefined && (
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="flex items-center gap-1 text-muted-foreground">
-                    <Cpu className="h-3 w-3" /> CPU
-                  </span>
-                  <span className="font-medium">{node.cpu}%</span>
+          <ProcessHoverCard nodeId={node.id} onOpenFullDialog={() => onOpenProcessDialog(node.id)}>
+            <div className="space-y-2 cursor-pointer">
+              {node.cpu !== undefined && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1 text-muted-foreground">
+                      <Cpu className="h-3 w-3" /> CPU
+                    </span>
+                    <span className="font-medium">{node.cpu}%</span>
+                  </div>
+                  <Progress
+                    value={node.cpu}
+                    indicatorClassName={getProgressColor(node.cpu)}
+                    className="h-1.5"
+                  />
                 </div>
-                <Progress
-                  value={node.cpu}
-                  indicatorClassName={getProgressColor(node.cpu)}
-                  className="h-1.5"
-                />
-              </div>
-            )}
-            {node.memory && (
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="flex items-center gap-1 text-muted-foreground">
-                    <MemoryStick className="h-3 w-3" /> 内存
-                  </span>
-                  <span className="font-medium">
-                    {node.memory.usedFormatted} / {node.memory.totalFormatted}
-                  </span>
+              )}
+              {node.memory && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1 text-muted-foreground">
+                      <MemoryStick className="h-3 w-3" /> 内存
+                    </span>
+                    <span className="font-medium">
+                      {node.memory.usedFormatted} / {node.memory.totalFormatted}
+                    </span>
+                  </div>
+                  <Progress
+                    value={node.memory.percentage}
+                    indicatorClassName={getProgressColor(node.memory.percentage)}
+                    className="h-1.5"
+                  />
                 </div>
-                <Progress
-                  value={node.memory.percentage}
-                  indicatorClassName={getProgressColor(node.memory.percentage)}
-                  className="h-1.5"
-                />
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          </ProcessHoverCard>
         )}
 
         {/* 趋势图 */}
@@ -660,6 +665,8 @@ export default function NodesPage() {
   const [editNode, setEditNode] = useState<NodeOverview | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<NodeOverview | null>(null);
+  const [processDialogOpen, setProcessDialogOpen] = useState(false);
+  const [processDialogNodeId, setProcessDialogNodeId] = useState("__main__");
 
   const isAdmin = profile?.role === "admin";
 
@@ -791,6 +798,10 @@ export default function NodesPage() {
               setEditOpen(true);
             }}
             onDelete={() => setDeleteTarget(node)}
+            onOpenProcessDialog={(nodeId) => {
+              setProcessDialogNodeId(nodeId);
+              setProcessDialogOpen(true);
+            }}
           />
         ))}
       </div>
@@ -841,6 +852,14 @@ export default function NodesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 进程列表弹窗 */}
+      <ProcessListDialog
+        open={processDialogOpen}
+        onOpenChange={setProcessDialogOpen}
+        nodes={nodes.map((n) => ({ id: n.id, name: n.name, online: n.online }))}
+        initialNodeId={processDialogNodeId}
+      />
     </div>
   );
 }

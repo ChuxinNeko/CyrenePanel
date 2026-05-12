@@ -72,6 +72,9 @@ export default function LoginPage() {
         localStorage.setItem("token", data.token);
         toast.success("登录成功");
         router.push("/dashboard");
+      } else if (data?.locked) {
+        const retryMin = data.retryAfterMs ? Math.ceil(data.retryAfterMs / 60000) : 15;
+        toast.error(data?.message || `账号已被临时锁定，请 ${retryMin} 分钟后再试`);
       } else {
         toast.error(data?.message || "凭据无效");
       }

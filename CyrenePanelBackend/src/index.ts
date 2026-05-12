@@ -25,6 +25,20 @@ import { auditRoutes, setAuditAlertHook } from "./audit/index";
 import { alertRoutes, notifyAlertOnAudit, startAlertChecker } from "./alerts/index";
 import { securityRoutes } from "./security/index";
 
+// ── 初始化 JWT Secret（持久化到数据库） ───────────────────────────
+
+function getJwtSecret(): string {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  const existing = getConfig("jwt_secret");
+  if (existing) return existing;
+  const generated = randomBytes(32).toString("hex");
+  setConfig("jwt_secret", generated);
+  logger.info("已自动生成并持久化 JWT Secret");
+  return generated;
+}
+
+const JWT_SECRET = getJwtSecret();
+
 // ── 初始化 admin 账号（首次启动） ──────────────────────────────────
 
 if (dbUserCount() === 0) {
@@ -74,7 +88,7 @@ export const app = new Elysia()
   .use(
     jwt({
       name: 'jwt',
-      secret: process.env.JWT_SECRET || 'super_secret_key_for_cyrene_panel_dev'
+      secret: JWT_SECRET
     })
   )
   .onRequest(({ request }) => {

@@ -2,7 +2,7 @@ import { Elysia } from "elysia";
 import { hostname, platform, release, arch, totalmem, freemem, cpus, uptime } from "os";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
 import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
@@ -302,6 +302,128 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
+// ── 进程列表采集 ─────────────────────────────────────────────────
+
+export interface ProcessInfo {
+  pid: number;
+  name: string;
+  cpu: number;
+  memory: number;
+  memoryBytes: number;
+  user: string;
+  command: string;
+}
+
+function getProcessList(): ProcessInfo[] {
+  if (platform() === "win32") {
+    return getWindowsProcessList();
+  }
+  return getLinuxProcessList();
+}
+
+function getLinuxProcessList(): ProcessInfo[] {
+  try {
+    const numCores = cpus().length || 1;
+    const output = execSync(
+      "ps aux --sort=-%cpu | head -n 51",
+      { encoding: "utf-8", timeout: 5000 }
+    );
+    const lines = output.trim().split("\n").slice(1);
+    const processes: ProcessInfo[] = [];
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 11) continue;
+      const user = parts[0];
+      const pid = parseInt(parts[1], 10);
+      const rawCpu = parseFloat(parts[2]) || 0;
+      // ps aux reports CPU% per-core (can exceed 100% on multi-core), normalize to 0-100
+      const cpu = Math.round(Math.min(rawCpu / numCores, 100) * 10) / 10;
+      const mem = parseFloat(parts[3]) || 0;
+      const rss = parseInt(parts[5], 10) * 1024;
+      const command = parts.slice(10).join(" ");
+      const name = command;
+      processes.push({ pid, name, cpu, memory: mem, memoryBytes: rss, user, command });
+    }
+    return processes;
+  } catch {
+    return [];
+  }
+}
+
+function getWindowsProcessList(): ProcessInfo[] {
+  try {
+    const output = execSync(
+      'powershell.exe -NoProfile -Command "Get-Process | ForEach-Object { $p = $_; [PSCustomObject]@{ Id = $p.Id; ProcessName = $p.ProcessName; CpuPct = 0; WorkingSet64 = $p.WorkingSet64; User = try { (Get-Process -Id $p.Id -IncludeUserName -ErrorAction SilentlyContinue).UserName } catch { $null } } } | ConvertTo-Json -Compress"',
+      { encoding: "utf-8", timeout: 10000, windowsHide: true }
+    );
+    const parsed = JSON.parse(output || "[]");
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    const totalMem = totalmem();
+
+    // Get per-process CPU% via Get-Counter (snapshot)
+    let cpuByPid: Record<number, number> = {};
+    try {
+      const cpuOutput = execSync(
+        'powershell.exe -NoProfile -Command "$procs = Get-Counter \'\\Process(*)\\% Processor Time\' -ErrorAction SilentlyContinue; if ($procs) { $procs.CounterSamples | Where-Object { $_.InstanceName -ne \'_total\' -and $_.InstanceName -ne \'idle\' } | ForEach-Object { [PSCustomObject]@{ Name = $_.InstanceName; Pct = [math]::Round($_.CookedValue, 1) } } | ConvertTo-Json -Compress }"',
+        { encoding: "utf-8", timeout: 8000, windowsHide: true }
+      );
+      if (cpuOutput.trim()) {
+        const cpuRows = JSON.parse(cpuOutput);
+        const cpuArr = Array.isArray(cpuRows) ? cpuRows : [cpuRows];
+        // Map process name -> cpu%. Multiple instances get same name; distribute later.
+        const nameCpuMap: Record<string, number[]> = {};
+        for (const r of cpuArr) {
+          const n = String(r?.Name ?? "").toLowerCase();
+          const pct = Number(r?.Pct ?? 0);
+          if (n && pct >= 0) {
+            if (!nameCpuMap[n]) nameCpuMap[n] = [];
+            nameCpuMap[n].push(pct);
+          }
+        }
+        // Assign CPU% to rows by matching process name (round-robin for duplicates)
+        const nameIndex: Record<string, number> = {};
+        for (const row of rows) {
+          const pName = String(row?.ProcessName ?? "").toLowerCase();
+          if (nameCpuMap[pName]) {
+            const idx = nameIndex[pName] ?? 0;
+            cpuByPid[Number(row?.Id ?? 0)] = nameCpuMap[pName][idx % nameCpuMap[pName].length] ?? 0;
+            nameIndex[pName] = idx + 1;
+          }
+        }
+      }
+    } catch {
+      // CPU counter unavailable, leave all at 0
+    }
+
+    const numCores = cpus().length || 1;
+    const processes: ProcessInfo[] = [];
+    for (const row of rows) {
+      const pid = Number(row?.Id ?? 0);
+      const name = String(row?.ProcessName ?? "");
+      const rawCpu = cpuByPid[pid] ?? 0;
+      // Normalize: Get-Counter returns % across all cores (0-100*cores), normalize to 0-100
+      const cpu = Math.round(Math.min(rawCpu / numCores, 100) * 10) / 10;
+      const memBytes = Number(row?.WorkingSet64 ?? 0);
+      const user = String(row?.User ?? "");
+      const memPct = totalMem > 0 ? Math.round((memBytes / totalMem) * 1000) / 10 : 0;
+      processes.push({
+        pid,
+        name,
+        cpu,
+        memory: memPct,
+        memoryBytes: memBytes,
+        user: user || "SYSTEM",
+        command: name,
+      });
+    }
+    // Sort by CPU descending
+    processes.sort((a, b) => b.cpu - a.cpu);
+    return processes.slice(0, 50);
+  } catch {
+    return [];
+  }
+}
+
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
@@ -589,4 +711,49 @@ export const systemRoutes = new Elysia()
           ? "服务器将在约 5 秒后重启"
           : "重启指令已发送，服务器即将重启",
     };
+  })
+
+  // ── 进程列表（按 CPU/内存排序） ──────────────────────────────────
+  .get("/api/system/processes", async ({ jwt, request }: any) => {
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token) return { success: false, message: "未授权" };
+    const profile = await jwt.verify(token);
+    if (!profile) return { success: false, message: "未授权" };
+
+    try {
+      const processes = getProcessList();
+      return { success: true, processes };
+    } catch (e: any) {
+      return { success: false, message: `获取进程列表失败: ${e.message}` };
+    }
+  })
+
+  // ── 关闭进程 ─────────────────────────────────────────────────────
+  .post("/api/system/processes/:pid/kill", async ({ params, jwt, request, server }: any) => {
+    const auth = await requireAdmin(jwt, request);
+    if (!auth.ok) return { success: false, message: auth.message };
+
+    const pid = parseInt(params.pid, 10);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      return { success: false, message: "无效的 PID" };
+    }
+
+    try {
+      if (platform() === "win32") {
+        execSync(`taskkill /PID ${pid} /F`, { encoding: "utf-8", timeout: 5000, windowsHide: true });
+      } else {
+        process.kill(pid, "SIGKILL");
+      }
+      auditLog({
+        username: auth.profile.username,
+        category: "system",
+        action: "终止进程",
+        target: `PID ${pid}`,
+        ip: getRequestIp(request, server),
+      });
+      return { success: true, message: `进程 ${pid} 已终止` };
+    } catch (e: any) {
+      return { success: false, message: `终止进程失败: ${e.message}` };
+    }
   });
