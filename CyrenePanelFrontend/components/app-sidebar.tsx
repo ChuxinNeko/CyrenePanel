@@ -39,6 +39,7 @@ import {
   Layers,
   Globe2,
   ShieldCheck,
+  Database,
 } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
@@ -77,6 +78,11 @@ const navGroups = [
         title: "Docker 管理",
         url: "/dashboard/docker",
         icon: Container,
+      },
+      {
+        title: "数据库管理",
+        url: "/dashboard/database",
+        icon: Database,
       },
       {
         title: "服务管理",

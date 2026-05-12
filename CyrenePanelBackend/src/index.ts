@@ -24,6 +24,7 @@ import { selfCheckRoutes } from "./self-check/index";
 import { auditRoutes, setAuditAlertHook } from "./audit/index";
 import { alertRoutes, notifyAlertOnAudit, startAlertChecker } from "./alerts/index";
 import { securityRoutes } from "./security/index";
+import { databaseRoutes } from "./database/index";
 
 // ── 初始化 JWT Secret（持久化到数据库） ───────────────────────────
 
@@ -142,6 +143,7 @@ export const app = new Elysia()
   .use(auditRoutes)
   .use(alertRoutes)
   .use(securityRoutes)
+  .use(databaseRoutes)
   .listen({ port: Number(process.env.PORT || 5677), hostname: "0.0.0.0" });
 
 setAuditAlertHook(notifyAlertOnAudit);

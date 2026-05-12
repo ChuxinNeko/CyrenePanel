@@ -69,6 +69,9 @@ d:\CyrenePanel\
 │       ├── environments/               # 开发环境管理
 │       │   └── index.ts                # 17 种环境检测器 (Node.js, Python, Go, Rust, Java, Docker, Nginx...)
 │       │
+│       ├── database/                   # 数据库管理
+│       │   └── index.ts                # 数据库检测(MySQL/PostgreSQL/MongoDB/Redis)、SSE流式安装/卸载
+│       │
 │       ├── files/                      # 文件管理
 │       │   └── index.ts                # 文件浏览、读写、上传下载、压缩解压、权限修改 (chmod)
 │       │
@@ -82,7 +85,7 @@ d:\CyrenePanel\
 │       │   └── index.ts                # 分级日志 (DEBUG/INFO/WARN/ERR)、颜色输出、HTTP 状态徽章
 │       │
 │       ├── nodes/                      # 分布式节点管理
-│       │   └── index.ts                # 节点 CRUD、在线检测、系统指标采集(CPU/内存/网络/磁盘IO)、文件/Docker/环境代理
+│       │   └── index.ts                # 节点 CRUD、在线检测、系统指标采集(CPU/内存/网络/磁盘IO)、文件/Docker/环境/数据库代理
 │       │
 │       ├── self-check/                 # 环境自检
 │       │   └── index.ts                # 检查 tar/zip/unzip/PowerShell 等系统工具，自动安装缺失依赖
@@ -135,6 +138,7 @@ d:\CyrenePanel\
 │   │       ├── layout.tsx              # 仪表盘布局：TaskProvider + PanelNameProvider + DashboardContent
 │   │       ├── page.tsx                # 主仪表盘：系统概览、节点状态、CPU/内存/网络/磁盘图表、审计日志
 │   │       ├── docker/page.tsx         # Docker 管理页
+│   │       ├── database/page.tsx       # 数据库管理页（MySQL/PostgreSQL/MongoDB/Redis Tabs + 多节点）
 │   │       ├── environments/page.tsx   # 环境管理页
 │   │       ├── files/page.tsx          # 文件管理页
 │   │       ├── instances/              # 实例管理
@@ -203,6 +207,14 @@ d:\CyrenePanel\
 └── scripts/                            # ─── 部署脚本 ───
     ├── setup_cn.sh                     # 一键安装脚本 (1213 行)：检测系统、安装 Bun/Node.js、下载 Release、注册 systemd
     └── uninstall.sh                    # 卸载脚本 (136 行)：停止服务、删除文件、清理用户和 systemd 配置
+
+officalserver/                          # ─── 官方服务器脚本 ───
+└── app/
+    └── EnvironmentScripts/             # 数据库安装脚本
+        ├── mysql.sh                    # MySQL 安装/卸载 (Debian/RHEL)
+        ├── postgresql.sh              # PostgreSQL 安装/卸载 (Debian/RHEL)
+        ├── mongodb.sh                 # MongoDB 安装/卸载 (Debian/RHEL)
+        └── redis.sh                   # Redis 安装/卸载 (Debian/RHEL)
 ```
 
 ---
@@ -240,6 +252,7 @@ d:\CyrenePanel\
 | `/api/nodes/:id/docker/*` | nodes | 子节点 Docker 代理 |
 | `/api/nodes/:id/services/*` | nodes | 子节点服务代理 |
 | `/api/nodes/:id/environments/*` | nodes | 子节点环境代理 |
+| `/api/nodes/:id/databases/*` | nodes | 子节点数据库代理 |
 | `/api/docker/info` | docker | GET Docker 系统信息 |
 | `/api/docker/containers` | docker | GET 列表, DELETE 删除 |
 | `/api/docker/containers/:id/*` | docker | GET 详情/日志, POST 启停重启 |
@@ -268,6 +281,9 @@ d:\CyrenePanel\
 | `/api/environments/:id` | environments | GET 环境详情 |
 | `/api/environments/:id/install\|update\|remove` | environments | POST 安装/更新/卸载 |
 | `/api/environments/:id/:action/stream` | environments | POST SSE 流式操作 |
+| `/api/databases` | database | GET 数据库列表(MySQL/PostgreSQL/MongoDB/Redis) |
+| `/api/databases/:id` | database | GET 数据库详情 |
+| `/api/databases/:id/:action/stream` | database | POST SSE 流式安装/卸载 |
 | `/api/self-check/environment` | self-check | GET 环境依赖检测 |
 | `/api/self-check/environment/install` | self-check | POST 安装缺失依赖 |
 | `/api/terminal` | terminal | WebSocket PTY 终端 |
@@ -301,6 +317,7 @@ d:\CyrenePanel\
 | `/dashboard/files` | 文件管理 | 文件浏览器、上传、编辑 |
 | `/dashboard/nodes` | 节点管理 | 节点表格、NodeFileTransferDialog |
 | `/dashboard/docker` | Docker 管理 | 容器表格、DeployAppDialog, ComposeDeployDialog |
+| `/dashboard/database` | 数据库管理 | Tabs(MySQL/PgSQL/MongoDB/Redis)、节点选择器、Empty安装、状态卡片 |
 | `/dashboard/services` | 服务管理 | 服务列表、启停操作 |
 | `/dashboard/sites` | 网站管理 | 站点列表、SiteCertificatePanel |
 | `/dashboard/environments` | 环境管理 | 环境检测、安装/更新 |
