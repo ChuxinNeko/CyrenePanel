@@ -1,6 +1,6 @@
 # CyrenePanel
 
-一个轻量化的服务管理面板，支持 Docker 实例管理、节点部署、网站证书管理、compose 项目编排等功能。基于 Bun + Next.js 构建，部署后占用资源极少，适合个人 VPS 或小团队使用。
+一个轻量化的服务管理面板，支持 Docker 实例管理、节点部署、网站证书管理、compose 项目编排等功能。基于 Bun + Next.js 构建，
 
 ---
 
@@ -24,24 +24,6 @@
 ```bash
 curl -fsSL https://dockerhub.nekofun.top/panel/install.sh | sudo bash
 ```
-
-也可以先把脚本下载到本地看个究竟再执行：
-
-```bash
-wget https://dockerhub.nekofun.top/panel/install.sh
-sudo bash setup_cn.sh
-```
-
-部署脚本会自动完成以下事项：
-
-1. 检测系统环境，安装必要依赖（curl、zip、unzip、ca-certificates）
-2. 安装 Node.js 22 和 Bun 运行时
-3. 下载最新 Release 包并解压到 `/opt/CyrenePanel`
-4. 创建专用运行用户，配置文件权限
-5. 注册 systemd 服务，开机自启
-6. 安装前端生产依赖
-7. 安装 `cyp` 管理命令和自动更新助手
-8. 启动服务并输出初始账号信息
 
 ### 环境变量（可选）
 
