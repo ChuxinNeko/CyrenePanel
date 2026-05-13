@@ -1022,10 +1022,6 @@ EOF
 
 write_systemd_services() {
   step "注册 systemd 服务"
-  local backend_supplementary_groups=""
-  if getent group docker >/dev/null 2>&1; then
-    backend_supplementary_groups="SupplementaryGroups=docker"
-  fi
 
   cat > /etc/systemd/system/cyrene-backend.service <<EOF
 [Unit]
@@ -1035,9 +1031,6 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$CYRENE_USER
-Group=$CYRENE_USER
-$backend_supplementary_groups
 WorkingDirectory=$CYRENE_HOME/backend
 Environment=NODE_ENV=production
 Environment=PORT=$BACKEND_PORT
@@ -1046,8 +1039,6 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-ProtectSystem=strict
-ReadWritePaths=$CYRENE_HOME/backend/data $CYRENE_HOME/backend/logs /etc/systemd/system
 PrivateTmp=true
 
 [Install]
