@@ -301,7 +301,8 @@ resolve_release() {
     RELEASE_TAG="v${RELEASE_VERSION}"
   else
     local api_url
-    api_url="$(build_download_url "https://api.github.com/repos/${CYRENE_REPO}/releases/latest")"
+    # 不要通过 ghproxy 代理请求 API，以避免触发该代理的全局 Rate Limit
+    api_url="https://api.github.com/repos/${CYRENE_REPO}/releases/latest"
     local release_json="$TMP_DIR/latest-release.json"
     curl -fsSL "$api_url" -o "$release_json"
     RELEASE_TAG="$(grep -m1 '"tag_name"' "$release_json" | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"

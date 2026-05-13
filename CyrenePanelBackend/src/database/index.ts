@@ -476,7 +476,7 @@ export const databaseRoutes = new Elysia()
     };
   })
 
-  .post("/api/databases/:id/:action/stream", async ({ jwt, request, params }: any) => {
+  .post("/api/databases/:id/:action/stream", async ({ jwt, request, params, body }: any) => {
     const authHeader = request.headers.get("authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (!token) {
@@ -500,14 +500,5 @@ export const databaseRoutes = new Elysia()
       });
     }
 
-    // 从请求体读取 version 和 mode
-    let version: string | undefined;
-    let mode: string | undefined;
-    try {
-      const body = await request.json();
-      version = body?.version;
-      mode = body?.mode;
-    } catch {}
-
-    return createDbActionStream(params.id, params.action, version, mode);
+    return createDbActionStream(params.id, params.action, body?.version, body?.mode);
   });
