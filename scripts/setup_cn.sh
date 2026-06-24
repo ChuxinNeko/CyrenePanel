@@ -1,6 +1,4 @@
-#!/usr/bin/env bash
-# ============================================================
-#  CyrenePanel 一键安装/更新脚本
+#!/usr/bin/env bash# ============================================================#  CyrenePanel 一键安装/更新脚本
 #  默认从 GitHub Release 拉取最新版本并注册 systemd 服务
 #
 #  用法:
@@ -56,8 +54,6 @@ trap cleanup EXIT
 require_root() {
   if [ "${EUID}" -ne 0 ]; then
     error "请使用 root 权限运行：sudo bash setup_cn.sh"
-    exit 1
-  fi
 }
 
 detect_os() {
@@ -148,45 +144,6 @@ install_packages() {
   done
 
   success "系统依赖已就绪"
-}
-
-install_nodejs() {
-  step "Check Node.js"
-
-  if PATH="$RUNTIME_PATH" command -v node >/dev/null 2>&1; then
-    NODE_BIN="$(PATH="$RUNTIME_PATH" command -v node)"
-    success "Node.js is ready: $($NODE_BIN -v)"
-    return
-  fi
-
-  info "Node.js not found in deployment PATH; installing Node.js 22"
-
-  case "$PKG_MANAGER" in
-    apt)
-      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-      DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
-      ;;
-    dnf)
-      curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
-      dnf install -y nodejs
-      ;;
-    yum)
-      curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
-      yum install -y nodejs
-      ;;
-    *)
-      error "Unable to install Node.js 22 for the detected package manager"
-      exit 1
-      ;;
-  esac
-
-  if ! PATH="$RUNTIME_PATH" command -v node >/dev/null 2>&1; then
-    error "Node.js 22 installation failed: node command not found"
-    exit 1
-  fi
-
-  NODE_BIN="$(PATH="$RUNTIME_PATH" command -v node)"
-  success "Node.js installed: $($NODE_BIN -v)"
 }
 
 install_bun() {
@@ -487,23 +444,6 @@ EOF
   success "sudoers 配置已写入：$sudoers_file"
 }
 
-install_frontend_dependencies() {
-  step "安装前端生产依赖"
-  cd "$CYRENE_HOME/frontend"
-
-  cat > .env.production <<EOF
-CYRENE_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}
-EOF
-
-  chown "$CYRENE_USER:$CYRENE_USER" .env.production
-  if ! su -s /bin/bash -c "PATH=$RUNTIME_PATH command -v node >/dev/null && PATH=$RUNTIME_PATH command -v bun >/dev/null" "$CYRENE_USER"; then
-    error "Node.js or Bun is not available for user $CYRENE_USER in PATH=$RUNTIME_PATH"
-    exit 1
-  fi
-
-  su -s /bin/bash -c "PATH=$RUNTIME_PATH npm_config_registry=https://registry.npmmirror.com/ bun install --production" "$CYRENE_USER"
-  success "前端生产依赖安装完成"
-}
 
 install_cyp_command() {
   step "安装 cyp 管理命令"
@@ -964,16 +904,8 @@ reopen_log
 
 chmod +x "$CYRENE_HOME/backend/server" 2>/dev/null || true
 
-cat > "$CYRENE_HOME/frontend/.env.production" <<EOF
-CYRENE_BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}
-EOF
-
 chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME"
 chmod 755 "$CYRENE_HOME/backend/logs"
-
-if PATH="$RUNTIME_PATH" command -v bun >/dev/null 2>&1; then
-  su -s /bin/bash -c "cd \"$CYRENE_HOME/frontend\" && PATH=$RUNTIME_PATH bun install --production" "$CYRENE_USER"
-fi
 
 rm -f "$REQUEST_FILE"
 write_status "completed" "Update to v${RELEASE_VERSION} completed"
@@ -1061,14 +993,14 @@ Environment=PORT=$FRONTEND_PORT
 Environment=HOSTNAME=0.0.0.0
 Environment=CYRENE_BACKEND_URL=http://127.0.0.1:$BACKEND_PORT
 Environment=PATH=$RUNTIME_PATH
-ExecStart=$BUN_BIN run next start -p $FRONTEND_PORT -H 0.0.0.0
+ExecStart=$BUN_BIN run server.js -p $FRONTEND_PORT -H 0.0.0.0
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=$CYRENE_HOME/frontend/.next $CYRENE_HOME/frontend/node_modules
+ReadWritePaths=$CYRENE_HOME/frontend/.next
 PrivateTmp=true
 
 [Install]
@@ -1184,7 +1116,6 @@ main() {
   detect_os
   select_download_source
   install_packages
-  install_nodejs
   install_bun
   resolve_release
   download_release
@@ -1193,7 +1124,7 @@ main() {
   create_user_and_permissions
   install_polkit_rules
   install_sudoers
-  install_frontend_dependencies
+
   write_systemd_services
   install_cyp_command
   install_update_helper

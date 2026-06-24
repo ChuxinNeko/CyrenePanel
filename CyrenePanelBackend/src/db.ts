@@ -455,3 +455,61 @@ export function dbQueryAuditLogs(limit: number, before?: number): AuditLogRow[] 
       : (auditQueryStmt.all(cap) as AuditLogRow[])
   );
 }
+
+// ── mysql_connections 表 ─────────────────────────────────────────────
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mysql_connections (
+    id        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    host      TEXT NOT NULL DEFAULT '127.0.0.1',
+    port      INTEGER NOT NULL DEFAULT 3306,
+    username  TEXT NOT NULL DEFAULT 'root',
+    password  TEXT NOT NULL DEFAULT '',
+    createdAt INTEGER NOT NULL
+  );
+`);
+
+// ── mysql_connections 辅助函数 ───────────────────────────────────────
+
+export interface MysqlConnRow {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  createdAt: number;
+}
+
+const mysqlConnInsertStmt = db.prepare(
+  "INSERT INTO mysql_connections (id, name, host, port, username, password, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)"
+);
+const mysqlConnGetStmt = db.prepare("SELECT * FROM mysql_connections WHERE id = ?");
+const mysqlConnAllStmt = db.prepare("SELECT * FROM mysql_connections ORDER BY createdAt DESC");
+const mysqlConnDeleteStmt = db.prepare("DELETE FROM mysql_connections WHERE id = ?");
+const mysqlConnUpdateStmt = db.prepare(
+  "UPDATE mysql_connections SET name = ?, host = ?, port = ?, username = ?, password = ? WHERE id = ?"
+);
+
+export function dbListMysqlConns(): MysqlConnRow[] {
+  return mysqlConnAllStmt.all() as MysqlConnRow[];
+}
+
+export function dbGetMysqlConn(id: string): MysqlConnRow | undefined {
+  return mysqlConnGetStmt.get(id) as MysqlConnRow | undefined;
+}
+
+export function dbInsertMysqlConn(conn: MysqlConnRow): void {
+  mysqlConnInsertStmt.run(conn.id, conn.name, conn.host, conn.port, conn.username, conn.password, conn.createdAt);
+}
+
+export function dbUpdateMysqlConn(id: string, fields: { name: string; host: string; port: number; username: string; password: string }): boolean {
+  const result = mysqlConnUpdateStmt.run(fields.name, fields.host, fields.port, fields.username, fields.password, id);
+  return result.changes > 0;
+}
+
+export function dbDeleteMysqlConn(id: string): boolean {
+  const result = mysqlConnDeleteStmt.run(id);
+  return result.changes > 0;
+}

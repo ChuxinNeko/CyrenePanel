@@ -11,7 +11,8 @@
     "@rasla/logify": "^5.2.2",
     "bun-pty": "^0.4.8",
     "elysia": "latest",
-    "mime-types": "^3.0.2"
+    "mime-types": "^3.0.2",
+    "mysql2": "^3.22.3"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",

@@ -36,6 +36,10 @@ import {
 import { useTasks } from "@/lib/task-store";
 import { API_BASE } from "@/lib/api-base";
 import { api } from "@/lib/api";
+import { MysqlDatabaseBrowser } from "@/components/mysql/database-browser";
+import { MysqlSqlConsole } from "@/components/mysql/sql-console";
+import { MysqlUserManager } from "@/components/mysql/user-manager";
+import { MysqlImportExport } from "@/components/mysql/import-export-dialog";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
@@ -82,6 +86,43 @@ export default function DatabasePage() {
   const [installDialogDb, setInstallDialogDb] = useState<DatabaseInfo | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string>("__main__");
+
+  // ── MySQL 内联管理状态 ──────────────────────────────────────────────
+  const [mysqlConnId, setMysqlConnId] = useState<string>("");
+  const [mysqlConnLoading, setMysqlConnLoading] = useState(false);
+  const [mysqlSubTab, setMysqlSubTab] = useState("browser");
+
+  // 获取或自动创建默认本地连接
+  const ensureMysqlConnection = useCallback(async () => {
+    setMysqlConnLoading(true);
+    try {
+      // 优先调用 auto-setup，自动检测密码并创建/更新连接
+      const setupRes = await fetch(`${API_BASE}/api/mysql/connections/auto-setup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+      }).then((r) => r.json());
+
+      if (setupRes.success && setupRes.connection) {
+        setMysqlConnId(setupRes.connection.id);
+        return;
+      }
+
+      // fallback: 查找已有连接
+      const data = await apiGet<{ success: boolean; connections: { id: string }[] }>(
+        "/api/mysql/connections"
+      );
+      if (data.success && data.connections.length > 0) {
+        setMysqlConnId(data.connections[0].id);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setMysqlConnLoading(false);
+    }
+  }, []);
 
   const isRemoteNode = selectedNodeId !== "__main__";
 
@@ -134,6 +175,14 @@ export default function DatabasePage() {
   useEffect(() => {
     fetchDatabases();
   }, [selectedNodeId, fetchDatabases]);
+
+  // MySQL 连接列表：当 MySQL tab 激活且已安装运行时拉取
+  useEffect(() => {
+    const db = getDbById("mysql");
+    if (activeTab === "mysql" && db?.installed && db?.running) {
+      ensureMysqlConnection();
+    }
+  }, [activeTab, databases, ensureMysqlConnection]);
 
   const handleInstall = (db: DatabaseInfo, version?: string, mode?: string) => {
     setInstallingId(db.id);
@@ -256,7 +305,17 @@ export default function DatabasePage() {
           const db = getDbById(tab.id);
           return (
             <TabsContent key={tab.id} value={tab.id} className="mt-4">
-              {db && !db.installed ? (
+              {/* MySQL 已安装且运行中时，直接展示内联管理界面 */}
+              {tab.id === "mysql" && db?.installed && db.running ? (
+                <MysqlInlineManager
+                  connId={mysqlConnId}
+                  connLoading={mysqlConnLoading}
+                  subTab={mysqlSubTab}
+                  setSubTab={setMysqlSubTab}
+                  db={db}
+                  onRemove={handleRemove}
+                />
+              ) : db && !db.installed ? (
                 <DatabaseEmptyState db={db} onClickInstall={() => setInstallDialogDb(db)} installing={installingId === db.id} />
               ) : db ? (
                 <DatabaseInstalledCard db={db} onRemove={handleRemove} />
@@ -481,10 +540,12 @@ function DatabaseInstalledCard({
               <p className="text-muted-foreground text-sm">{db.description}</p>
             </div>
           </div>
-          <Button variant="destructive" size="sm" onClick={() => onRemove(db)}>
-            <Trash2 className="h-4 w-4 mr-2" />
-            卸载
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="destructive" size="sm" onClick={() => onRemove(db)}>
+              <Trash2 className="h-4 w-4 mr-2" />
+              卸载
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-3 gap-4 mt-6">
@@ -515,5 +576,148 @@ function DatabaseInstalledCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// ── MySQL 内联管理组件 ───────────────────────────────────────────────
+
+function MysqlInlineManager({
+  connId,
+  connLoading,
+  subTab,
+  setSubTab,
+  db,
+  onRemove,
+}: {
+  connId: string;
+  connLoading: boolean;
+  subTab: string;
+  setSubTab: (v: string) => void;
+  db: DatabaseInfo;
+  onRemove: (db: DatabaseInfo) => void;
+}) {
+  const [rootPwdOpen, setRootPwdOpen] = useState(false);
+  const [rootPwdNew, setRootPwdNew] = useState("");
+  const [rootPwdConfirm, setRootPwdConfirm] = useState("");
+  const [rootPwdLoading, setRootPwdLoading] = useState(false);
+
+  const handleChangeRootPassword = async () => {
+    if (!rootPwdNew) { toast.error("请输入新密码"); return; }
+    if (rootPwdNew !== rootPwdConfirm) { toast.error("两次输入的密码不一致"); return; }
+    setRootPwdLoading(true);
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`${API_BASE}/api/mysql/connections/${connId}/root-password`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ newPassword: rootPwdNew }),
+      }).then((r) => r.json());
+      if (res.success) {
+        toast.success("root 密码已修改");
+        setRootPwdOpen(false);
+        setRootPwdNew("");
+        setRootPwdConfirm("");
+      } else {
+        toast.error(res.message || "修改失败");
+      }
+    } catch {
+      toast.error("请求失败");
+    } finally {
+      setRootPwdLoading(false);
+    }
+  };
+
+  if (connLoading || !connId) {
+    return (
+      <div className="flex items-center justify-center h-[40vh]">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-bold">MySQL 管理</h3>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => setRootPwdOpen(true)}>
+            修改 root 密码
+          </Button>
+          <Button variant="destructive" size="sm" onClick={() => onRemove(db)}>
+            <Trash2 className="h-4 w-4 mr-2" />
+            卸载
+          </Button>
+        </div>
+      </div>
+
+      <Tabs value={subTab} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
+        <TabsList className="shrink-0">
+          <TabsTrigger value="browser">数据库浏览</TabsTrigger>
+          <TabsTrigger value="sql">SQL 控制台</TabsTrigger>
+          <TabsTrigger value="users">用户管理</TabsTrigger>
+          <TabsTrigger value="import-export">导入导出</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="browser" className="flex-1 min-h-0 mt-4">
+          <MysqlDatabaseBrowser connectionId={connId} />
+        </TabsContent>
+
+        <TabsContent value="sql" className="flex-1 min-h-0 mt-4">
+          <MysqlSqlConsole connectionId={connId} />
+        </TabsContent>
+
+        <TabsContent value="users" className="flex-1 min-h-0 mt-4">
+          <MysqlUserManager connectionId={connId} />
+        </TabsContent>
+
+        <TabsContent value="import-export" className="flex-1 min-h-0 mt-4">
+          <MysqlImportExport connectionId={connId} />
+        </TabsContent>
+      </Tabs>
+
+      {/* 修改 root 密码对话框 */}
+      <Dialog open={rootPwdOpen} onOpenChange={setRootPwdOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>修改 MySQL root 密码</DialogTitle>
+            <DialogDescription>
+              修改后面板连接密码将自动同步更新
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">新密码</label>
+              <input
+                type="password"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={rootPwdNew}
+                onChange={(e) => setRootPwdNew(e.target.value)}
+                placeholder="输入新密码"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">确认密码</label>
+              <input
+                type="password"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={rootPwdConfirm}
+                onChange={(e) => setRootPwdConfirm(e.target.value)}
+                placeholder="再次输入新密码"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRootPwdOpen(false)}>取消</Button>
+            <Button onClick={handleChangeRootPassword} disabled={rootPwdLoading}>
+              {rootPwdLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              确认修改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

@@ -132,10 +132,11 @@ jobs:
           cp CyrenePanelBackend/README.md "${RELEASE_DIR}/backend/README.md"
           touch "${RELEASE_DIR}/backend/data/.gitkeep" "${RELEASE_DIR}/backend/logs/.gitkeep"
 
-          cp -R CyrenePanelFrontend/.next "${RELEASE_DIR}/frontend/.next"
-          cp -R CyrenePanelFrontend/public "${RELEASE_DIR}/frontend/public"
+          cp -R CyrenePanelFrontend/.next/standalone "${RELEASE_DIR}/frontend"
+          mkdir -p "${RELEASE_DIR}/frontend/.next/static"
+          cp -R CyrenePanelFrontend/.next/static/. "${RELEASE_DIR}/frontend/.next/static/"
+          cp -R CyrenePanelFrontend/public/. "${RELEASE_DIR}/frontend/public/" 2>/dev/null || true
           cp CyrenePanelFrontend/package.json "${RELEASE_DIR}/frontend/package.json"
-          cp CyrenePanelFrontend/next.config.mjs "${RELEASE_DIR}/frontend/next.config.mjs"
 
           cat > "${RELEASE_DIR}/README.md" <<EOF
           # ${PACKAGE_NAME}
@@ -144,8 +145,7 @@ jobs:
           - backend/${{ matrix.backend_binary }}
 
           Frontend build:
-          - frontend/.next
-          - frontend/public
+          - frontend/ (standalone output)
 
           Target:
           - ${{ matrix.package_os }}-${{ matrix.arch }}
