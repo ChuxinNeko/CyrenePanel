@@ -54,6 +54,8 @@ trap cleanup EXIT
 require_root() {
   if [ "${EUID}" -ne 0 ]; then
     error "请使用 root 权限运行：sudo bash setup_cn.sh"
+    exit 1
+  fi
 }
 
 detect_os() {
