@@ -132,7 +132,7 @@ jobs:
           cp CyrenePanelBackend/README.md "${RELEASE_DIR}/backend/README.md"
           touch "${RELEASE_DIR}/backend/data/.gitkeep" "${RELEASE_DIR}/backend/logs/.gitkeep"
 
-          cp -R CyrenePanelFrontend/.next/standalone "${RELEASE_DIR}/frontend"
+          cp -R CyrenePanelFrontend/.next/standalone/. "${RELEASE_DIR}/frontend/"
           mkdir -p "${RELEASE_DIR}/frontend/.next/static"
           cp -R CyrenePanelFrontend/.next/static/. "${RELEASE_DIR}/frontend/.next/static/"
           cp -R CyrenePanelFrontend/public/. "${RELEASE_DIR}/frontend/public/" 2>/dev/null || true
