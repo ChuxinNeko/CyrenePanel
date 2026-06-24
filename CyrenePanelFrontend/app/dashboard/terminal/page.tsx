@@ -4,7 +4,8 @@ import { Suspense, useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { API_BASE, getWebSocketUrl } from "@/lib/api-base";
+import { API_BASE } from "@/lib/api-base";
+import { useBackendPort, getBackendWebSocketUrl } from "@/hooks/use-backend-port";
 import { Button } from "@/components/ui/button";
 import {
   RefreshCw,
@@ -54,6 +55,7 @@ function TerminalPageContent() {
     searchParams.get("node")
   );
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
+  const backendPort = useBackendPort();
   const [nodeStatus, setNodeStatus] = useState<Record<string, boolean>>({});
 
   // 获取子节点列表
@@ -146,7 +148,7 @@ function TerminalPageContent() {
   // 建立 WebSocket 连接（主节点）
   const connectMainTerminal = useCallback(() => {
     const token = getToken();
-    if (!token) {
+    if (!token || backendPort === null) {
       router.push("/login");
       return;
     }
@@ -160,7 +162,7 @@ function TerminalPageContent() {
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    const wsUrl = getWebSocketUrl(`/api/terminal?token=${token}`);
+    const wsUrl = getBackendWebSocketUrl(`/api/terminal?token=${token}`, backendPort!);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -229,11 +231,12 @@ function TerminalPageContent() {
         ws.send(JSON.stringify({ type: "resize", cols, rows }));
       }
     });
-  }, [router]);
+  }, [router, backendPort]);
 
   // 连接主节点终端
   useEffect(() => {
     if (!authChecked) return;
+    if (backendPort === null) return;
     if (selectedNodeId) return; // 子节点模式下不连接主节点
 
     // 等待 DOM 渲染
@@ -261,6 +264,7 @@ function TerminalPageContent() {
   // 切换节点时重新连接
   useEffect(() => {
     if (!authChecked) return;
+    if (backendPort === null) return;
 
     // 清理旧的终端
     if (wsRef.current) {
@@ -290,7 +294,7 @@ function TerminalPageContent() {
   const connectSubTerminal = useCallback(
     (nodeId: string) => {
       const token = getToken();
-      if (!token) {
+      if (!token || backendPort === null) {
         router.push("/login");
         return;
       }
@@ -306,7 +310,7 @@ function TerminalPageContent() {
       }
 
       // 通过主节点 WebSocket 代理连接子节点终端
-      const wsUrl = getWebSocketUrl(`/api/nodes/${nodeId}/terminal?token=${token}`);
+      const wsUrl = getBackendWebSocketUrl(`/api/nodes/${nodeId}/terminal?token=${token}`, backendPort!);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -366,7 +370,7 @@ function TerminalPageContent() {
         }
       });
     },
-    [router, nodes]
+    [router, nodes, backendPort]
   );
 
   // 窗口 resize 时自适应终端

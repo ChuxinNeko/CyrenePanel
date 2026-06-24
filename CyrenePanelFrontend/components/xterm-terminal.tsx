@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import { getWebSocketUrl } from "@/lib/api-base";
+import { useBackendPort, getBackendWebSocketUrl } from "@/hooks/use-backend-port";
 import "@xterm/xterm/css/xterm.css";
 
 // ── 类型 ─────────────────────────────────────────────────────────────────
@@ -10,14 +10,6 @@ interface XtermTerminalProps {
   instanceId: string;
   status: "running" | "stopped" | "error";
   className?: string;
-}
-
-// ── API 基础配置 ─────────────────────────────────────────────────────────
-
-function getWsUrl(instanceId: string): string {
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("token") : "";
-  return getWebSocketUrl(`/api/instances/${instanceId}/terminal?token=${encodeURIComponent(token || "")}`);
 }
 
 // ── 组件 ─────────────────────────────────────────────────────────────────
@@ -29,6 +21,7 @@ export default function XtermTerminal({ instanceId, status, className }: XtermTe
   const wsRef = useRef<WebSocket | null>(null);
   const isConnectedRef = useRef(false);
   const observerRef = useRef<ResizeObserver | null>(null);
+  const backendPort = useBackendPort();
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {
@@ -47,7 +40,7 @@ export default function XtermTerminal({ instanceId, status, className }: XtermTe
   }, []);
 
   const connect = useCallback(async () => {
-    if (!containerRef.current || isConnectedRef.current) return;
+    if (!containerRef.current || isConnectedRef.current || backendPort === null) return;
 
     // 动态导入 xterm（避免 SSR）
     const [{ Terminal }, { FitAddon }] = await Promise.all([
@@ -94,7 +87,8 @@ export default function XtermTerminal({ instanceId, status, className }: XtermTe
     observerRef.current = observer;
 
     // WebSocket 连接
-    const wsUrl = getWsUrl(instanceId);
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : "";
+    const wsUrl = getBackendWebSocketUrl(`/api/instances/${instanceId}/terminal?token=${encodeURIComponent(token || "")}`, backendPort!);
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
@@ -146,7 +140,7 @@ export default function XtermTerminal({ instanceId, status, className }: XtermTe
         ws.send(data);
       }
     });
-  }, [instanceId]);
+  }, [instanceId, backendPort]);
 
   // 根据 status 自动连接/断开
   useEffect(() => {

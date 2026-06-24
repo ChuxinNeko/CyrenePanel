@@ -631,6 +631,7 @@ show_info() {
   echo -e "安装目录: ${CYRENE_HOME}"
   echo -e "前端地址: http://${public_ip}:${FRONTEND_PORT}"
   echo -e "后端地址: http://127.0.0.1:${BACKEND_PORT}"
+  echo -e "终端端口: 请确保防火墙已放行 ${BACKEND_PORT} 端口（终端功能需要浏览器直连后端）"
   echo -e "数据库:   $(db_path)"
 }
 
@@ -994,6 +995,7 @@ Environment=NODE_ENV=production
 Environment=PORT=$FRONTEND_PORT
 Environment=HOSTNAME=0.0.0.0
 Environment=CYRENE_BACKEND_URL=http://127.0.0.1:$BACKEND_PORT
+Environment=CYRENE_BACKEND_PORT=$BACKEND_PORT
 Environment=PATH=$RUNTIME_PATH
 ExecStart=$BUN_BIN run server.js -p $FRONTEND_PORT -H 0.0.0.0
 Restart=on-failure
@@ -1085,6 +1087,8 @@ print_summary() {
   echo -e "  安装目录:    ${CYRENE_HOME}"
   echo -e "  前端地址:    http://${public_ip}:${FRONTEND_PORT}"
   echo -e "  API proxy:    http://${public_ip}:${FRONTEND_PORT}/api -> http://127.0.0.1:${BACKEND_PORT}/api"
+  echo ""
+  echo -e "  ${YELLOW}注意: 终端功能需要浏览器直连后端端口 ${BACKEND_PORT}，请确保防火墙已放行该端口。${NC}"
   echo ""
   echo -e "  管理员账号:"
   if [ -n "$ADMIN_PASSWORD" ]; then
