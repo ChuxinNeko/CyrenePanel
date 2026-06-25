@@ -2653,8 +2653,8 @@ export const nodeRoutes = new Elysia()
       let remoteToken: string | null = null;
       try {
         remoteToken = await exchangeApiKeyForToken(node.address, node.apiKey);
-      } catch {
-        // ignore
+      } catch (e: any) {
+        logger.err(`[终端代理] token 交换失败: ${e.message}`);
       }
       if (!remoteToken) {
         ws.send(JSON.stringify({ type: "error", message: "子节点不可达或认证失败" }));
@@ -2662,28 +2662,64 @@ export const nodeRoutes = new Elysia()
         return;
       }
 
-      const remoteWsUrl = `${node.address.replace(/^http/, "ws")}/api/terminal?token=${remoteToken}`;
+      // 解析子节点后端端口：先通过 /api/config 获取实际后端端口，绕过 Next.js 直连后端建立 WebSocket
+      let remoteWsHost = node.address;
+      try {
+        const configRes = await fetch(`${node.address}/api/config`, {
+          signal: AbortSignal.timeout(5000),
+          headers: { Authorization: `Bearer ${remoteToken}` },
+        });
+        const configData = (await configRes.json()) as any;
+        if (configData?.backendPort) {
+          const parsed = new URL(node.address);
+          remoteWsHost = `${parsed.protocol}//${parsed.hostname}:${configData.backendPort}`;
+          logger.info(`[终端代理] 子节点后端端口: ${configData.backendPort}`);
+        }
+      } catch {
+        // 获取失败时回退到原始地址
+      }
+
+      const remoteWsUrl = `${remoteWsHost.replace(/^http/, "ws")}/api/terminal?token=${remoteToken}`;
+      let alive = true;
+      let connected = false;
+
+      // 连接超时保护：10 秒内未 open 则视为失败
+      const connectTimeout = setTimeout(() => {
+        if (!connected && alive) {
+          alive = false;
+          try {
+            ws.send(JSON.stringify({ type: "error", message: "连接子节点超时，请检查子节点地址和端口是否可达" }));
+            ws.close();
+          } catch {}
+          logger.err(`[终端代理] 子节点 ${node.name} 连接超时 (${node.address})`);
+        }
+      }, 10000);
+
       const remoteWs = new WebSocket(remoteWsUrl);
       (ws.data as any)._remoteWs = remoteWs;
-      (ws.data as any)._alive = true;
+      (ws.data as any)._alive = alive;
+      (ws.data as any)._connectTimeout = connectTimeout;
 
       remoteWs.addEventListener("open", () => {
+        connected = true;
+        clearTimeout(connectTimeout);
         logger.info(`[终端代理] 子节点 ${node.name} WebSocket 已连接`);
       });
 
       remoteWs.addEventListener("message", (event: any) => {
-        if ((ws.data as any)._alive) {
-          try {
-            const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
-            ws.send(data);
-          } catch {
-            // ignore
-          }
+        if (!alive) return;
+        try {
+          const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+          ws.send(data);
+        } catch {
+          // ignore
         }
       });
 
       remoteWs.addEventListener("close", () => {
-        if ((ws.data as any)._alive) {
+        clearTimeout(connectTimeout);
+        if (alive) {
+          alive = false;
           try {
             ws.send(JSON.stringify({ type: "exit", code: -1 }));
           } catch {}
@@ -2691,11 +2727,15 @@ export const nodeRoutes = new Elysia()
         }
       });
 
-      remoteWs.addEventListener("error", () => {
-        if ((ws.data as any)._alive) {
+      remoteWs.addEventListener("error", (err: any) => {
+        clearTimeout(connectTimeout);
+        logger.err(`[终端代理] 子节点 ${node.name} WebSocket 错误: ${err?.message || "unknown"}`);
+        if (alive) {
+          alive = false;
           try {
-            ws.send(JSON.stringify({ type: "error", message: "子节点终端连接异常" }));
+            ws.send(JSON.stringify({ type: "error", message: "子节点终端连接异常，请确认子节点后端端口已开放" }));
           } catch {}
+          ws.close();
         }
       });
     },
@@ -2719,6 +2759,9 @@ export const nodeRoutes = new Elysia()
 
     close(ws: any) {
       (ws.data as any)._alive = false;
+      if ((ws.data as any)._connectTimeout) {
+        clearTimeout((ws.data as any)._connectTimeout);
+      }
       const remoteWs: WebSocket | undefined = (ws.data as any)._remoteWs;
       if (remoteWs) {
         try { remoteWs.close(); } catch {}
