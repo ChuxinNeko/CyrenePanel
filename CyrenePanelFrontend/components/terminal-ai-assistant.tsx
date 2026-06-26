@@ -59,6 +59,7 @@ interface ChatMessage {
   commands?: CommandBlock[];
   timestamp: number;
   isHidden?: boolean;
+  reasoning_content?: string;
 }
 
 interface TerminalAIAssistantProps {
