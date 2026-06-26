@@ -64,7 +64,7 @@ interface ChatMessage {
 interface TerminalAIAssistantProps {
   /** 向终端 WebSocket 发送命令的回调，返回该命令的输出（等待输出完成后 resolve） */
   onExecuteCommand: (command: string) => Promise<string>;
-  systemInfo: { platform: string; arch: string; detail: string };
+  systemInfo?: { platform: string; arch: string; detail: string };
   className?: string;
   /** 当前连接的节点信息（null 表示主节点） */
   nodeId?: string | null;
