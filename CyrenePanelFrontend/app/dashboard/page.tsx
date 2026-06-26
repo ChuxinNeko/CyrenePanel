@@ -481,8 +481,8 @@ export default function DashboardPage() {
           <Skeleton className="h-9 w-20" />
           <Skeleton className="h-5 w-32" />
         </div>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {[...Array(3)].map((_, i) => (
+        <div className="grid gap-4 md:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
             <Card key={i}>
               <CardHeader className="pb-2">
                 <Skeleton className="h-4 w-24" />
@@ -522,7 +522,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Quick stats */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <StatCard
           icon={Server}
           label="在线节点"

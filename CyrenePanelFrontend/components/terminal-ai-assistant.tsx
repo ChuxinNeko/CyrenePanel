@@ -65,6 +65,7 @@ interface ChatMessage {
 interface TerminalAIAssistantProps {
   /** 向终端 WebSocket 发送命令的回调，返回该命令的输出（等待输出完成后 resolve） */
   onExecuteCommand: (command: string) => Promise<string>;
+  onGetTerminalContext?: () => string;
   systemInfo?: { platform: string; arch: string; detail: string };
   className?: string;
   /** 当前连接的节点信息（null 表示主节点） */
@@ -181,6 +182,13 @@ function ThinkingBlock({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const prevAnswerRef = useRef(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (contentRef.current && !collapsed) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    }
+  }, [reasoning, collapsed]);
 
   // 当回答开始输出时，自动折叠一次
   if (isAnswerStarted && !prevAnswerRef.current) {
@@ -226,8 +234,9 @@ function ThinkingBlock({
               )}
             </div>
             <div
-              className="whitespace-pre-wrap break-words opacity-80 overflow-y-auto"
-              style={{ maxHeight }}
+              ref={contentRef}
+              className="whitespace-pre-wrap break-words opacity-80 overflow-y-auto [&::-webkit-scrollbar]:hidden"
+              style={{ maxHeight, scrollbarWidth: "none", msOverflowStyle: "none" }}
             >
               {reasoning}
             </div>
@@ -299,6 +308,7 @@ function CommandBlockUI({ command }: { command: CommandBlock }) {
 
 export default function TerminalAIAssistant({
   onExecuteCommand,
+  onGetTerminalContext,
   className,
   nodeId,
   nodeName,
@@ -434,6 +444,7 @@ export default function TerminalAIAssistant({
           model: selectedModel,
           messages: apiMessages,
           systemInfo,
+          terminalContext: onGetTerminalContext ? onGetTerminalContext() : undefined,
           ...(nodeId ? { nodeInfo: { id: nodeId, name: nodeName || "子节点" } } : {}),
         }),
         signal: abortControllerRef.current.signal,
@@ -479,8 +490,12 @@ export default function TerminalAIAssistant({
               }
             }
             // Anthropic 格式
-            else if (parsed.type === "content_block_delta" && parsed.delta?.text) {
-              rawContent += parsed.delta.text;
+            else if (parsed.type === "content_block_delta") {
+              if (parsed.delta?.type === "thinking_delta" && parsed.delta.thinking) {
+                rawReasoning += parsed.delta.thinking;
+              } else if (parsed.delta?.text) {
+                rawContent += parsed.delta.text;
+              }
             }
             // Anthropic message_stop
             else if (parsed.type === "message_stop") {
@@ -672,6 +687,7 @@ export default function TerminalAIAssistant({
             model: selectedModel,
             messages: apiMessages,
             systemInfo,
+            terminalContext: onGetTerminalContext ? onGetTerminalContext() : undefined,
             ...(nodeId ? { nodeInfo: { id: nodeId, name: nodeName || "子节点" } } : {}),
           }),
           signal: abortControllerRef.current.signal,
@@ -714,11 +730,12 @@ export default function TerminalAIAssistant({
                 if (delta.content) {
                   rawContent += delta.content;
                 }
-              } else if (
-                parsed.type === "content_block_delta" &&
-                parsed.delta?.text
-              ) {
-                rawContent += parsed.delta.text;
+              } else if (parsed.type === "content_block_delta") {
+                if (parsed.delta?.type === "thinking_delta" && parsed.delta.thinking) {
+                  rawReasoning += parsed.delta.thinking;
+                } else if (parsed.delta?.text) {
+                  rawContent += parsed.delta.text;
+                }
               } else if (parsed.type === "message_stop") {
                 break;
               }
@@ -883,25 +900,6 @@ export default function TerminalAIAssistant({
                     {msg.role === "assistant" ? (
                       <>
                         {renderContent(msg.content, msg.commands, !!msg.content)}
-                        {/* 有待执行的命令时显示执行按钮 */}
-                        {msg.commands?.some((c) => c.status === "pending") && (
-                          <div className="flex gap-2 mt-2">
-                            {msg.commands
-                              .filter((c) => c.status === "pending")
-                              .map((cmd) => (
-                                <Button
-                                  key={cmd.id}
-                                  size="xs"
-                                  variant="outline"
-                                  onClick={() => handleExecuteCommand(msg.id, cmd.id)}
-                                  disabled={isLoading}
-                                >
-                                  <Play className="h-3 w-3 mr-1" />
-                                  执行: {cmd.command.length > 30 ? cmd.command.slice(0, 30) + "..." : cmd.command}
-                                </Button>
-                              ))}
-                          </div>
-                        )}
                       </>
                     ) : (
                       <span className="whitespace-pre-wrap">{msg.content}</span>
@@ -933,6 +931,32 @@ export default function TerminalAIAssistant({
           <div ref={messagesEndRef} />
         </div>
       </ScrollArea>
+
+      {/* 待执行命令栏 - 固定在底部 */}
+      {(() => {
+        const pendingCmd = messages
+          .filter(m => m.role === "assistant" && m.commands?.some(c => c.status === "pending"))
+          .flatMap(m => (m.commands || []).filter(c => c.status === "pending").map(c => ({ cmd: c, msgId: m.id })))
+          .at(-1);
+        if (!pendingCmd) return null;
+        return (
+          <div className="border-t px-3 py-2 shrink-0 flex items-center gap-2 bg-zinc-900/50">
+            <pre className="flex-1 min-w-0 text-xs font-mono text-emerald-300 truncate whitespace-pre-wrap break-all">
+              {pendingCmd.cmd.command}
+            </pre>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => handleExecuteCommand(pendingCmd.msgId, pendingCmd.cmd.id)}
+              disabled={isLoading}
+              className="shrink-0"
+            >
+              <Play className="h-3 w-3 mr-1" />
+              执行
+            </Button>
+          </div>
+        );
+      })()}
 
       {/* 输入区域 */}
       <div className="border-t p-3 shrink-0 space-y-2">

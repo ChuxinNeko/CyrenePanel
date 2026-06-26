@@ -23,6 +23,21 @@ function getToken(): string | null {
   return localStorage.getItem("token");
 }
 
+function getActiveTerminalContent(terminal: Terminal | null): string {
+  if (!terminal) return "";
+  const buffer = terminal.buffer.active;
+  const lines: string[] = [];
+  // Get at most the last 150 lines to avoid massive payloads
+  const start = Math.max(0, buffer.length - 150);
+  for (let i = start; i < buffer.length; i++) {
+    const line = buffer.getLine(i);
+    if (line) {
+      lines.push(line.translateToString(true));
+    }
+  }
+  return lines.join("\n").replace(/\s+$/g, "");
+}
+
 interface NodeInfo {
   id: string;
   name: string;
@@ -81,24 +96,54 @@ function TerminalPageContent() {
       }
 
       let output = "";
-      let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+      let checkPromptTimer: ReturnType<typeof setTimeout> | null = null;
+      let silenceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
       let hardTimeout: ReturnType<typeof setTimeout> | null = null;
 
       const cleanup = () => {
-        if (silenceTimer) clearTimeout(silenceTimer);
+        if (checkPromptTimer) clearTimeout(checkPromptTimer);
+        if (silenceFallbackTimer) clearTimeout(silenceFallbackTimer);
         if (hardTimeout) clearTimeout(hardTimeout);
         const idx = outputCaptureRef.current.indexOf(onOutput);
         if (idx >= 0) outputCaptureRef.current.splice(idx, 1);
       };
 
+      const checkIsDone = () => {
+        cleanup();
+        resolve(stripAnsi(output));
+      };
+
       const onOutput = (data: string) => {
         output += data;
-        // 每次收到输出，重置静默计时器
-        if (silenceTimer) clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(() => {
-          cleanup();
-          resolve(stripAnsi(output));
-        }, 2000);
+        
+        if (checkPromptTimer) clearTimeout(checkPromptTimer);
+        if (silenceFallbackTimer) clearTimeout(silenceFallbackTimer);
+
+        // 500ms 短暂静默后，检查终端光标所在行是否像是一个 Shell Prompt
+        checkPromptTimer = setTimeout(() => {
+          if (!terminalRef.current) return;
+          const buffer = terminalRef.current.buffer.active;
+          let lastLine = "";
+          for (let i = buffer.cursorY + buffer.baseY; i >= 0; i--) {
+            const line = buffer.getLine(i);
+            if (line) {
+              const text = line.translateToString(true).trim();
+              if (text) {
+                lastLine = text;
+                break;
+              }
+            }
+          }
+          // 匹配常见系统提示符的结尾字符: $, #, %, >
+          if (/[$#%>]$/.test(lastLine)) {
+            checkIsDone();
+          }
+        }, 500);
+
+        // 10秒长静默后，作为兜底强制判定结束（防止某些耗时下载任务卡住，或非标准提示符）
+        silenceFallbackTimer = setTimeout(() => {
+          checkIsDone();
+        }, 10000);
       };
 
       // 注册输出监听
@@ -107,11 +152,11 @@ function TerminalPageContent() {
       // 发送命令 + 回车
       ws.send(JSON.stringify({ type: "input", data: command + "\r" }));
 
-      // 硬超时 15 秒
+      // 硬超时 120 秒
       hardTimeout = setTimeout(() => {
         cleanup();
         resolve(stripAnsi(output) || "[命令执行超时]");
-      }, 15000);
+      }, 120000);
     });
   }, []);
 
@@ -634,6 +679,7 @@ function TerminalPageContent() {
           >
             <TerminalAIAssistant
               onExecuteCommand={executeCommand}
+              onGetTerminalContext={() => getActiveTerminalContent(terminalRef.current)}
               className="h-full"
               nodeId={selectedNodeId}
               nodeName={selectedNodeId ? nodes.find(n => n.id === selectedNodeId)?.name : null}

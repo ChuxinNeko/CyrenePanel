@@ -45,6 +45,9 @@ export default function AISettingsDialog({
   const [editingProvider, setEditingProvider] = useState<AIProvider | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [modelInput, setModelInput] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiPath, setApiPath] = useState("");
+  const [testingModel, setTestingModel] = useState(false);
 
   const loadProviders = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -67,6 +70,8 @@ export default function AISettingsDialog({
 
   const handleAdd = () => {
     setIsAdding(true);
+    setBaseUrl("");
+    setApiPath("/v1/chat/completions");
     setEditingProvider({
       id: "",
       name: "",
@@ -79,6 +84,47 @@ export default function AISettingsDialog({
 
   const handleEdit = (provider: AIProvider) => {
     setIsAdding(false);
+    
+    let bUrl = provider.apiUrl || "";
+    let aPath = "";
+    
+    if (provider.format === "openai") {
+      if (bUrl.endsWith("/v1/chat/completions")) {
+        aPath = "/v1/chat/completions";
+        bUrl = bUrl.slice(0, -"/v1/chat/completions".length);
+      } else if (bUrl.endsWith("/v1/completions")) {
+        aPath = "/v1/completions";
+        bUrl = bUrl.slice(0, -"/v1/completions".length);
+      } else if (bUrl.endsWith("/v1/response")) {
+        aPath = "/v1/response";
+        bUrl = bUrl.slice(0, -"/v1/response".length);
+      } else if (bUrl.endsWith("/vi/response")) {
+        aPath = "/vi/response";
+        bUrl = bUrl.slice(0, -"/vi/response".length);
+      }
+    } else if (provider.format === "anthropic") {
+      if (bUrl.endsWith("/v1/messages")) {
+        aPath = "/v1/messages";
+        bUrl = bUrl.slice(0, -"/v1/messages".length);
+      }
+    }
+    
+    if (!aPath && bUrl) {
+      try {
+        const u = new URL(bUrl);
+        if (u.pathname !== "/") {
+          aPath = u.pathname;
+          bUrl = u.origin;
+        }
+      } catch {}
+    }
+
+    if (!aPath) {
+      aPath = provider.format === "openai" ? "/v1/chat/completions" : "/v1/messages";
+    }
+    
+    setBaseUrl(bUrl);
+    setApiPath(aPath);
     setEditingProvider({ ...provider });
     setModelInput("");
   };
@@ -105,8 +151,16 @@ export default function AISettingsDialog({
 
   const handleSave = async () => {
     if (!editingProvider) return;
-    if (!editingProvider.name || !editingProvider.apiUrl || !editingProvider.apiKey) {
-      toast.error("请填写名称、API 地址和 API Key");
+
+    let trimmedBase = baseUrl.trim().replace(/\/$/, "");
+    if (trimmedBase && !/^https?:\/\//i.test(trimmedBase)) {
+      trimmedBase = "https://" + trimmedBase;
+    }
+    const finalUrl = trimmedBase + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
+    const providerToSave = { ...editingProvider, apiUrl: finalUrl };
+
+    if (!providerToSave.name || !baseUrl.trim() || !providerToSave.apiKey) {
+      toast.error("请填写名称、Base URL 和 API Key");
       return;
     }
 
@@ -123,7 +177,7 @@ export default function AISettingsDialog({
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(editingProvider),
+        body: JSON.stringify(providerToSave),
       });
       const data = await res.json();
       if (data.success) {
@@ -140,18 +194,58 @@ export default function AISettingsDialog({
     }
   };
 
-  const addModel = () => {
+  const addModel = async () => {
     if (!editingProvider || !modelInput.trim()) return;
     const trimmed = modelInput.trim();
     if (editingProvider.models.includes(trimmed)) {
       toast.warning("模型已存在");
       return;
     }
-    setEditingProvider({
-      ...editingProvider,
-      models: [...editingProvider.models, trimmed],
-    });
-    setModelInput("");
+    
+    if (!baseUrl.trim() || !editingProvider.apiKey) {
+      toast.error("添加模型前，请先填写 Base URL 和 API Key");
+      return;
+    }
+
+    setTestingModel(true);
+    let trimmedBase = baseUrl.trim().replace(/\/$/, "");
+    if (trimmedBase && !/^https?:\/\//i.test(trimmedBase)) {
+      trimmedBase = "https://" + trimmedBase;
+    }
+    const finalUrl = trimmedBase + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
+
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/ai/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          apiUrl: finalUrl,
+          apiKey: editingProvider.apiKey,
+          format: editingProvider.format,
+          model: trimmed,
+        }),
+      });
+      const data = await res.json();
+      
+      if (data.success) {
+        setEditingProvider({
+          ...editingProvider,
+          models: [...editingProvider.models, trimmed],
+        });
+        setModelInput("");
+        toast.success(`模型可用！首字: ${data.ttft}ms, 速度: ${data.tps} t/s`);
+      } else {
+        toast.error(data.message || "模型测试失败");
+      }
+    } catch {
+      toast.error("请求超时或网络错误");
+    } finally {
+      setTestingModel(false);
+    }
   };
 
   const removeModel = (index: number) => {
@@ -263,9 +357,10 @@ export default function AISettingsDialog({
                   <Label htmlFor="ai-format">API 格式</Label>
                   <Select
                     value={editingProvider.format}
-                    onValueChange={(v: "openai" | "anthropic") =>
-                      setEditingProvider({ ...editingProvider, format: v })
-                    }
+                    onValueChange={(v: "openai" | "anthropic") => {
+                      setEditingProvider({ ...editingProvider, format: v });
+                      setApiPath(v === "openai" ? "/v1/chat/completions" : "/v1/messages");
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -278,15 +373,39 @@ export default function AISettingsDialog({
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="ai-url">API 地址</Label>
+                  <Label htmlFor="ai-base-url">Base URL</Label>
                   <Input
-                    id="ai-url"
-                    placeholder="如：https://api.openai.com/v1/chat/completions"
-                    value={editingProvider.apiUrl}
-                    onChange={(e) =>
-                      setEditingProvider({ ...editingProvider, apiUrl: e.target.value })
-                    }
+                    id="ai-base-url"
+                    placeholder="如：https://api.openai.com"
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
                   />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="ai-api-path">API 路由 (Endpoint)</Label>
+                  {editingProvider.format === "openai" ? (
+                    <Select value={apiPath} onValueChange={setApiPath}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="/v1/chat/completions">/v1/chat/completions</SelectItem>
+                        <SelectItem value="/v1/completions">/v1/completions</SelectItem>
+                        <SelectItem value="/v1/response">/v1/response</SelectItem>
+                        <SelectItem value="/vi/response">/vi/response</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Select value={apiPath} onValueChange={setApiPath}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="/v1/messages">/v1/messages</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
                 </div>
 
                 <div className="space-y-1.5">
@@ -316,8 +435,17 @@ export default function AISettingsDialog({
                         }
                       }}
                     />
-                    <Button size="sm" variant="outline" onClick={addModel}>
-                      <Plus className="h-4 w-4" />
+                    <Button 
+                      size="sm" 
+                      variant="outline" 
+                      onClick={addModel} 
+                      disabled={testingModel}
+                    >
+                      {testingModel ? (
+                        <div className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                      ) : (
+                        <Plus className="h-4 w-4" />
+                      )}
                     </Button>
                   </div>
                   {editingProvider.models.length > 0 && (
