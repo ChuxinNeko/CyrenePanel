@@ -13,7 +13,10 @@ import {
   Wifi,
   WifiOff,
   Terminal as TerminalIcon,
+  PanelRightOpen,
+  PanelRightClose,
 } from "lucide-react";
+import TerminalAIAssistant from "@/components/terminal-ai-assistant";
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -57,8 +60,75 @@ function TerminalPageContent() {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const backendPort = useBackendPort();
   const [nodeStatus, setNodeStatus] = useState<Record<string, boolean>>({});
+  const [aiPanelOpen, setAiPanelOpen] = useState(true);
 
-  // 获取子节点列表
+  // ── 命令执行与输出捕获 ─────────────────────────────────────────
+
+  // 用于捕获终端输出的回调列表
+  const outputCaptureRef = useRef<((data: string) => void)[]>([]);
+
+  /**
+   * 向终端发送命令并捕获输出。
+   * 原理：发送命令后，注册一个输出监听器，收集所有终端输出数据。
+   * 当输出静默超过 2 秒 或总时长超过 15 秒时，认为命令执行完成。
+   */
+  const executeCommand = useCallback((command: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        resolve("[错误: 终端未连接]");
+        return;
+      }
+
+      let output = "";
+      let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+      let hardTimeout: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (hardTimeout) clearTimeout(hardTimeout);
+        const idx = outputCaptureRef.current.indexOf(onOutput);
+        if (idx >= 0) outputCaptureRef.current.splice(idx, 1);
+      };
+
+      const onOutput = (data: string) => {
+        output += data;
+        // 每次收到输出，重置静默计时器
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          cleanup();
+          resolve(stripAnsi(output));
+        }, 2000);
+      };
+
+      // 注册输出监听
+      outputCaptureRef.current.push(onOutput);
+
+      // 发送命令 + 回车
+      ws.send(JSON.stringify({ type: "input", data: command + "\r" }));
+
+      // 硬超时 15 秒
+      hardTimeout = setTimeout(() => {
+        cleanup();
+        resolve(stripAnsi(output) || "[命令执行超时]");
+      }, 15000);
+    });
+  }, []);
+
+  // ── ANSI 清理 ──────────────────────────────────────────────────
+
+  function stripAnsi(str: string): string {
+    // 去除 ANSI 转义序列
+    return str
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b[()][AB012]/g, "")
+      .replace(/\r/g, "")
+      .trim();
+  }
+
+  // ── 节点相关 ───────────────────────────────────────────────────
+
   const fetchNodes = useCallback(async () => {
     try {
       const data = await apiFetch<{
@@ -73,7 +143,6 @@ function TerminalPageContent() {
     }
   }, []);
 
-  // 获取子节点在线状态
   const fetchNodeStatuses = useCallback(async () => {
     for (const node of nodes) {
       try {
@@ -91,11 +160,11 @@ function TerminalPageContent() {
     }
   }, [nodes]);
 
-  // 初始化 xterm 终端
+  // ── 终端初始化 ─────────────────────────────────────────────────
+
   const initTerminal = useCallback(() => {
     if (!termRef.current) return;
 
-    // 如果已有终端，先销毁
     if (terminalRef.current) {
       terminalRef.current.dispose();
     }
@@ -139,13 +208,13 @@ function TerminalPageContent() {
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
-    // 自动聚焦
     terminal.focus();
 
     return terminal;
   }, []);
 
-  // 建立 WebSocket 连接（主节点）
+  // ── WebSocket 连接 ─────────────────────────────────────────────
+
   const connectMainTerminal = useCallback(() => {
     const token = getToken();
     if (!token || backendPort === null) {
@@ -153,7 +222,6 @@ function TerminalPageContent() {
       return;
     }
 
-    // 断开旧连接
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -170,13 +238,11 @@ function TerminalPageContent() {
       setConnected(true);
       terminal.writeln("\x1b[33m正在连接主节点终端...\x1b[0m\r\n");
 
-      // 发送初始尺寸
       const dims = fitAddonRef.current?.proposeDimensions();
       if (dims) {
         ws.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
       }
 
-      // 连接成功后聚焦终端，确保键盘输入能被捕获
       requestAnimationFrame(() => {
         terminal.focus();
       });
@@ -187,6 +253,10 @@ function TerminalPageContent() {
         const msg = JSON.parse(event.data);
         if (msg.type === "output") {
           terminal.write(msg.data);
+          // 通知输出捕获器
+          for (const cb of outputCaptureRef.current) {
+            cb(msg.data);
+          }
         } else if (msg.type === "ready") {
           terminal.clear();
         } else if (msg.type === "exit") {
@@ -196,8 +266,10 @@ function TerminalPageContent() {
           terminal.writeln(`\r\n\x1b[31m[错误: ${msg.message}]\x1b[0m`);
         }
       } catch {
-        // 如果不是 JSON，直接写入
         terminal.write(event.data);
+        for (const cb of outputCaptureRef.current) {
+          cb(event.data);
+        }
       }
     };
 
@@ -206,7 +278,6 @@ function TerminalPageContent() {
       if (terminalRef.current) {
         terminalRef.current.writeln("\r\n\x1b[31m[连接已断开]\x1b[0m");
       }
-      // 3 秒后尝试重连
       reconnectTimerRef.current = setTimeout(() => {
         if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
           connectMainTerminal();
@@ -218,14 +289,12 @@ function TerminalPageContent() {
       setConnected(false);
     };
 
-    // 终端输入 → WebSocket
     terminal.onData((data: string) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });
 
-    // 终端窗口大小变化 → 发送 resize
     terminal.onResize(({ cols, rows }) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "resize", cols, rows }));
@@ -233,13 +302,13 @@ function TerminalPageContent() {
     });
   }, [router, backendPort]);
 
-  // 连接主节点终端
+  // ── 主节点连接 effect ─────────────────────────────────────────
+
   useEffect(() => {
     if (!authChecked) return;
     if (backendPort === null) return;
-    if (selectedNodeId) return; // 子节点模式下不连接主节点
+    if (selectedNodeId) return;
 
-    // 等待 DOM 渲染
     const timer = setTimeout(() => {
       initTerminal();
       connectMainTerminal();
@@ -261,12 +330,12 @@ function TerminalPageContent() {
     };
   }, [authChecked, selectedNodeId, initTerminal, connectMainTerminal]);
 
-  // 切换节点时重新连接
+  // ── 子节点切换 effect ──────────────────────────────────────────
+
   useEffect(() => {
     if (!authChecked) return;
     if (backendPort === null) return;
 
-    // 清理旧的终端
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -280,7 +349,6 @@ function TerminalPageContent() {
     }
 
     if (selectedNodeId) {
-      // 子节点模式：通过主节点 WebSocket 代理连接
       const timer = setTimeout(() => {
         initTerminal();
         connectSubTerminal(selectedNodeId);
@@ -290,7 +358,8 @@ function TerminalPageContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, authChecked, initTerminal]);
 
-  // 连接子节点终端（通过主节点代理）
+  // ── 子节点终端连接 ─────────────────────────────────────────────
+
   const connectSubTerminal = useCallback(
     (nodeId: string) => {
       const token = getToken();
@@ -302,14 +371,12 @@ function TerminalPageContent() {
       const terminal = terminalRef.current;
       if (!terminal) return;
 
-      // 找到子节点信息（仅用于显示名称）
       const node = nodes.find((n) => n.id === nodeId);
       if (!node) {
         terminal.writeln(`\x1b[31m[节点信息未找到]\x1b[0m`);
         return;
       }
 
-      // 通过主节点 WebSocket 代理连接子节点终端
       const wsUrl = getBackendWebSocketUrl(`/api/nodes/${nodeId}/terminal?token=${token}`, backendPort!);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
@@ -329,6 +396,9 @@ function TerminalPageContent() {
           const msg = JSON.parse(event.data);
           if (msg.type === "output") {
             terminal.write(msg.data);
+            for (const cb of outputCaptureRef.current) {
+              cb(msg.data);
+            }
           } else if (msg.type === "ready") {
             terminal.clear();
           } else if (msg.type === "exit") {
@@ -339,6 +409,9 @@ function TerminalPageContent() {
           }
         } catch {
           terminal.write(event.data);
+          for (const cb of outputCaptureRef.current) {
+            cb(event.data);
+          }
         }
       };
 
@@ -373,14 +446,15 @@ function TerminalPageContent() {
     [router, nodes, backendPort]
   );
 
-  // 窗口 resize 时自适应终端
+  // ── 窗口 resize ────────────────────────────────────────────────
+
   useEffect(() => {
     const handleResize = () => {
       if (fitAddonRef.current && terminalRef.current) {
         try {
           fitAddonRef.current.fit();
         } catch {
-          // 忽略
+          // ignore
         }
       }
     };
@@ -389,12 +463,12 @@ function TerminalPageContent() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // 切换节点
+  // ── 工具函数 ───────────────────────────────────────────────────
+
   const handleNodeChange = useCallback((nodeId: string | null) => {
     setSelectedNodeId(nodeId);
   }, []);
 
-  // 手动重连
   const handleReconnect = useCallback(() => {
     if (wsRef.current) {
       wsRef.current.close();
@@ -418,7 +492,8 @@ function TerminalPageContent() {
     }, 100);
   }, [selectedNodeId, initTerminal, connectMainTerminal, connectSubTerminal]);
 
-  // 初始化
+  // ── 认证与初始化 ───────────────────────────────────────────────
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -439,7 +514,6 @@ function TerminalPageContent() {
     init();
   }, [router, fetchNodes]);
 
-  // 刷新节点状态
   useEffect(() => {
     if (nodes.length === 0) return;
     fetchNodeStatuses();
@@ -501,19 +575,33 @@ function TerminalPageContent() {
               ))}
             </select>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReconnect}
-          >
+          <Button variant="outline" size="sm" onClick={handleReconnect}>
             <RefreshCw className="h-4 w-4 mr-2" />
             重连
+          </Button>
+          <Button
+            variant={aiPanelOpen ? "secondary" : "outline"}
+            size="sm"
+            onClick={() => setAiPanelOpen(!aiPanelOpen)}
+          >
+            {aiPanelOpen ? (
+              <PanelRightClose className="h-4 w-4 mr-1" />
+            ) : (
+              <PanelRightOpen className="h-4 w-4 mr-1" />
+            )}
+            AI 助手
           </Button>
         </div>
       </div>
 
-      {/* 终端区域 */}
-      <div className="flex-1 min-h-0 relative rounded-lg overflow-hidden">
+      {/* 主体区域：终端 + AI 面板 */}
+      <div className="flex-1 min-h-0 flex gap-3">
+        {/* 终端区域 */}
+        <div
+          className={`relative rounded-lg overflow-hidden min-w-0 transition-all duration-200 ${
+            aiPanelOpen ? "flex-1" : "flex-1"
+          }`}
+        >
           <div
             ref={termRef}
             className="absolute inset-0"
@@ -536,6 +624,22 @@ function TerminalPageContent() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* AI 助手面板 */}
+        {aiPanelOpen && (
+          <div
+            className="rounded-lg border bg-card overflow-hidden flex flex-col"
+            style={{ width: 400, maxWidth: 400, minWidth: 0, flex: '0 0 400px' }}
+          >
+            <TerminalAIAssistant
+              onExecuteCommand={executeCommand}
+              className="h-full"
+              nodeId={selectedNodeId}
+              nodeName={selectedNodeId ? nodes.find(n => n.id === selectedNodeId)?.name : null}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
