@@ -868,7 +868,7 @@ export default function TerminalAIAssistant({
 
               <div className="flex flex-col gap-1 w-full max-w-[85%] min-w-0">
                 <ThinkingBlock
-                  reasoning={msg.reasoning_content}
+                  reasoning={msg.reasoning_content || ""}
                   isAnswerStarted={!!msg.content}
                 />
                 
