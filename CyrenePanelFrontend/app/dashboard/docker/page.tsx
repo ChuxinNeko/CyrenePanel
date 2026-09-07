@@ -50,6 +50,7 @@ import {
   Network,
   Database,
   Activity,
+  Layers3,
 } from "lucide-react";
 import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
@@ -61,6 +62,7 @@ import { ImageManager } from "@/components/docker/image-manager";
 import { NetworkManager } from "@/components/docker/network-manager";
 import { VolumeManager } from "@/components/docker/volume-manager";
 import { DockerSystemPanel } from "@/components/docker/system-panel";
+import { ComposeManager } from "@/components/docker/compose-manager";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
@@ -714,6 +716,10 @@ export default function DockerPage() {
             <Layers className="h-3.5 w-3.5" />
             本地镜像
           </TabsTrigger>
+          <TabsTrigger value="compose" className="flex items-center gap-1.5">
+            <Layers3 className="h-3.5 w-3.5" />
+            容器编排
+          </TabsTrigger>
           <TabsTrigger value="networks" className="flex items-center gap-1.5">
             <Network className="h-3.5 w-3.5" />
             网络管理
@@ -739,6 +745,10 @@ export default function DockerPage() {
         {/* 这几个 Tab 各自独立取数，挂载时才请求，避免切到 Docker 页就把所有接口打一遍 */}
         <TabsContent value="images">
           <ImageManager prefix={dockerApiPrefix} />
+        </TabsContent>
+
+        <TabsContent value="compose">
+          <ComposeManager prefix={dockerApiPrefix} />
         </TabsContent>
 
         <TabsContent value="networks">
