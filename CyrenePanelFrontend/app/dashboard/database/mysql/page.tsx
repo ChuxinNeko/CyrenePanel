@@ -12,6 +12,10 @@ import { MysqlDatabaseBrowser } from "@/components/mysql/database-browser";
 import { MysqlSqlConsole } from "@/components/mysql/sql-console";
 import { MysqlUserManager } from "@/components/mysql/user-manager";
 import { MysqlImportExport } from "@/components/mysql/import-export-dialog";
+import { MysqlStatusPanel } from "@/components/mysql/status-panel";
+import { MysqlBackupManager } from "@/components/mysql/backup-manager";
+import { MysqlMaintenancePanel } from "@/components/mysql/maintenance-panel";
+import { MysqlConfigPanel } from "@/components/mysql/config-panel";
 import {
   Select,
   SelectContent,
@@ -149,12 +153,32 @@ export default function MysqlManagePage() {
 
       {/* 主内容区 */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
-        <TabsList className="shrink-0">
+        <TabsList className="shrink-0 flex-wrap">
+          <TabsTrigger value="status">运行状态</TabsTrigger>
           <TabsTrigger value="browser">数据库浏览</TabsTrigger>
           <TabsTrigger value="sql">SQL 控制台</TabsTrigger>
+          <TabsTrigger value="maintenance">表维护</TabsTrigger>
+          <TabsTrigger value="backup">备份管理</TabsTrigger>
           <TabsTrigger value="users">用户管理</TabsTrigger>
           <TabsTrigger value="import-export">导入导出</TabsTrigger>
+          <TabsTrigger value="config">配置与日志</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="status" className="flex-1 min-h-0 mt-4">
+          <MysqlStatusPanel connectionId={selectedConnId} />
+        </TabsContent>
+
+        <TabsContent value="maintenance" className="flex-1 min-h-0 mt-4">
+          <MysqlMaintenancePanel connectionId={selectedConnId} />
+        </TabsContent>
+
+        <TabsContent value="backup" className="flex-1 min-h-0 mt-4">
+          <MysqlBackupManager connectionId={selectedConnId} />
+        </TabsContent>
+
+        <TabsContent value="config" className="flex-1 min-h-0 mt-4">
+          <MysqlConfigPanel connectionId={selectedConnId} />
+        </TabsContent>
 
         <TabsContent value="browser" className="flex-1 min-h-0 mt-4">
           <MysqlDatabaseBrowser connectionId={selectedConnId} />
