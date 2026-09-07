@@ -67,7 +67,7 @@ import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog"
 import { AddContainerDialog } from "@/components/add-container-dialog";
 import { useTasks } from "@/lib/task-store";
 import { API_BASE } from "@/lib/api-base";
-import { dockerPrefix, dockerPost } from "@/lib/docker-api";
+import { dockerPrefix, dockerPost, type DockerImageItem } from "@/lib/docker-api";
 import { ImageManager } from "@/components/docker/image-manager";
 import { NetworkManager } from "@/components/docker/network-manager";
 import { VolumeManager } from "@/components/docker/volume-manager";
@@ -154,14 +154,6 @@ interface DockerContainer {
   created: string;
 }
 
-interface DockerImage {
-  ID: string;
-  Repository: string;
-  Tag: string;
-  Size: string;
-  CreatedAt: string;
-}
-
 // ── 容器状态颜色 ─────────────────────────────────────────────────────
 
 function getStateColor(state: string) {
@@ -240,7 +232,7 @@ export default function DockerPage() {
 
   const [dockerInfo, setDockerInfo] = useState<DockerInfo | null>(null);
   const [containers, setContainers] = useState<DockerContainer[]>([]);
-  const [images, setImages] = useState<DockerImage[]>([]);
+  const [images, setImages] = useState<DockerImageItem[]>([]);
   const [showAllContainers, setShowAllContainers] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [dockerError, setDockerError] = useState<string | null>(null);
@@ -293,7 +285,7 @@ export default function DockerPage() {
   const [alsoDeleteImage, setAlsoDeleteImage] = useState(false);
 
   // 镜像删除
-  const [deleteImageTarget, setDeleteImageTarget] = useState<DockerImage | null>(null);
+  const [deleteImageTarget, setDeleteImageTarget] = useState<DockerImageItem | null>(null);
   const [deletingImage, setDeletingImage] = useState(false);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
@@ -364,7 +356,7 @@ export default function DockerPage() {
         apiGet<{ success: boolean; containers?: DockerContainer[]; message?: string }>(
           `${basePath}/containers?all=${showAllContainers}`
         ),
-        apiGet<{ success: boolean; images?: DockerImage[]; message?: string }>(`${basePath}/images`),
+        apiGet<{ success: boolean; images?: DockerImageItem[]; message?: string }>(`${basePath}/images`),
       ]);
 
       if (infoRes.message && !infoRes.success) {
@@ -827,8 +819,12 @@ export default function DockerPage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* Tab 内容区自身滚动，页面整体不出现滚动条 */}
-        <div className="min-h-0 flex-1 overflow-auto pt-4">
+        {/*
+          Tab 内容区自身滚动，页面整体不出现滚动条。
+          左右留 px-1：Card 的描边用的是 ring-1（绘制在元素外部），
+          紧贴滚动容器边缘时会被裁掉。
+        */}
+        <div className="min-h-0 flex-1 overflow-auto px-1 pt-4 pb-2">
 
         {/* 这几个 Tab 各自独立取数，挂载时才请求，避免切到 Docker 页就把所有接口打一遍 */}
         <TabsContent value="images">
@@ -1193,21 +1189,21 @@ export default function DockerPage() {
                       {images.map((img, i) => (
                         <tr key={i} className="border-b last:border-0 hover:bg-muted/50">
                           <td className="p-3 text-sm max-w-[250px] truncate">
-                            {img.Repository === "<none>" ? (
+                            {img.dangling ? (
                               <span className="text-muted-foreground">&lt;none&gt;</span>
                             ) : (
-                              img.Repository
+                              img.repository
                             )}
                           </td>
                           <td className="p-3 text-sm">
                             <Badge variant="secondary" className="text-[11px] px-1.5 py-0">
-                              {img.Tag || "latest"}
+                              {img.tag || "latest"}
                             </Badge>
                           </td>
                           <td className="p-3 text-xs font-mono text-muted-foreground">
-                            {img.ID?.slice(7, 19) || img.ID}
+                            {img.id.replace(/^sha256:/, "").slice(0, 12)}
                           </td>
-                          <td className="p-3 text-xs text-right">{img.Size}</td>
+                          <td className="p-3 text-xs text-right">{img.sizeText}</td>
                           <td className="p-3">
                             <div className="flex items-center justify-end">
                               <Button
@@ -1544,7 +1540,7 @@ export default function DockerPage() {
               删除镜像
             </DialogTitle>
             <DialogDescription>
-              确定要删除镜像 <strong>{deleteImageTarget?.Repository === "<none>" ? "<none>" : deleteImageTarget?.Repository}:{deleteImageTarget?.Tag || "latest"}</strong> 吗？此操作不可撤销。
+              确定要删除镜像 <strong>{deleteImageTarget?.dangling ? "<none>" : deleteImageTarget?.repository}:{deleteImageTarget?.tag || "latest"}</strong> 吗？此操作不可撤销。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">
@@ -1553,7 +1549,7 @@ export default function DockerPage() {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => deleteImageTarget && imageDelete(deleteImageTarget.ID)}
+              onClick={() => deleteImageTarget && imageDelete(deleteImageTarget.id)}
               disabled={deletingImage}
             >
               {deletingImage && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
