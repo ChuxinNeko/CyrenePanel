@@ -18,18 +18,13 @@ import {
   Download,
   Edit3,
   Eye,
-  File,
   FileArchive,
-  FileCode,
-  FileImage,
   FilePlus,
   FileText,
-  Film,
   FolderOpen,
   FolderPlus,
   Home,
   Info,
-  Music,
   PanelLeft,
   PanelLeftClose,
   RefreshCw,
@@ -83,6 +78,7 @@ import {
   getMonacoLanguage,
   resolveFileKind,
 } from "@/lib/file-kind";
+import { FileTypeIcon } from "@/lib/file-icons";
 
 interface FileEntry {
   name: string;
@@ -215,17 +211,8 @@ function canEdit(entry: FileEntry): boolean {
   return canEditFile(entry);
 }
 
-function getFileIcon(entry: FileEntry) {
-  if (entry.isDirectory) return <FolderOpen className="h-4 w-4 text-yellow-500" />;
-  const kind = resolveFileKind(entry);
-  const codeExts = [".js", ".ts", ".jsx", ".tsx", ".py", ".go", ".rs", ".java", ".c", ".cpp", ".cs", ".php", ".rb", ".sh", ".vue", ".svelte"];
-  if (codeExts.includes(entry.extension.toLowerCase())) return <FileCode className="h-4 w-4 text-green-500" />;
-  if (kind === "image") return <FileImage className="h-4 w-4 text-purple-500" />;
-  if (ARCHIVE_EXTENSIONS.some((archiveExt) => entry.name.toLowerCase().endsWith(archiveExt))) return <FileArchive className="h-4 w-4 text-orange-500" />;
-  if (kind === "video") return <Film className="h-4 w-4 text-pink-500" />;
-  if (kind === "audio") return <Music className="h-4 w-4 text-cyan-500" />;
-  if ([".md", ".txt", ".log", ".csv"].includes(entry.extension.toLowerCase())) return <FileText className="h-4 w-4 text-blue-500" />;
-  return <File className="h-4 w-4 text-muted-foreground" />;
+function getFileIcon(entry: FileEntry, isOpen = false) {
+  return <FileTypeIcon entry={entry} isOpen={isOpen} />;
 }
 
 function Breadcrumb({ path, root, onNavigate }: { path: string; root: string; onNavigate: (path: string) => void }) {
@@ -340,7 +327,11 @@ function FileTreeNode({
             onToggle(node.path);
           }}
         />
-        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-yellow-500" />
+        <FileTypeIcon
+          entry={{ name: node.name, path: node.path, isDirectory: true }}
+          isOpen={isExpanded}
+          className="h-3.5 w-3.5"
+        />
         <span className="truncate">{node.name}</span>
       </div>
       {isExpanded && node.children && (
