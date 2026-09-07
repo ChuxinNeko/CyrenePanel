@@ -22,6 +22,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -51,18 +57,23 @@ import {
   Database,
   Activity,
   Layers3,
+  MoreHorizontal,
+  Pause,
+  Pencil,
+  Zap,
 } from "lucide-react";
 import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
 import { AddContainerDialog } from "@/components/add-container-dialog";
 import { useTasks } from "@/lib/task-store";
 import { API_BASE } from "@/lib/api-base";
-import { dockerPrefix } from "@/lib/docker-api";
+import { dockerPrefix, dockerPost } from "@/lib/docker-api";
 import { ImageManager } from "@/components/docker/image-manager";
 import { NetworkManager } from "@/components/docker/network-manager";
 import { VolumeManager } from "@/components/docker/volume-manager";
 import { DockerSystemPanel } from "@/components/docker/system-panel";
 import { ComposeManager } from "@/components/docker/compose-manager";
+import { ContainerDetailDialog } from "@/components/docker/container-detail-dialog";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
@@ -234,6 +245,15 @@ export default function DockerPage() {
 
   // 操作状态
   const [actingId, setActingId] = useState<string | null>(null);
+
+  // 容器详情（监控 / 进程 / 终端）与高级操作
+  const [detailContainer, setDetailContainer] = useState<DockerContainer | null>(null);
+  const [renameTarget, setRenameTarget] = useState<DockerContainer | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [commitTarget, setCommitTarget] = useState<DockerContainer | null>(null);
+  const [commitRepo, setCommitRepo] = useState("");
+  const [commitTag, setCommitTag] = useState("latest");
+  const [advancedBusy, setAdvancedBusy] = useState(false);
 
   // 应用商店
   const [activeTab, setActiveTab] = useState("containers");
@@ -454,6 +474,64 @@ export default function DockerPage() {
       toast.error(e.message || "请求失败");
     } finally {
       setDeletingImage(false);
+    }
+  };
+
+  // 暂停 / 恢复 / 强制终止
+  const advancedAction = async (container: DockerContainer, action: string) => {
+    setAdvancedBusy(true);
+    try {
+      const data = await dockerPost<{ success: boolean; message?: string }>(
+        `${dockerApiPrefix}/containers/${encodeURIComponent(container.id)}/${action}`,
+      );
+      if (data.success) {
+        toast.success(data.message || "操作成功");
+        await fetchDockerData();
+      } else {
+        toast.error(data.message || "操作失败");
+      }
+    } finally {
+      setAdvancedBusy(false);
+    }
+  };
+
+  const handleRename = async () => {
+    if (!renameTarget || !renameValue.trim()) return;
+    setAdvancedBusy(true);
+    try {
+      const data = await dockerPost<{ success: boolean; message?: string }>(
+        `${dockerApiPrefix}/containers/${encodeURIComponent(renameTarget.id)}/rename`,
+        { name: renameValue.trim() },
+      );
+      if (data.success) {
+        toast.success(data.message || "已重命名");
+        setRenameTarget(null);
+        await fetchDockerData();
+      } else {
+        toast.error(data.message || "重命名失败");
+      }
+    } finally {
+      setAdvancedBusy(false);
+    }
+  };
+
+  const handleCommit = async () => {
+    if (!commitTarget || !commitRepo.trim()) return;
+    setAdvancedBusy(true);
+    try {
+      const data = await dockerPost<{ success: boolean; message?: string }>(
+        `${dockerApiPrefix}/containers/${encodeURIComponent(commitTarget.id)}/commit`,
+        { repository: commitRepo.trim(), tag: commitTag.trim() || "latest" },
+      );
+      if (data.success) {
+        toast.success(data.message || "已提交为镜像");
+        setCommitTarget(null);
+        await fetchDockerData();
+      } else {
+        toast.error(data.message || "提交失败");
+      }
+    } finally {
+      setAdvancedBusy(false);
     }
   };
 
@@ -991,14 +1069,74 @@ export default function DockerPage() {
                                   variant="ghost"
                                   size="icon"
                                   className="h-7 w-7"
-                                  onClick={() => viewLogs(c)}
+                                  title="监控 / 进程 / 终端"
+                                  onClick={() => setDetailContainer(c)}
                                 >
-                                  <FileText className="h-3.5 w-3.5" />
+                                  <Activity className="h-3.5 w-3.5" />
                                 </Button>
                                 <Button
                                   variant="ghost"
                                   size="icon"
+                                  className="h-7 w-7"
+                                  title="日志"
+                                  onClick={() => viewLogs(c)}
+                                >
+                                  <FileText className="h-3.5 w-3.5" />
+                                </Button>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="h-7 w-7" title="更多操作">
+                                      <MoreHorizontal className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    {c.state === "running" && (
+                                      <DropdownMenuItem onClick={() => advancedAction(c, "pause")}>
+                                        <Pause className="mr-2 h-3.5 w-3.5" />
+                                        暂停
+                                      </DropdownMenuItem>
+                                    )}
+                                    {c.state === "paused" && (
+                                      <DropdownMenuItem onClick={() => advancedAction(c, "unpause")}>
+                                        <Play className="mr-2 h-3.5 w-3.5" />
+                                        恢复
+                                      </DropdownMenuItem>
+                                    )}
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        setRenameTarget(c);
+                                        setRenameValue(c.name);
+                                      }}
+                                    >
+                                      <Pencil className="mr-2 h-3.5 w-3.5" />
+                                      重命名
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        setCommitTarget(c);
+                                        setCommitRepo(c.name);
+                                        setCommitTag("latest");
+                                      }}
+                                    >
+                                      <Box className="mr-2 h-3.5 w-3.5" />
+                                      提交为镜像
+                                    </DropdownMenuItem>
+                                    {c.state === "running" && (
+                                      <DropdownMenuItem
+                                        className="text-destructive focus:text-destructive"
+                                        onClick={() => advancedAction(c, "kill")}
+                                      >
+                                        <Zap className="mr-2 h-3.5 w-3.5" />
+                                        强制终止
+                                      </DropdownMenuItem>
+                                    )}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
                                   className="h-7 w-7 text-destructive hover:text-destructive"
+                                  title="删除"
                                   onClick={() => setDeleteTarget(c)}
                                   disabled={deleting}
                                 >
@@ -1466,6 +1604,77 @@ export default function DockerPage() {
           toast.success("容器部署成功");
         }}
       />
+
+      {/* 容器监控 / 进程 / 终端 */}
+      <ContainerDetailDialog
+        container={detailContainer}
+        prefix={dockerApiPrefix}
+        onClose={() => setDetailContainer(null)}
+      />
+
+      {/* 重命名容器 */}
+      <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>重命名容器</DialogTitle>
+            <DialogDescription>当前名称：{renameTarget?.name}</DialogDescription>
+          </DialogHeader>
+          <Input
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            placeholder="新的容器名称"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleRename();
+            }}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameTarget(null)}>
+              取消
+            </Button>
+            <Button onClick={handleRename} disabled={advancedBusy}>
+              确定
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 提交为镜像 */}
+      <Dialog open={!!commitTarget} onOpenChange={(open) => !open && setCommitTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>提交为镜像</DialogTitle>
+            <DialogDescription>
+              把容器 {commitTarget?.name} 的当前文件系统状态保存成一个新镜像
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-[1fr_8rem] gap-3">
+            <div className="space-y-1.5">
+              <span className="text-xs text-muted-foreground">镜像名</span>
+              <Input
+                value={commitRepo}
+                onChange={(e) => setCommitRepo(e.target.value)}
+                placeholder="myapp"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <span className="text-xs text-muted-foreground">标签</span>
+              <Input
+                value={commitTag}
+                onChange={(e) => setCommitTag(e.target.value)}
+                placeholder="latest"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCommitTarget(null)}>
+              取消
+            </Button>
+            <Button onClick={handleCommit} disabled={advancedBusy}>
+              提交
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
