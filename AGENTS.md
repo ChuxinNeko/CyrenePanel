@@ -29,3 +29,4 @@ bun run lint         # eslint（现有组件普遍存在 no-explicit-any / set-s
 - **远程节点**：`/api/nodes/:id/*` 由主节点透传到子节点，sites 相关新路由天然兼容远程节点。
 - **认证**：JWT Bearer；API 返回 `{ success, message }` 风格。
 - **管理块标记**：Nginx conf 中用成对注释标记面板管理的配置块：`# CyrenePanelProxyStart/End`（用户反代）、`# CyrenePanelAppProxyStart/End`（运行环境自动反代）、`# CyrenePanelRedirectStart/End`。
+- **文件类型图标**：文件管理用 vscode-icons 图标集，映射表在 `lib/file-icon-map.ts`（唯一真源），图标数据是提交进仓库的离线子集 `lib/file-icon-data.json`。**改完映射表必须重跑 `bun run build:file-icons`**——否则新图标不在本地集合里，`@iconify/react` 会静默回落到 api.iconify.design 联网拉取，内网环境下就会显示空白。脚本会校验图标名是否真实存在，写错直接报错退出。
