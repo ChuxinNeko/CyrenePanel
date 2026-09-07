@@ -14,6 +14,11 @@ import { loadStore } from "./instances/store";
 import { getConfig, setConfig, dbUserCount, dbInsertUser } from "./db";
 import { nodeRoutes, createStartupPairingCode } from "./nodes/index";
 import { dockerRoutes } from "./docker/index";
+import { dockerContainerRoutes } from "./docker/containers";
+import { dockerImageRoutes } from "./docker/images";
+import { dockerNetworkRoutes } from "./docker/networks";
+import { dockerVolumeRoutes } from "./docker/volumes";
+import { dockerSystemRoutes } from "./docker/system";
 import { terminalRoutes } from "./terminal/index";
 import { settingsRoutes } from "./settings/index";
 import { serviceRoutes } from "./services/index";
@@ -154,6 +159,11 @@ export const app = new Elysia()
   .use(userRoutes)
   .use(nodeRoutes)
   .use(dockerRoutes)
+  .use(dockerContainerRoutes)
+  .use(dockerImageRoutes)
+  .use(dockerNetworkRoutes)
+  .use(dockerVolumeRoutes)
+  .use(dockerSystemRoutes)
   .use(terminalRoutes)
   .use(settingsRoutes)
   .use(serviceRoutes)

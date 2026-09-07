@@ -3,37 +3,9 @@ import { logger } from "../logger/index";
 import { storeApps } from "./store";
 import { getConfig, setConfig } from "../db";
 import { resolveRequestProfile } from "../node-auth/request-profile";
+import { getMirrorImage, rewriteComposeImages } from "./mirror";
 
-// ── Docker 镜像仓库镜像辅助 ───────────────────────────────────────
-
-function getMirrorImage(image: string, overrideEnabled?: boolean): string {
-  const mirrorUrl = getConfig("docker_mirror_url");
-  const globalEnabled = getConfig("docker_mirror_enabled") === "true";
-  const mirrorEnabled = overrideEnabled !== undefined ? overrideEnabled : globalEnabled;
-  if (!mirrorEnabled || !mirrorUrl) return image;
-  const host = mirrorUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  const cleanImage = image.replace(/^docker\.io\//, "");
-  return `${host}/${cleanImage}`;
-}
-
-// ── Compose 镜像替换辅助 ──────────────────────────────────────────
-// 简单的正则替换，将 YAML 中的 image: xxx 替换为镜像仓库版本
-function rewriteComposeImages(content: string): string {
-  const mirrorUrl = getConfig("docker_mirror_url");
-  const globalEnabled = getConfig("docker_mirror_enabled") === "true";
-  if (!globalEnabled || !mirrorUrl) return content;
-
-  const host = mirrorUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-
-  // 匹配 YAML 中 image: xxx 行（支持各种缩进和引用格式）
-  return content.replace(
-    /^(\s*image:\s*["']?)([^"'\s#]+)/gm,
-    (match, prefix, image) => {
-      const cleanImage = image.replace(/^docker\.io\//, "");
-      return `${prefix}${host}/${cleanImage}`;
-    },
-  );
-}
+// 镜像加速地址处理已抽到 docker/mirror.ts，供 images / compose / store 共用
 
 // ── Docker CLI 辅助 ────────────────────────────────────────────────
 
@@ -188,19 +160,6 @@ async function inspectContainer(id: string): Promise<any> {
   };
 }
 
-// ── 镜像列表 ────────────────────────────────────────────────────────
-
-async function listImages(): Promise<any[]> {
-  const raw = await dockerJson([
-    "images",
-    '--format={"ID":"{{.ID}}","Repository":"{{.Repository}}","Tag":"{{.Tag}}","Size":"{{.Size}}","CreatedAt":"{{.CreatedAt}}"}',
-  ]);
-  const lines = raw.trim().split("\n").filter((l: string) => l.trim());
-  return lines.map((line: string) => {
-    try { return JSON.parse(line); } catch { return null; }
-  }).filter(Boolean);
-}
-
 // ── 系统信息 ────────────────────────────────────────────────────────
 
 async function getDockerInfo(): Promise<any> {
@@ -340,29 +299,8 @@ export const dockerRoutes = new Elysia()
     }
   })
 
-  // ── 镜像列表 ──────────────────────────────────────────────────────
-  .get("/api/docker/images", async ({ profile }: any) => {
-    if (!profile) return { success: false, message: "未授权" };
-    try {
-      const images = await listImages();
-      return { success: true, images };
-    } catch (e: any) {
-      return { success: false, message: e.message };
-    }
-  })
-
-  // ── 删除镜像 ──────────────────────────────────────────────────────
-  .delete("/api/docker/images/:id", async ({ params, query, profile }: any) => {
-    if (!profile) return { success: false, message: "未授权" };
-    try {
-      const force = query?.force === "true";
-      const args = force ? ["rmi", "-f", params.id] : ["rmi", params.id];
-      await docker(args);
-      return { success: true, message: "镜像已删除" };
-    } catch (e: any) {
-      return { success: false, message: e.message };
-    }
-  })
+  // 镜像相关路由已迁移到 docker/images.ts（原实现对多行 JSON 误用了
+  // JSON.parse，镜像数 ≠ 1 时必然抛错）
 
   // ── 应用商店 ──────────────────────────────────────────────────────
   .get("/api/docker/store", async ({ query, profile }: any) => {
