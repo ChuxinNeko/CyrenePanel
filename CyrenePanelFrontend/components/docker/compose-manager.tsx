@@ -387,7 +387,7 @@ export function ComposeManager({ prefix }: { prefix: string }) {
   };
 
   return (
-    <div className="flex min-h-[36rem] flex-col gap-4 lg:h-[calc(100vh-19rem)] lg:flex-row">
+    <div className="flex h-full min-h-[34rem] flex-col gap-4 lg:flex-row">
       {/* ── 左侧项目列表 ─────────────────────────────────────── */}
       <Card className="flex w-full shrink-0 flex-col overflow-hidden p-0 lg:w-72">
         <div className="space-y-2 border-b p-3">

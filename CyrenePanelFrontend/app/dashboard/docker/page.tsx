@@ -210,6 +210,13 @@ function formatTime(ts: string) {
   }
 }
 
+/**
+ * Docker 管理和文件管理一样属于工作区型页面（多栏表格、编排的主从视图），
+ * 需要铺满可用宽高，因此不用 max-w-* 居中。
+ * 内边距由外层 <main className="p-6"> 提供；高度 7rem = 顶栏 4rem + main 上下 3rem。
+ */
+const PAGE_SHELL_CLASS = "flex h-[calc(100vh-7rem)] w-full min-w-0 flex-col gap-4";
+
 // ── 图标组件 ───────────────────────────────────────────────────────
 
 function AppIcon({ icon, className = "" }: { icon: string; className?: string }) {
@@ -714,7 +721,7 @@ export default function DockerPage() {
 
   if (loading) {
     return (
-      <div className="space-y-6 max-w-6xl mx-auto w-full">
+      <div className={PAGE_SHELL_CLASS}>
         <div className="h-9 w-32 bg-muted rounded animate-pulse" />
         <div className="grid grid-cols-4 gap-3">
           {[...Array(4)].map((_, i) => (
@@ -738,9 +745,9 @@ export default function DockerPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-6xl mx-auto w-full">
+    <div className={PAGE_SHELL_CLASS}>
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex shrink-0 items-center justify-between">
         <h1 className="text-3xl font-bold tracking-tight">Docker 管理</h1>
         <Button
           variant="outline"
@@ -756,7 +763,7 @@ export default function DockerPage() {
       </div>
 
       {/* 节点选择器 */}
-      <div className="flex items-center gap-3">
+      <div className="flex shrink-0 items-center gap-3">
         <span className="text-sm text-muted-foreground shrink-0">目标节点:</span>
         <Select value={selectedNodeId} onValueChange={setSelectedNodeId}>
           <SelectTrigger className="w-64">
@@ -784,8 +791,8 @@ export default function DockerPage() {
         </Select>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="flex-wrap">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
+        <TabsList className="shrink-0 flex-wrap">
           <TabsTrigger value="containers" className="flex items-center gap-1.5">
             <Container className="h-3.5 w-3.5" />
             容器管理
@@ -820,12 +827,15 @@ export default function DockerPage() {
           </TabsTrigger>
         </TabsList>
 
+        {/* Tab 内容区自身滚动，页面整体不出现滚动条 */}
+        <div className="min-h-0 flex-1 overflow-auto pt-4">
+
         {/* 这几个 Tab 各自独立取数，挂载时才请求，避免切到 Docker 页就把所有接口打一遍 */}
         <TabsContent value="images">
           <ImageManager prefix={dockerApiPrefix} />
         </TabsContent>
 
-        <TabsContent value="compose">
+        <TabsContent value="compose" className="mt-0 h-full">
           <ComposeManager prefix={dockerApiPrefix} />
         </TabsContent>
 
@@ -1460,6 +1470,7 @@ export default function DockerPage() {
             </Card>
           )}
         </TabsContent>
+        </div>
       </Tabs>
 
       {/* 删除确认对话框 */}
