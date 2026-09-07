@@ -18,6 +18,33 @@ import { dbGetMysqlConn, type MysqlConnRow } from "../../db";
 import { logger } from "../../logger/index";
 import { resolveRequestProfile } from "../../node-auth/request-profile";
 import { DATA_DIR } from "../../runtime-paths";
+import { getPoolForConn } from "./pool";
+import { dumpDatabaseToSql, restoreSqlToDatabase } from "./sql-dump";
+
+/**
+ * 宿主机是否有对应的 MySQL 客户端工具。
+ * MySQL 常常跑在容器或远程主机上，此时宿主机没有 mysqldump/mysql，
+ * 需要回退到通过连接池生成 dump 的方式。
+ */
+const commandCache = new Map<string, boolean>();
+
+async function hasCommand(name: string): Promise<boolean> {
+  const cached = commandCache.get(name);
+  if (cached !== undefined) return cached;
+
+  let ok = false;
+  try {
+    const proc = Bun.spawn(["sh", "-c", `command -v ${name}`], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    ok = (await proc.exited) === 0;
+  } catch {
+    ok = false;
+  }
+  commandCache.set(name, ok);
+  return ok;
+}
 
 const BACKUP_ROOT = join(DATA_DIR, "backups", "mysql");
 
@@ -119,47 +146,65 @@ export const mysqlBackupRoutes = new Elysia()
 
       const fileName = `${database}_${timestamp()}.sql.gz`;
       const target = join(dir, fileName);
+      const useCli = await hasCommand("mysqldump");
 
-      const { file: defaults, dir: tmp } = await createDefaultsFile(conn);
-      tempDir = tmp;
+      if (useCli) {
+        const { file: defaults, dir: tmp } = await createDefaultsFile(conn);
+        tempDir = tmp;
 
-      const proc = Bun.spawn(
-        [
-          "mysqldump",
-          `--defaults-extra-file=${defaults}`,
-          "--single-transaction",
-          "--routines",
-          "--triggers",
-          "--events",
-          "--set-gtid-purged=OFF",
-          "--databases",
-          database,
-        ],
-        { stdout: "pipe", stderr: "pipe" },
-      );
+        const proc = Bun.spawn(
+          [
+            "mysqldump",
+            `--defaults-extra-file=${defaults}`,
+            "--single-transaction",
+            "--routines",
+            "--triggers",
+            "--events",
+            "--set-gtid-purged=OFF",
+            "--databases",
+            database,
+          ],
+          { stdout: "pipe", stderr: "pipe" },
+        );
 
-      // 边导边压，避免整个 dump 进内存。
-      // CompressionStream 的 TS 定义与 Bun 的流类型对不上，运行时是兼容的
-      const gzipped = (proc.stdout as ReadableStream<Uint8Array>).pipeThrough(
-        new CompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>,
-      );
-      await Bun.write(target, new Response(gzipped as any));
+        // 边导边压，避免整个 dump 进内存。
+        // CompressionStream 的 TS 定义与 Bun 的流类型对不上，运行时是兼容的
+        const gzipped = (proc.stdout as ReadableStream<Uint8Array>).pipeThrough(
+          new CompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>,
+        );
+        await Bun.write(target, new Response(gzipped as any));
 
-      const code = await proc.exited;
-      if (code !== 0) {
-        const stderr = await new Response(proc.stderr).text();
-        await rm(target, { force: true });
-        return {
-          success: false,
-          message: stderr.trim() || `mysqldump 退出码 ${code}`,
-        };
+        const code = await proc.exited;
+        if (code !== 0) {
+          const stderr = await new Response(proc.stderr).text();
+          await rm(target, { force: true });
+          return { success: false, message: stderr.trim() || `mysqldump 退出码 ${code}` };
+        }
+      } else {
+        // 宿主机没有 mysqldump（MySQL 在容器或远程），走连接池生成
+        const pool = getPoolForConn(conn);
+        const chunks: string[] = [];
+        await dumpDatabaseToSql(pool, database, (chunk) => {
+          chunks.push(chunk);
+        });
+
+        const encoded = new TextEncoder().encode(chunks.join(""));
+        const gzipped = new Response(
+          new Blob([encoded as unknown as BlobPart]).stream().pipeThrough(
+            new CompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>,
+          ) as any,
+        );
+        await Bun.write(target, gzipped);
       }
 
       const info = await stat(target);
-      logger.info(`[mysql] 备份 ${database} -> ${fileName}（${info.size} 字节）`);
+      logger.info(
+        `[mysql] 备份 ${database} -> ${fileName}（${info.size} 字节，方式：${useCli ? "mysqldump" : "连接池"}）`,
+      );
       return {
         success: true,
         message: `备份完成：${fileName}`,
+        method: useCli ? "mysqldump" : "sql",
         backup: {
           file: fileName,
           database,
@@ -190,28 +235,42 @@ export const mysqlBackupRoutes = new Elysia()
       const path = backupPath(connectionId, file);
       if (!existsSync(path)) return { success: false, message: "备份文件不存在" };
 
-      const { file: defaults, dir: tmp } = await createDefaultsFile(conn);
-      tempDir = tmp;
-
       // dump 里带 CREATE DATABASE / USE，因此不需要再指定库名
       const decompressed = Bun.file(path)
         .stream()
-        .pipeThrough(new DecompressionStream("gzip"));
+        .pipeThrough(new DecompressionStream("gzip") as any);
 
-      const proc = Bun.spawn(["mysql", `--defaults-extra-file=${defaults}`], {
-        stdin: decompressed as any,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      if (await hasCommand("mysql")) {
+        const { file: defaults, dir: tmp } = await createDefaultsFile(conn);
+        tempDir = tmp;
 
-      const code = await proc.exited;
-      if (code !== 0) {
-        const stderr = await new Response(proc.stderr).text();
-        return { success: false, message: stderr.trim() || `mysql 退出码 ${code}` };
+        const proc = Bun.spawn(["mysql", `--defaults-extra-file=${defaults}`], {
+          stdin: decompressed as any,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+
+        const code = await proc.exited;
+        if (code !== 0) {
+          const stderr = await new Response(proc.stderr).text();
+          return { success: false, message: stderr.trim() || `mysql 退出码 ${code}` };
+        }
+
+        logger.warn(`[mysql] 从备份 ${file} 恢复数据（mysql 客户端）`);
+        return { success: true, message: `已从 ${file} 恢复`, method: "mysql" };
       }
 
-      logger.warn(`[mysql] 从备份 ${file} 恢复数据`);
-      return { success: true, message: `已从 ${file} 恢复` };
+      // 没有 mysql 客户端时，解压后按语句切分再通过连接池执行
+      const sqlText = await new Response(decompressed as any).text();
+      const pool = getPoolForConn(conn);
+      const { statements } = await restoreSqlToDatabase(pool, sqlText);
+
+      logger.warn(`[mysql] 从备份 ${file} 恢复数据（连接池，${statements} 条语句）`);
+      return {
+        success: true,
+        message: `已从 ${file} 恢复，执行 ${statements} 条语句`,
+        method: "sql",
+      };
     } catch (e: any) {
       return { success: false, message: e?.message || "恢复失败" };
     } finally {

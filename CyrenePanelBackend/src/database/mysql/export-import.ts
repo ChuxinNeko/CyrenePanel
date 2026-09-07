@@ -2,6 +2,7 @@ import { Elysia } from "elysia";
 import { spawn } from "child_process";
 import { dbGetMysqlConn } from "../../db";
 import { getPoolForConn } from "./pool";
+import { dumpDatabaseToSql } from "./sql-dump";
 import { resolveRequestProfile } from "../../node-auth/request-profile";
 
 export const mysqlExportImportRoutes = new Elysia()
@@ -32,36 +33,58 @@ export const mysqlExportImportRoutes = new Elysia()
       });
     }
 
-    const args = [
-      `-h${conn.host}`,
-      `-P${conn.port}`,
-      `-u${conn.username}`,
-      `--databases`, params.db,
-      `--single-transaction`,
-      `--routines`,
-      `--triggers`,
-      `--events`,
-    ];
-    if (conn.password) args.push(`-p${conn.password}`);
+    // 宿主机不一定装了 mysqldump（MySQL 常跑在容器或远程主机上），
+    // 没有就回退到通过连接池生成 dump
+    const hasDump = await new Promise<boolean>((resolveHas) => {
+      const probe = spawn("sh", ["-c", "command -v mysqldump"], { stdio: "ignore" });
+      probe.on("close", (code) => resolveHas(code === 0));
+      probe.on("error", () => resolveHas(false));
+    });
 
-    // 尝试用 mysqldump
+    const encoder = new TextEncoder();
     const stream = new ReadableStream({
-      start(controller) {
-        const proc = spawn("mysqldump", args, { stdio: ["pipe", "pipe", "pipe"] });
-        proc.stdout.on("data", (chunk: Buffer) => {
-          controller.enqueue(chunk);
-        });
-        proc.stderr.on("data", () => {});
-        proc.on("close", (code) => {
-          if (code !== 0) {
-            controller.enqueue(Buffer.from(`\n-- mysqldump exited with code ${code}\n`));
-          }
+      async start(controller) {
+        if (hasDump) {
+          // 密码通过 MYSQL_PWD 传递，避免出现在进程列表里
+          const args = [
+            `-h${conn.host}`,
+            `-P${conn.port}`,
+            `-u${conn.username}`,
+            `--databases`, params.db,
+            `--single-transaction`,
+            `--routines`,
+            `--triggers`,
+            `--events`,
+          ];
+          const proc = spawn("mysqldump", args, {
+            stdio: ["pipe", "pipe", "pipe"],
+            env: { ...process.env, ...(conn.password ? { MYSQL_PWD: String(conn.password) } : {}) },
+          });
+          proc.stdout.on("data", (chunk: Buffer) => controller.enqueue(chunk));
+          proc.stderr.on("data", () => {});
+          proc.on("close", (code) => {
+            if (code !== 0) {
+              controller.enqueue(Buffer.from(`\n-- mysqldump exited with code ${code}\n`));
+            }
+            controller.close();
+          });
+          proc.on("error", (err) => {
+            controller.enqueue(Buffer.from(`-- Error: ${err.message}\n`));
+            controller.close();
+          });
+          return;
+        }
+
+        try {
+          const pool = getPoolForConn(conn);
+          await dumpDatabaseToSql(pool, params.db, (chunk) => {
+            controller.enqueue(encoder.encode(chunk));
+          });
+        } catch (err: any) {
+          controller.enqueue(encoder.encode(`\n-- 导出失败: ${err?.message || err}\n`));
+        } finally {
           controller.close();
-        });
-        proc.on("error", (err) => {
-          controller.enqueue(Buffer.from(`-- Error: ${err.message}\n`));
-          controller.close();
-        });
+        }
       },
     });
 
