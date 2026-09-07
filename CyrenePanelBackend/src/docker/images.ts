@@ -33,16 +33,20 @@ async function listImages(): Promise<DockerImage[]> {
     "--format={{json .}}",
   ]);
 
-  // 统计镜像使用情况，用于判断能否安全删除
+  // docker images 原生带 Containers 字段（被多少容器引用）。
+  // 部分环境会返回 "N/A"，此时退化为从容器列表反推。
+  const nativeUsageUnavailable = rows.some((row) => row.Containers === "N/A");
   const usage = new Map<string, number>();
-  try {
-    const containers = await dockerJsonLines<any>(["ps", "--all", "--format={{json .}}"]);
-    for (const c of containers) {
-      const image = String(c.Image || "");
-      usage.set(image, (usage.get(image) || 0) + 1);
+  if (nativeUsageUnavailable) {
+    try {
+      const containers = await dockerJsonLines<any>(["ps", "--all", "--format={{json .}}"]);
+      for (const c of containers) {
+        const image = String(c.Image || "");
+        usage.set(image, (usage.get(image) || 0) + 1);
+      }
+    } catch {
+      // 拿不到容器列表不影响镜像列表本身
     }
-  } catch {
-    // 拿不到容器列表不影响镜像列表本身
   }
 
   return rows.map((row) => {
@@ -50,6 +54,12 @@ async function listImages(): Promise<DockerImage[]> {
     const tag = row.Tag || "<none>";
     const reference = `${repository}:${tag}`;
     const dangling = repository === "<none>" || tag === "<none>";
+
+    const nativeCount = parseInt(row.Containers);
+    const usedBy = Number.isFinite(nativeCount) && nativeCount >= 0
+      ? nativeCount
+      : usage.get(reference) || usage.get(repository) || 0;
+
     return {
       id: row.ID,
       repository,
@@ -59,7 +69,7 @@ async function listImages(): Promise<DockerImage[]> {
       sizeText: row.Size || "",
       created: row.CreatedAt || "",
       dangling,
-      usedBy: usage.get(reference) || usage.get(repository) || 0,
+      usedBy,
     };
   });
 }

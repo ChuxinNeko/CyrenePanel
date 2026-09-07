@@ -46,12 +46,21 @@ import {
   Settings2,
   Trash2,
   Plus,
+  Layers,
+  Network,
+  Database,
+  Activity,
 } from "lucide-react";
 import { DeployAppDialog, type StoreApp } from "@/components/deploy-app-dialog";
 import { AppDetailDialog, type AppDetail } from "@/components/app-detail-dialog";
 import { AddContainerDialog } from "@/components/add-container-dialog";
 import { useTasks } from "@/lib/task-store";
 import { API_BASE } from "@/lib/api-base";
+import { dockerPrefix } from "@/lib/docker-api";
+import { ImageManager } from "@/components/docker/image-manager";
+import { NetworkManager } from "@/components/docker/network-manager";
+import { VolumeManager } from "@/components/docker/volume-manager";
+import { DockerSystemPanel } from "@/components/docker/system-panel";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────
 
@@ -260,6 +269,8 @@ export default function DockerPage() {
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const isRemoteNode = selectedNodeId !== "__main__";
+  /** 各管理子组件统一用这个前缀，远程节点由主节点透传 */
+  const dockerApiPrefix = dockerPrefix(selectedNodeId);
   const activeDeployTask = useMemo(
     () => tasks.find((task) => task.id === deployingTaskId) || null,
     [tasks, deployingTaskId],
@@ -694,20 +705,53 @@ export default function DockerPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
+        <TabsList className="flex-wrap">
           <TabsTrigger value="containers" className="flex items-center gap-1.5">
             <Container className="h-3.5 w-3.5" />
             容器管理
           </TabsTrigger>
+          <TabsTrigger value="images" className="flex items-center gap-1.5">
+            <Layers className="h-3.5 w-3.5" />
+            本地镜像
+          </TabsTrigger>
+          <TabsTrigger value="networks" className="flex items-center gap-1.5">
+            <Network className="h-3.5 w-3.5" />
+            网络管理
+          </TabsTrigger>
+          <TabsTrigger value="volumes" className="flex items-center gap-1.5">
+            <Database className="h-3.5 w-3.5" />
+            存储卷
+          </TabsTrigger>
           <TabsTrigger value="store" className="flex items-center gap-1.5">
             <Store className="h-3.5 w-3.5" />
             应用商店
+          </TabsTrigger>
+          <TabsTrigger value="system" className="flex items-center gap-1.5">
+            <Activity className="h-3.5 w-3.5" />
+            系统信息
           </TabsTrigger>
           <TabsTrigger value="settings" className="flex items-center gap-1.5">
             <Settings2 className="h-3.5 w-3.5" />
             设置
           </TabsTrigger>
         </TabsList>
+
+        {/* 这几个 Tab 各自独立取数，挂载时才请求，避免切到 Docker 页就把所有接口打一遍 */}
+        <TabsContent value="images">
+          <ImageManager prefix={dockerApiPrefix} />
+        </TabsContent>
+
+        <TabsContent value="networks">
+          <NetworkManager prefix={dockerApiPrefix} />
+        </TabsContent>
+
+        <TabsContent value="volumes">
+          <VolumeManager prefix={dockerApiPrefix} />
+        </TabsContent>
+
+        <TabsContent value="system">
+          <DockerSystemPanel prefix={dockerApiPrefix} isRemote={isRemoteNode} />
+        </TabsContent>
 
         <TabsContent value="containers">
           {/* Docker 不可用 */}
