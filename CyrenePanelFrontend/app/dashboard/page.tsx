@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { API_BASE } from "@/lib/api-base";
+import { fetchMe } from "@/lib/me";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -415,13 +416,21 @@ export default function DashboardPage() {
   useEffect(() => {
     const init = async () => {
       try {
-        const { data, error } = await api.api.me.get();
-        if (error || !data?.success) {
+        // 鉴权与数据并行发出：/api/me 的结果只用于决定是否跳登录页，
+        // 其余接口各自独立鉴权，没必要等它先返回再发起（那样要多花一个 RTT）
+        const [me] = await Promise.all([
+          fetchMe(),
+          fetchSystem(),
+          fetchInstances(),
+          fetchNodesOverview(),
+          fetchAuditLogs(),
+        ]);
+
+        if (!me) {
           router.push("/login");
           return;
         }
-        setProfile(data.profile as { username: string });
-        await Promise.all([fetchSystem(), fetchInstances(), fetchNodesOverview(), fetchAuditLogs()]);
+        setProfile(me);
       } catch {
         router.push("/login");
       } finally {

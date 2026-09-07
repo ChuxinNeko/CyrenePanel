@@ -43,7 +43,7 @@ import {
   Store,
 } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
-import { api } from "@/lib/api";
+import { clearMeCache, fetchMe } from "@/lib/me";
 import { usePanelName } from "@/lib/panel-name-context";
 
 const navGroups = [
@@ -141,17 +141,10 @@ export function AppSidebar() {
   const { panelName } = usePanelName();
 
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const { data, error } = await api.api.me.get();
-        if (!error && data?.success && data.profile) {
-          setUsername((data.profile as { username: string }).username);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    fetchProfile();
+    // 与页面内的 /api/me 共用同一次请求，避免侧边栏和页面各拉一遍
+    fetchMe().then((profile) => {
+      if (profile) setUsername(profile.username);
+    });
   }, []);
 
   const isActive = (url: string) => {
@@ -161,6 +154,7 @@ export function AppSidebar() {
 
   const handleLogout = () => {
     localStorage.removeItem("token");
+    clearMeCache();
     router.push("/login");
   };
 
