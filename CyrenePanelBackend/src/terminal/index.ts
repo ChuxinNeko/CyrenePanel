@@ -2,6 +2,8 @@ import { Elysia } from "elysia";
 import { spawn } from "bun-pty";
 import type { IPty } from "bun-pty";
 import { logger } from "../logger/index";
+import { nodeCan } from "../node-auth/verifier";
+import { resolveNodePrincipal } from "../node-auth/principal";
 
 /**
  * 系统终端 WebSocket 路由
@@ -18,17 +20,12 @@ export const terminalRoutes = new Elysia()
 
   .ws("/api/terminal", {
     async beforeHandle({ jwt, request }: any) {
+      const principal = await resolveNodePrincipal(request);
+      if (principal && nodeCan(principal, "system:update")) return;
+
       const url = new URL(request.url);
-      const token =
-        url.searchParams.get("token") ||
-        request.headers.get("authorization")?.replace("Bearer ", "");
-
-      if (!token) {
-        return new Response("Unauthorized", { status: 401 });
-      }
-
-      const profile = await jwt.verify(token);
-      if (!profile) {
+      const token = url.searchParams.get("token") || request.headers.get("authorization")?.replace("Bearer ", "");
+      if (!token || !await jwt.verify(token)) {
         return new Response("Unauthorized", { status: 401 });
       }
     },

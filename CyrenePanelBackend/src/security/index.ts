@@ -4,6 +4,7 @@ import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { dirname } from "path";
 import { logger } from "../logger/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 import { auditLog, getRequestIp } from "../audit/index";
 
 // ── 工具 ──────────────────────────────────────────────────────────
@@ -548,13 +549,7 @@ function updateSshConfig(patch: SshConfigPatch): { ok: boolean; message?: string
 // ── 路由 ──────────────────────────────────────────────────────────
 
 export const securityRoutes = new Elysia()
-  .derive(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
-  })
+  .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
   // 总览
   .get("/api/security/info", ({ profile }: any) => {

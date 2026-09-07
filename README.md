@@ -31,6 +31,7 @@ curl -fsSL https://dockerhub.nekofun.top/panel/install.sh | sudo bash
 |------|--------|------|
 | `CYRENE_VERSION` | 最新 release | 指定安装版本，如 `1.2.3` |
 | `CYRENE_HOME` | `/opt/CyrenePanel` | 安装路径 |
+| `CYRENE_DATA_DIR` | `/var/lib/cyrene` | 持久化运行数据目录，升级和重启不会重置 API Key |
 | `BACKEND_PORT` | `5677` | 后端服务端口 |
 | `FRONTEND_PORT` | `30198` | 前端服务端口 |
 | `CYRENE_DOWNLOAD_SOURCE` | `github` | 下载源，`mirror` 使用 gh-proxy |
@@ -105,16 +106,18 @@ journalctl -u cyrene-backend -u cyrene-frontend -f
 
 ## 目录结构
 
-```
+```text
 /opt/CyrenePanel/
 ├── backend/
 │   ├── server           # 后端可执行文件（预编译）
-│   ├── data/            # SQLite 数据库存放位置
-│   │   └── cyrene.db
+│   ├── data -> /var/lib/cyrene  # 兼容旧路径的软链接
 │   └── logs/            # 日志目录
 └── frontend/
     ├── .env.production   # 前端环境变量
     └── node_modules/    # 生产依赖
+
+/var/lib/cyrene/
+└── cyrene.db            # SQLite 数据库、API Key 与节点配置
 ```
 
 ---

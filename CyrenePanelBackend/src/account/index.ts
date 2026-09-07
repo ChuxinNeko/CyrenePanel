@@ -1,7 +1,6 @@
 import { Elysia, t } from "elysia";
 import { compare } from "bcryptjs";
-import { createHmac, randomBytes, timingSafeEqual } from "crypto";
-import { dbGetUser, getConfig } from "../db";
+import { dbGetUser } from "../db";
 import { logger } from "../logger/index";
 import { CYRENE_VERSION } from "../version";
 import { auditLog, getRequestIp } from "../audit/index";
@@ -104,25 +103,6 @@ function recordAccountFailure(username: string): void {
 function resetAccountFailure(username: string): void {
   accountRateLimit.delete(username);
 }
-
-// ── HMAC 挑战-响应：防止 API Key 明文传输 ─────────────────────────
-// 流程：
-// 1. 客户端 GET /api/auth/challenge 获取 { challenge } (随机 nonce)
-// 2. 客户端计算 signature = HMAC-SHA256(challenge, apiKey)
-// 3. 客户端 POST /api/auth/key 发送 { challenge, signature }
-// 4. 服务端验证 signature，签发 JWT
-// 同时保留旧的 { key } 方式做向后兼容（但记录警告）
-
-const CHALLENGE_TTL_MS = 60_000; // 挑战有效期 60 秒
-const pendingChallenges = new Map<string, number>(); // challenge -> 创建时间戳
-
-// 定期清理过期挑战
-setInterval(() => {
-  const now = Date.now();
-  for (const [c, ts] of pendingChallenges) {
-    if (now - ts > CHALLENGE_TTL_MS) pendingChallenges.delete(c);
-  }
-}, 30_000);
 
 export const accountRoutes = new Elysia()
   .post(
@@ -234,68 +214,4 @@ export const accountRoutes = new Elysia()
 
     logger.debug(`GET /api/me | 鉴权成功: ${profile.username}`);
     return { success: true, profile, version: CYRENE_VERSION };
-  })
-  // ── 挑战-响应：获取挑战 nonce ───────────────────────────────────
-  .get("/api/auth/challenge", () => {
-    const challenge = randomBytes(32).toString("hex");
-    pendingChallenges.set(challenge, Date.now());
-    return { success: true, challenge };
-  })
-  // ── 通过 HMAC 挑战-响应或明文 API Key 换取 JWT token ───────────
-  .post(
-    "/api/auth/key",
-    async ({ body, jwt }: any) => {
-      const apiKey = getConfig("api_key");
-      if (!apiKey) {
-        logger.warn("POST /api/auth/key | 系统未配置 API Key");
-        return { success: false, message: "API Key 未配置" };
-      }
-
-      // 优先：HMAC 挑战-响应模式（安全）
-      if (body.challenge && body.signature) {
-        const ts = pendingChallenges.get(body.challenge);
-        if (!ts) {
-          logger.warn("POST /api/auth/key | 挑战不存在或已过期");
-          return { success: false, message: "挑战无效或已过期" };
-        }
-        if (Date.now() - ts > CHALLENGE_TTL_MS) {
-          pendingChallenges.delete(body.challenge);
-          logger.warn("POST /api/auth/key | 挑战已过期");
-          return { success: false, message: "挑战已过期" };
-        }
-        // 验证 HMAC 签名
-        const expected = createHmac("sha256", apiKey).update(body.challenge).digest("hex");
-        const sigBuf = Buffer.from(body.signature, "hex");
-        const expBuf = Buffer.from(expected, "hex");
-        if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
-          pendingChallenges.delete(body.challenge);
-          logger.warn("POST /api/auth/key | HMAC 签名验证失败");
-          return { success: false, message: "API Key 无效" };
-        }
-        pendingChallenges.delete(body.challenge);
-        const token = await jwt.sign({ username: "__api_node__", role: "admin", exp: Math.floor(Date.now() / 1000) + 86400 });
-        logger.debug("POST /api/auth/key | HMAC 验证通过，已颁发节点 Token");
-        return { success: true, token };
-      }
-
-      // 兼容：明文 key 模式（不安全，记录警告）
-      if (body.key) {
-        if (apiKey !== body.key) {
-          logger.warn("POST /api/auth/key | API Key 验证失败（明文模式）");
-          return { success: false, message: "API Key 无效" };
-        }
-        logger.warn("POST /api/auth/key | 使用明文 API Key 认证（不安全），请升级节点以使用 HMAC 挑战-响应模式");
-        const token = await jwt.sign({ username: "__api_node__", role: "admin", exp: Math.floor(Date.now() / 1000) + 86400 });
-        return { success: true, token };
-      }
-
-      return { success: false, message: "缺少认证参数" };
-    },
-    {
-      body: t.Object({
-        key: t.Optional(t.String()),
-        challenge: t.Optional(t.String()),
-        signature: t.Optional(t.String()),
-      }),
-    }
-  );
+  });

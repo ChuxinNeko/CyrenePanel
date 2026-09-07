@@ -3,16 +3,10 @@ import { hashSync, compare } from "bcryptjs";
 import { dbGetAllUsers, dbGetUser, dbInsertUser, dbUpdateUserPassword, dbDeleteUser, dbGetUserById } from "../db";
 import { logger } from "../logger/index";
 import { auditLog, getRequestIp } from "../audit/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 export const userRoutes = new Elysia()
-  // ── JWT 鉴权辅助 ──────────────────────────────────────────────────
-  .derive(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
-  })
+  .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
   // ── 列出所有用户（仅 admin）──────────────────────────────────────
   .get("/api/users", async ({ profile }: any) => {

@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { logger } from "../logger/index";
 import { auditLog, getRequestIp } from "../audit/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 import {
   chmodSync,
   copyFileSync,
@@ -44,7 +45,7 @@ function isTransferTempPath(realPath: string): boolean {
   return transferTempPaths.has(realPath);
 }
 
-function resolveAccessiblePath(requestedPath: string): string | null {
+export function resolveAccessiblePath(requestedPath: string): string | null {
   // 1. transfer 临时目录优先：直接绝对路径匹配
   const direct = resolve(requestedPath);
   if (isTransferTempPath(direct)) return direct;
@@ -55,6 +56,74 @@ function resolveAccessiblePath(requestedPath: string): string | null {
 // Windows 使用虚拟根目录（空字符串），支持多盘符切换
 const IS_WINDOWS = process.platform === "win32";
 const FILE_ROOT = process.env.FILE_ROOT || (IS_WINDOWS ? "" : "/");
+
+// 全量读取上限：无 Range 时防止一次性把超大文件塞进内存/响应
+export const MAX_RAW_FULL_BYTES = 100 * 1024 * 1024;
+// Range 流式上限：视频拖进度条走分片，允许更大文件
+export const MAX_RAW_RANGE_BYTES = 2 * 1024 * 1024 * 1024;
+// 分享/下载 base64 上限（与 download 接口一致）
+export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+
+/** 解析 HTTP Range，仅支持单段 bytes=start-end / bytes=-suffix / bytes=start- */
+export function parseByteRange(
+  rangeHeader: string | null,
+  size: number,
+): { start: number; end: number } | "invalid" | null {
+  if (!rangeHeader) return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) return "invalid";
+
+  const [, startRaw, endRaw] = match;
+  if (!startRaw && !endRaw) return "invalid";
+
+  let start: number;
+  let end: number;
+
+  if (!startRaw) {
+    // bytes=-N：最后 N 字节
+    const suffix = Number(endRaw);
+    if (!Number.isFinite(suffix) || suffix <= 0) return "invalid";
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(startRaw);
+    end = endRaw ? Number(endRaw) : size - 1;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return "invalid";
+    if (end >= size) end = size - 1;
+  }
+
+  if (start < 0 || end < start || start >= size) return "invalid";
+  return { start, end };
+}
+
+/** HTTP header 只能放 Latin-1；中文文件名走 RFC 5987 filename* */
+function asciiFallbackFileName(fileName: string): string {
+  const cleaned = String(fileName || "download")
+    .replace(/["\\\r\n]/g, "_")
+    .replace(/[^\x20-\x7E]/g, "_")
+    .replace(/[_\s]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned || "download";
+}
+
+export function contentDispositionInline(fileName: string): string {
+  const fallback = asciiFallbackFileName(fileName);
+  const encoded = encodeURIComponent(fileName || fallback).replace(/['()]/g, escape);
+  return `inline; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+export function contentDispositionAttachment(fileName: string): string {
+  const fallback = asciiFallbackFileName(fileName);
+  const encoded = encodeURIComponent(fileName || fallback).replace(/['()]/g, escape);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+function jsonError(status: number, message: string) {
+  return new Response(JSON.stringify({ success: false, message }), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
 
 // Windows 盘符虚拟根目录：列出所有可用盘符
 function listDrives(): FileEntry[] {
@@ -85,7 +154,7 @@ function listDrives(): FileEntry[] {
 }
 
 /** 安全路径解析：防止路径穿越，支持 Windows 多盘符 */
-function safePath(requestedPath: string): string | null {
+export function safePath(requestedPath: string): string | null {
   if (!FILE_ROOT) {
     // Windows 虚拟根目录模式
     const normalizedPath = requestedPath.replace(/\//g, "\\");
@@ -477,11 +546,12 @@ function createTarArchive(sourcePaths: string[], targetPath: string) {
 
 export const fileRoutes = new Elysia()
   .resolve(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
+    const url = new URL(request.url);
+    const profile = await resolveRequestProfile(jwt, request);
+    if (profile || !url.searchParams.has("token")) return { profile };
+
+    const token = url.searchParams.get("token");
+    return { profile: token ? await jwt.verify(token) : null };
   })
 
   // 列出目录内容
@@ -998,7 +1068,7 @@ export const fileRoutes = new Elysia()
       const stats = statSync(realPath);
       if (stats.isDirectory()) return { success: false, message: "是目录而非文件" };
 
-      if (stats.size > 100 * 1024 * 1024) {
+      if (stats.size > MAX_DOWNLOAD_BYTES) {
         return { success: false, message: "文件过大，暂不支持下载超过 100 MB 的文件" };
       }
 
@@ -1025,5 +1095,98 @@ export const fileRoutes = new Elysia()
     } catch (e: any) {
       logger.err(`下载失败: ${e.message}`);
       return { success: false, message: `下载失败: ${e.message}` };
+    }
+  })
+
+  // 二进制原始内容：供预览（img/video/audio）与后续流式下载
+  // - 支持 Range（视频 seek）
+  // - 支持 Authorization 或 ?token=（媒体标签无法带 Header）
+  .get("/api/files/raw", async ({ query, profile, request, server }: any) => {
+    if (!profile) return jsonError(401, "未授权");
+
+    const requestedPath = query.path as string;
+    if (!requestedPath) return jsonError(400, "缺少 path 参数");
+
+    const realPath = resolveAccessiblePath(requestedPath);
+    if (!realPath) return jsonError(403, "路径不允许");
+    if (!existsSync(realPath)) return jsonError(404, "文件不存在");
+
+    try {
+      const stats = statSync(realPath);
+      if (stats.isDirectory()) return jsonError(400, "是目录而非文件");
+
+      const size = stats.size;
+      const mimeType = lookup(realPath) || "application/octet-stream";
+      const fileName = basename(realPath);
+      const range = parseByteRange(request.headers.get("range"), size);
+
+      if (range === "invalid") {
+        return new Response(null, {
+          status: 416,
+          headers: {
+            "Content-Range": `bytes */${size}`,
+            "Accept-Ranges": "bytes",
+          },
+        });
+      }
+
+      // 无 Range 时限制全量体积，避免把 GB 级文件整包读入
+      if (!range && size > MAX_RAW_FULL_BYTES) {
+        return jsonError(
+          413,
+          `文件过大（${(size / 1024 / 1024).toFixed(1)} MB），预览请使用 Range 或下载`,
+        );
+      }
+      if (size > MAX_RAW_RANGE_BYTES) {
+        return jsonError(413, "文件超过 2 GB，暂不支持在线预览");
+      }
+
+      // 仅全量预览记审计；Range 分片（视频 seek）频率高，避免刷库
+      if (!range) {
+        auditLog({
+          username: profile.username,
+          category: "file",
+          action: "预览文件",
+          target: requestedPath,
+          detail: `${(size / 1024).toFixed(1)} KB`,
+          ip: getRequestIp(request, server),
+        });
+      }
+
+      const commonHeaders: Record<string, string> = {
+        "Content-Type": String(mimeType),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=60",
+        "Content-Disposition": contentDispositionInline(fileName),
+        "X-Content-Type-Options": "nosniff",
+      };
+
+      if (range) {
+        const { start, end } = range;
+        const length = end - start + 1;
+        // Bun.file().slice 走底层流，避免整文件进内存
+        const file = Bun.file(realPath);
+        const sliced = file.slice(start, end + 1);
+        return new Response(sliced, {
+          status: 206,
+          headers: {
+            ...commonHeaders,
+            "Content-Length": String(length),
+            "Content-Range": `bytes ${start}-${end}/${size}`,
+          },
+        });
+      }
+
+      const file = Bun.file(realPath);
+      return new Response(file, {
+        status: 200,
+        headers: {
+          ...commonHeaders,
+          "Content-Length": String(size),
+        },
+      });
+    } catch (e: any) {
+      logger.err(`原始文件读取失败: ${e.message}`);
+      return jsonError(500, `读取失败: ${e.message}`);
     }
   });

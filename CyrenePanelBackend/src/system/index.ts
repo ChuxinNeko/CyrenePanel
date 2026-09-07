@@ -4,9 +4,11 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { spawn, execSync } from "child_process";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
+import { DATA_DIR, LOG_DIR } from "../runtime-paths";
 import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
 import { auditLog, getRequestIp } from "../audit/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 import { logger } from "../logger/index";
 
 const startTime = Date.now();
@@ -21,8 +23,6 @@ interface OfficialPanelRelease {
   downloadUrl?: unknown;
 }
 
-const DATA_DIR = join(process.cwd(), "data");
-const LOG_DIR = join(process.cwd(), "logs");
 const UPDATE_REQUEST_PATH = join(DATA_DIR, "update-request.json");
 const UPDATE_LOG_PATH = join(LOG_DIR, "update.log");
 const UPDATE_STATUS_PATH = join(DATA_DIR, "update-status.json");
@@ -64,12 +64,9 @@ function getGitHubReleaseDownloadUrl(version: string): string | null {
 }
 
 async function requireAdmin(jwt: any, request: Request): Promise<{ ok: true; profile: any } | { ok: false; message: string }> {
-  const authHeader = request.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!token) return { ok: false, message: "未授权" };
-  const profile = await jwt.verify(token);
+  const profile = await resolveRequestProfile(jwt, request);
   if (!profile) return { ok: false, message: "未授权" };
-  if (profile.role !== "admin") return { ok: false, message: "仅管理员可执行此操作" };
+  if (profile.role !== "admin" && profile.role !== "node") return { ok: false, message: "仅管理员可执行此操作" };
   return { ok: true, profile };
 }
 
@@ -571,10 +568,7 @@ export const systemRoutes = new Elysia()
     };
   })
   .get("/api/system", async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const mem = getMemoryInfo();
@@ -715,10 +709,7 @@ export const systemRoutes = new Elysia()
 
   // ── 进程列表（按 CPU/内存排序） ──────────────────────────────────
   .get("/api/system/processes", async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     try {

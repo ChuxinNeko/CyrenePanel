@@ -2,9 +2,10 @@ import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync, mkdirSync } from "fs";
 import { join } from "path";
 import { logger } from "./logger/index";
+import { DATA_DIR } from "./runtime-paths";
 
-const DATA_DIR = join(process.cwd(), "data");
 const DB_PATH = join(DATA_DIR, "cyrene.db");
+const dbExisted = existsSync(DB_PATH);
 
 // ── 确保 data 目录存在 ──────────────────────────────────────────────
 
@@ -16,6 +17,12 @@ if (!existsSync(DATA_DIR)) {
 
 const db = new Database(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL");
+logger.info(
+  `[启动] 数据目录=${DATA_DIR} 数据库=${DB_PATH} ` +
+  (dbExisted
+    ? "(复用已有数据库)"
+    : "(未找到已有数据库，将新建；此前的 JWT 密钥/节点身份/已配对子节点/管理员密码都会失效)"),
+);
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_config (
     key   TEXT PRIMARY KEY,
@@ -47,9 +54,34 @@ db.exec(`
     id        TEXT PRIMARY KEY,
     name      TEXT NOT NULL,
     address   TEXT NOT NULL,
-    apiKey    TEXT NOT NULL,
     isMain    INTEGER NOT NULL DEFAULT 0,
     createdAt INTEGER NOT NULL
+  );
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS node_controllers (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    publicKeyPem TEXT NOT NULL,
+    keyId        TEXT NOT NULL,
+    capabilities TEXT NOT NULL,
+    createdAt    INTEGER NOT NULL,
+    revokedAt    INTEGER
+  );
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS node_pairing_codes (
+    codeHash   TEXT PRIMARY KEY,
+    expiresAt  INTEGER NOT NULL,
+    consumedAt INTEGER
+  );
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS node_request_nonces (
+    controllerId TEXT NOT NULL,
+    nonce        TEXT NOT NULL,
+    expiresAt    INTEGER NOT NULL,
+    PRIMARY KEY (controllerId, nonce)
   );
 `);
 db.exec(`
@@ -71,10 +103,10 @@ db.exec(`
 
 // ── 迁移：添加 nodeId / nodeName 列 ────────────────────────────────
 
-function migrateNodeColumns() {
-  const cols = db.prepare("PRAGMA table_info(instances)").all() as { name: string }[];
-  const hasNodeId = cols.some((c) => c.name === "nodeId");
-  const hasNodeName = cols.some((c) => c.name === "nodeName");
+function migrateColumns() {
+  const instanceColumns = db.prepare("PRAGMA table_info(instances)").all() as { name: string }[];
+  const hasNodeId = instanceColumns.some((c) => c.name === "nodeId");
+  const hasNodeName = instanceColumns.some((c) => c.name === "nodeName");
 
   if (!hasNodeId) {
     db.exec("ALTER TABLE instances ADD COLUMN nodeId TEXT NOT NULL DEFAULT '__main__'");
@@ -84,9 +116,30 @@ function migrateNodeColumns() {
     db.exec("ALTER TABLE instances ADD COLUMN nodeName TEXT NOT NULL DEFAULT '主节点'");
     logger.info("已添加 instances.nodeName 列");
   }
+
+  const nodeColumns = db.prepare("PRAGMA table_info(nodes)").all() as { name: string }[];
+  if (nodeColumns.some((column) => column.name === "apiKey" || column.name === "authVersion")) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE nodes_v2 (
+        id        TEXT PRIMARY KEY,
+        name      TEXT NOT NULL,
+        address   TEXT NOT NULL,
+        isMain    INTEGER NOT NULL DEFAULT 0,
+        createdAt INTEGER NOT NULL
+      );
+      INSERT INTO nodes_v2 (id, name, address, isMain, createdAt)
+      SELECT id, name, address, isMain, createdAt FROM nodes;
+      DROP TABLE nodes;
+      ALTER TABLE nodes_v2 RENAME TO nodes;
+      COMMIT;
+    `);
+    logger.warn("已移除旧节点凭据；现有子节点必须使用 v2 配对码重新绑定");
+  }
 }
 
-migrateNodeColumns();
+migrateColumns();
+db.exec("DELETE FROM app_config WHERE key = 'api_key'");
 
 // ── JSON → SQLite 首次迁移 ───────────────────────────────────────────
 
@@ -334,13 +387,12 @@ export interface NodeRow {
   id: string;
   name: string;
   address: string;
-  apiKey: string;
   isMain: number; // 0 or 1
   createdAt: number;
 }
 
 const nodeInsertStmt = db.prepare(
-  "INSERT INTO nodes (id, name, address, apiKey, isMain, createdAt) VALUES (?, ?, ?, ?, ?, ?)"
+  "INSERT INTO nodes (id, name, address, isMain, createdAt) VALUES (?, ?, ?, ?, ?)"
 );
 const nodeGetStmt = db.prepare("SELECT * FROM nodes WHERE id = ?");
 const nodeAllStmt = db.prepare("SELECT * FROM nodes");
@@ -358,11 +410,16 @@ export function dbInsertNode(cfg: {
   id: string;
   name: string;
   address: string;
-  apiKey: string;
   isMain?: boolean;
   createdAt: number;
 }): void {
-  nodeInsertStmt.run(cfg.id, cfg.name, cfg.address, cfg.apiKey, cfg.isMain ? 1 : 0, cfg.createdAt);
+  nodeInsertStmt.run(
+    cfg.id,
+    cfg.name,
+    cfg.address,
+    cfg.isMain ? 1 : 0,
+    cfg.createdAt,
+  );
 }
 
 export function dbDeleteNode(id: string): boolean {
@@ -371,19 +428,90 @@ export function dbDeleteNode(id: string): boolean {
 }
 
 const nodeUpdateStmt = db.prepare(
-  "UPDATE nodes SET name = ?, address = ?, apiKey = ? WHERE id = ?"
+  "UPDATE nodes SET name = ?, address = ? WHERE id = ?"
 );
+
+export interface NodeControllerRow {
+  id: string;
+  name: string;
+  publicKeyPem: string;
+  keyId: string;
+  capabilities: string;
+  createdAt: number;
+  revokedAt: number | null;
+}
+
+const nodeControllerGetStmt = db.prepare("SELECT * FROM node_controllers WHERE id = ?");
+const nodeControllerUpsertStmt = db.prepare(`
+  INSERT INTO node_controllers (id, name, publicKeyPem, keyId, capabilities, createdAt, revokedAt)
+  VALUES (?, ?, ?, ?, ?, ?, NULL)
+  ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name,
+    publicKeyPem = excluded.publicKeyPem,
+    keyId = excluded.keyId,
+    capabilities = excluded.capabilities,
+    revokedAt = NULL
+`);
+const nodeControllerRevokeStmt = db.prepare("UPDATE node_controllers SET revokedAt = ? WHERE id = ?");
+const nodePairingInsertStmt = db.prepare(
+  "INSERT INTO node_pairing_codes (codeHash, expiresAt, consumedAt) VALUES (?, ?, NULL)"
+);
+const nodePairingGetStmt = db.prepare("SELECT * FROM node_pairing_codes WHERE codeHash = ?");
+const nodePairingConsumeStmt = db.prepare("UPDATE node_pairing_codes SET consumedAt = ? WHERE codeHash = ? AND consumedAt IS NULL");
+const nodeNonceInsertStmt = db.prepare(
+  "INSERT OR IGNORE INTO node_request_nonces (controllerId, nonce, expiresAt) VALUES (?, ?, ?)"
+);
+const nodeNonceCleanupStmt = db.prepare("DELETE FROM node_request_nonces WHERE expiresAt <= ?");
+const nodePairingCleanupStmt = db.prepare("DELETE FROM node_pairing_codes WHERE expiresAt <= ? OR consumedAt IS NOT NULL");
+
+export function dbUpsertNodeController(controller: Omit<NodeControllerRow, "revokedAt">): void {
+  nodeControllerUpsertStmt.run(
+    controller.id,
+    controller.name,
+    controller.publicKeyPem,
+    controller.keyId,
+    controller.capabilities,
+    controller.createdAt,
+  );
+}
+
+export function dbGetNodeController(id: string): NodeControllerRow | undefined {
+  return nodeControllerGetStmt.get(id) as NodeControllerRow | undefined;
+}
+
+export function dbRevokeNodeController(id: string, revokedAt = Date.now()): boolean {
+  return nodeControllerRevokeStmt.run(revokedAt, id).changes > 0;
+}
+
+export function dbCreateNodePairingCode(codeHash: string, expiresAt: number): void {
+  nodePairingInsertStmt.run(codeHash, expiresAt);
+}
+
+export function dbConsumeNodePairingCode(codeHash: string, now = Date.now()): boolean {
+  const row = nodePairingGetStmt.get(codeHash) as { expiresAt: number; consumedAt: number | null } | undefined;
+  if (!row || row.consumedAt !== null || row.expiresAt <= now) return false;
+  return nodePairingConsumeStmt.run(now, codeHash).changes > 0;
+}
+
+export function dbConsumeNodeRequestNonce(controllerId: string, nonce: string, expiresAt: number): boolean {
+  nodeNonceCleanupStmt.run(Date.now());
+  return nodeNonceInsertStmt.run(controllerId, nonce, expiresAt).changes > 0;
+}
+
+export function dbCleanupNodeAuth(now = Date.now()): void {
+  nodeNonceCleanupStmt.run(now);
+  nodePairingCleanupStmt.run(now);
+}
 
 export function dbUpdateNode(
   id: string,
-  fields: { name?: string; address?: string; apiKey?: string }
+  fields: { name?: string; address?: string }
 ): boolean {
   const existing = dbGetNode(id);
   if (!existing) return false;
   nodeUpdateStmt.run(
     fields.name ?? existing.name,
     fields.address ?? existing.address,
-    fields.apiKey ?? existing.apiKey,
     id
   );
   return true;
@@ -512,4 +640,122 @@ export function dbUpdateMysqlConn(id: string, fields: { name: string; host: stri
 export function dbDeleteMysqlConn(id: string): boolean {
   const result = mysqlConnDeleteStmt.run(id);
   return result.changes > 0;
+}
+
+// ── file_shares 表 ───────────────────────────────────────────────────
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS file_shares (
+    id            TEXT PRIMARY KEY,
+    filePath      TEXT NOT NULL,
+    fileName      TEXT NOT NULL,
+    nodeId        TEXT,
+    fileSize      INTEGER NOT NULL DEFAULT 0,
+    mimeType      TEXT NOT NULL DEFAULT '',
+    shareCodeHash TEXT,
+    hasShareCode  INTEGER NOT NULL DEFAULT 0,
+    allowDirectLink INTEGER NOT NULL DEFAULT 0,
+    expiresAt     INTEGER,
+    createdBy     TEXT NOT NULL,
+    createdAt     INTEGER NOT NULL,
+    downloadCount INTEGER NOT NULL DEFAULT 0
+  );
+`);
+// 兼容已有库：补列
+try {
+  db.exec(`ALTER TABLE file_shares ADD COLUMN allowDirectLink INTEGER NOT NULL DEFAULT 0`);
+} catch {
+  // 列已存在
+}
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_file_shares_created_by ON file_shares(createdBy);
+`);
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_file_shares_created_at ON file_shares(createdAt DESC);
+`);
+
+// ── file_shares 辅助函数 ─────────────────────────────────────────────
+
+export interface FileShareRow {
+  id: string;
+  filePath: string;
+  fileName: string;
+  nodeId: string | null;
+  fileSize: number;
+  mimeType: string;
+  shareCodeHash: string | null;
+  hasShareCode: number;
+  allowDirectLink: number;
+  expiresAt: number | null;
+  createdBy: string;
+  createdAt: number;
+  downloadCount: number;
+}
+
+const shareInsertStmt = db.prepare(`
+  INSERT INTO file_shares (
+    id, filePath, fileName, nodeId, fileSize, mimeType,
+    shareCodeHash, hasShareCode, allowDirectLink, expiresAt, createdBy, createdAt, downloadCount
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+`);
+const shareGetStmt = db.prepare("SELECT * FROM file_shares WHERE id = ?");
+const shareListByUserStmt = db.prepare(
+  "SELECT * FROM file_shares WHERE createdBy = ? ORDER BY createdAt DESC LIMIT ?"
+);
+const shareListAllStmt = db.prepare(
+  "SELECT * FROM file_shares ORDER BY createdAt DESC LIMIT ?"
+);
+const shareDeleteStmt = db.prepare("DELETE FROM file_shares WHERE id = ?");
+const shareIncDownloadStmt = db.prepare(
+  "UPDATE file_shares SET downloadCount = downloadCount + 1 WHERE id = ?"
+);
+
+export function dbInsertFileShare(row: {
+  id: string;
+  filePath: string;
+  fileName: string;
+  nodeId?: string | null;
+  fileSize: number;
+  mimeType: string;
+  shareCodeHash?: string | null;
+  hasShareCode: boolean;
+  allowDirectLink?: boolean;
+  expiresAt?: number | null;
+  createdBy: string;
+  createdAt: number;
+}): void {
+  shareInsertStmt.run(
+    row.id,
+    row.filePath,
+    row.fileName,
+    row.nodeId ?? null,
+    row.fileSize,
+    row.mimeType,
+    row.shareCodeHash ?? null,
+    row.hasShareCode ? 1 : 0,
+    row.allowDirectLink ? 1 : 0,
+    row.expiresAt ?? null,
+    row.createdBy,
+    row.createdAt,
+  );
+}
+
+export function dbGetFileShare(id: string): FileShareRow | undefined {
+  return shareGetStmt.get(id) as FileShareRow | undefined;
+}
+
+export function dbListFileShares(createdBy: string | null, limit = 100): FileShareRow[] {
+  const cap = Math.min(Math.max(limit, 1), 500);
+  if (createdBy) {
+    return shareListByUserStmt.all(createdBy, cap) as FileShareRow[];
+  }
+  return shareListAllStmt.all(cap) as FileShareRow[];
+}
+
+export function dbDeleteFileShare(id: string): boolean {
+  return shareDeleteStmt.run(id).changes > 0;
+}
+
+export function dbIncFileShareDownload(id: string): void {
+  shareIncDownloadStmt.run(id);
 }

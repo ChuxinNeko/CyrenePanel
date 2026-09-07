@@ -1,4 +1,4 @@
-import { Elysia, t } from "elysia";
+import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { jwt } from "@elysiajs/jwt";
 import { randomBytes } from "crypto";
@@ -11,8 +11,8 @@ import { instanceRoutes } from "./instances/index";
 import { instanceWsRoutes } from "./instances/ws";
 import { userRoutes } from "./users/index";
 import { loadStore } from "./instances/store";
-import { getConfig, setConfig, dbUserCount, dbGetUser, dbInsertUser } from "./db";
-import { nodeRoutes } from "./nodes/index";
+import { getConfig, setConfig, dbUserCount, dbInsertUser } from "./db";
+import { nodeRoutes, createStartupPairingCode } from "./nodes/index";
 import { dockerRoutes } from "./docker/index";
 import { terminalRoutes } from "./terminal/index";
 import { settingsRoutes } from "./settings/index";
@@ -27,6 +27,12 @@ import { securityRoutes } from "./security/index";
 import { databaseRoutes } from "./database/index";
 import { mysqlManageRoutes } from "./database/mysql/index";
 import { aiRoutes } from "./ai/index";
+import { shareRoutes } from "./shares/index";
+import { appstoreRoutes } from "./appstore/index";
+import { isNodeAuthEndpoint, requiredNodeCapability } from "./node-auth/access";
+import { captureNodeRequestBody, resolveNodePrincipal } from "./node-auth/principal";
+import { nodeCan } from "./node-auth/verifier";
+import { getNodePublicIdentity } from "./node-auth/identity";
 
 // ── 初始化 JWT Secret（持久化到数据库） ───────────────────────────
 
@@ -42,6 +48,12 @@ function getJwtSecret(): string {
 
 const JWT_SECRET = getJwtSecret();
 
+// ── 本节点签名身份指纹（用于排查子节点“未找到 controller”问题） ──────
+{
+  const identity = getNodePublicIdentity();
+  logger.info(`[node-auth] 本节点身份 id=${identity.id} keyId=${identity.keyId}`);
+}
+
 // ── 初始化 admin 账号（首次启动） ──────────────────────────────────
 
 if (dbUserCount() === 0) {
@@ -53,15 +65,6 @@ if (dbUserCount() === 0) {
   logger.warn(`初始密码: ${password}`);
 }
 
-// ── 初始化 API key（首次启动） ─────────────────────────────────────
-
-if (!getConfig("api_key")) {
-  const apiKey = randomBytes(16).toString("hex");
-  setConfig("api_key", apiKey);
-  logger.info("已自动生成 API key");
-  logger.warn(`API Key: ${apiKey}`);
-}
-
 // ── 日志级别 ───────────────────────────────────────────────────────
 
 const logLevel = getConfig("logLevel") || "INFO";
@@ -71,6 +74,9 @@ logger.info(`日志级别: ${logLevel}`);
 // ── 加载实例配置 ───────────────────────────────────────────────────
 
 loadStore();
+
+const startupPairingCode = createStartupPairingCode();
+logger.warn(`节点配对码: ${startupPairingCode.code}（10 分钟内有效，仅可使用一次）`);
 
 const requestTimings = new WeakMap<Request, number>();
 
@@ -95,7 +101,20 @@ export const app = new Elysia()
     })
   )
   .onRequest(({ request }) => {
+    captureNodeRequestBody(request);
     requestTimings.set(request, performance.now());
+  })
+  .onBeforeHandle(async ({ request, set }: any) => {
+    const url = new URL(request.url);
+    if (isNodeAuthEndpoint(url.pathname)) return;
+
+    const principal = await resolveNodePrincipal(request, { consumeNonce: false });
+    if (!principal) return;
+    const capability = requiredNodeCapability(request);
+    if (!capability || !nodeCan(principal, capability)) {
+      set.status = 403;
+      return { success: false, message: "节点签名或权限无效" };
+    }
   })
   .onAfterHandle((ctx: any) => {
     const { request, set, server, body: reqBody, response } = ctx;
@@ -148,6 +167,8 @@ export const app = new Elysia()
   .use(databaseRoutes)
   .use(mysqlManageRoutes)
   .use(aiRoutes)
+  .use(shareRoutes)
+  .use(appstoreRoutes)
   .listen({ port: Number(process.env.PORT || 5677), hostname: "0.0.0.0" });
 
 setAuditAlertHook(notifyAlertOnAudit);

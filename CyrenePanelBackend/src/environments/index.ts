@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { platform } from "os";
 import { execSync } from "child_process";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 // ── 类型定义 ──────────────────────────────────────────────────────────
 
@@ -1004,10 +1005,7 @@ function getPackageManagerInfo(): { name: string; available: boolean; version: s
 
 export const environmentRoutes = new Elysia()
   .get("/api/environments", async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     try {
@@ -1028,10 +1026,7 @@ export const environmentRoutes = new Elysia()
   })
 
   .get("/api/environments/:id", async ({ jwt, request, params }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const detectors = getAllDetectors();
@@ -1064,25 +1059,14 @@ export const environmentRoutes = new Elysia()
   })
 
   .post("/api/environments/:id/install", async ({ jwt, request, params }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     return executeInstall(params.id);
   })
 
   .post("/api/environments/:id/:action/stream", async ({ jwt, request, params, body }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) {
-      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) {
       return new Response(JSON.stringify({ success: false, message: "未授权" }), {
         status: 401,
@@ -1101,20 +1085,14 @@ export const environmentRoutes = new Elysia()
   })
 
   .post("/api/environments/:id/update", async ({ jwt, request, params }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     return executeUpdate(params.id);
   })
 
   .post("/api/environments/:id/remove", async ({ jwt, request, params }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     return executeRemove(params.id);

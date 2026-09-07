@@ -5,6 +5,7 @@ import { getMemoryInfo } from "../memory";
 import { logger } from "../logger/index";
 import { sendMail, type SmtpConfig } from "./smtp";
 import { hostname } from "os";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 // ── 配置类型 ──────────────────────────────────────────────────────
 
@@ -304,13 +305,7 @@ export function startAlertChecker(intervalMs = 30_000): void {
 // ── 路由 ──────────────────────────────────────────────────────────
 
 export const alertRoutes = new Elysia()
-  .derive(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
-  })
+  .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
   .get("/api/alerts/settings", ({ profile }: any) => {
     if (!profile) return { success: false, message: "未授权" };

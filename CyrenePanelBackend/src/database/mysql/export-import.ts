@@ -2,20 +2,13 @@ import { Elysia } from "elysia";
 import { spawn } from "child_process";
 import { dbGetMysqlConn } from "../../db";
 import { getPoolForConn } from "./pool";
+import { resolveRequestProfile } from "../../node-auth/request-profile";
 
 export const mysqlExportImportRoutes = new Elysia()
 
   // 导出数据库 (mysqldump)
   .get("/api/mysql/databases/:db/export", async ({ jwt, request, params, query }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) {
-      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) {
       return new Response(JSON.stringify({ success: false, message: "未授权" }), {
         status: 401,
@@ -84,10 +77,7 @@ export const mysqlExportImportRoutes = new Elysia()
 
   // 导入 SQL 文件
   .post("/api/mysql/databases/:db/import", async ({ jwt, request, params, body }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { connectionId, sql } = body || {};

@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { platform } from "os";
 import { execSync } from "child_process";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 // ── 类型定义 ──────────────────────────────────────────────────────────
 
@@ -322,10 +323,7 @@ function isLinuxPlatform(): boolean {
 
 export const serviceRoutes = new Elysia()
   .get("/api/services", async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const isLinux = isLinuxPlatform();
@@ -353,10 +351,7 @@ export const serviceRoutes = new Elysia()
   })
 
   .get("/api/services/logs/:name", async ({ jwt, request, params }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { name } = params;
@@ -369,10 +364,7 @@ export const serviceRoutes = new Elysia()
   })
 
   .post("/api/services/create", async ({ jwt, request, body }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { name, displayName, execStart, description, workingDir, user, restart, env, startType, args } = body as any;
@@ -454,10 +446,7 @@ export const serviceRoutes = new Elysia()
   })
 
   .post("/api/services/:name/:action", async ({ jwt, request, params }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { name, action } = params;

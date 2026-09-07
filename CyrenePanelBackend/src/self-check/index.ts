@@ -2,6 +2,7 @@ import { Elysia } from "elysia";
 import { execFileSync } from "child_process";
 import { platform } from "os";
 import { logger } from "../logger/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 type CheckStatus = "ok" | "missing" | "unsupported";
 
@@ -193,17 +194,13 @@ function authToken(request: Request): string | null {
 
 export const selfCheckRoutes = new Elysia()
   .get("/api/self-check/environment", async ({ jwt, request }: any) => {
-    const token = authToken(request);
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     return currentCheckResult();
   })
 
   .post("/api/self-check/environment/install", async ({ jwt, request, body }: any) => {
-    const token = authToken(request);
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     if (profile.role !== "admin") return { success: false, message: "仅管理员可安装面板依赖" };
     if (platform() === "win32") return { success: false, message: "Windows 依赖无法由面板自动安装，请手动安装缺失组件" };

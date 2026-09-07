@@ -19,6 +19,9 @@ export interface TaskLogEntry {
   layer?: string;
   status?: string;
   detail?: string;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  speedBytes?: number;
   timestamp: number;
 }
 
@@ -78,6 +81,9 @@ function normalizeEvent(event: any): Omit<TaskLogEntry, "timestamp"> {
     layer: event?.layer,
     status: event?.status,
     detail: event?.detail,
+    downloadedBytes: event?.downloadedBytes,
+    totalBytes: event?.totalBytes,
+    speedBytes: event?.speedBytes,
   };
 }
 
@@ -157,6 +163,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let completed = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -172,6 +179,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
               appendTaskLog(taskId, event);
 
               if (event.type === "done") {
+                completed = true;
                 finishTask(taskId, {
                   containerId: (event as any).containerId,
                   message: event.message || "部署成功",
@@ -188,6 +196,9 @@ export function TaskProvider({ children }: { children: ReactNode }) {
               // 忽略无法解析的 SSE 行，避免单行异常中断任务。
             }
           }
+        }
+        if (!completed) {
+          failTask(taskId, "部署连接已结束，未收到完成状态");
         }
       } catch (e: any) {
         if (controller.signal.aborted) return;

@@ -111,6 +111,7 @@ interface NodeOverview {
   runningInstances?: number;
   totalInstances?: number;
   version?: string;
+  statusReason?: string;
   metrics?: MetricPoint[];
 }
 
@@ -202,28 +203,28 @@ function AddNodeDialog({
 }) {
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
-  const [apiKey, setApiKey] = useState("");
+  const [pairingCode, setPairingCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const reset = () => {
     setName("");
     setAddress("");
-    setApiKey("");
+    setPairingCode("");
   };
 
   const handleSubmit = async () => {
-    if (!name.trim() || !address.trim() || !apiKey.trim()) {
-      toast.error("请填写所有字段");
+    if (!name.trim() || !address.trim() || !pairingCode.trim()) {
+      toast.error("请填写节点名称、地址和一次性配对码");
       return;
     }
     setSubmitting(true);
     try {
       const res = await apiPost<{ success: boolean; message?: string }>(
-        "/api/nodes",
-        { name: name.trim(), address: address.trim(), apiKey: apiKey.trim() }
+        "/api/nodes/v2/pair",
+        { name: name.trim(), address: address.trim(), code: pairingCode.trim() }
       );
       if (res.success) {
-        toast.success("节点添加成功");
+        toast.success("节点配对成功");
         reset();
         onOpenChange(false);
         onCreated();
@@ -249,7 +250,7 @@ function AddNodeDialog({
         <DialogHeader>
           <DialogTitle>添加节点</DialogTitle>
           <DialogDescription>
-            输入子节点的 API 地址和密钥进行绑定。
+            输入子节点 HTTP 或 HTTPS 地址和一次性配对码完成绑定。
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -268,16 +269,16 @@ function AddNodeDialog({
               id="add-node-address"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
-              placeholder="例如：http://192.168.1.100:5677"
+              placeholder="例如：http://192.168.1.10:5677 或 https://node.example.com"
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="add-node-apikey">API Key</Label>
+            <Label htmlFor="add-node-pairing-code">一次性配对码</Label>
             <Input
-              id="add-node-apikey"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="子节点的 API Key"
+              id="add-node-pairing-code"
+              value={pairingCode}
+              onChange={(e) => setPairingCode(e.target.value)}
+              placeholder="在子节点生成，有效期 10 分钟"
             />
           </div>
         </div>
@@ -316,14 +317,12 @@ function EditNodeDialog({
 }) {
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
-  const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (node && open) {
       setName(node.name);
       setAddress(node.address);
-      setApiKey("");
     }
   }, [node, open]);
 
@@ -334,7 +333,6 @@ function EditNodeDialog({
       const body: Record<string, string> = {};
       if (name.trim() && name.trim() !== node.name) body.name = name.trim();
       if (address.trim() && address.trim() !== node.address) body.address = address.trim();
-      if (apiKey.trim()) body.apiKey = apiKey.trim();
 
       if (Object.keys(body).length === 0) {
         toast.info("没有修改");
@@ -365,7 +363,7 @@ function EditNodeDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>编辑节点</DialogTitle>
-          <DialogDescription>修改节点的名称、地址或 API Key。</DialogDescription>
+          <DialogDescription>修改节点名称或地址。</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2">
@@ -382,15 +380,6 @@ function EditNodeDialog({
               id="edit-node-address"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="edit-node-apikey">API Key（留空则不修改）</Label>
-            <Input
-              id="edit-node-apikey"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="输入新的 API Key"
             />
           </div>
         </div>
@@ -642,9 +631,14 @@ function NodeCard({
 
         {/* 离线提示 */}
         {!node.online && (
-          <div className="flex items-center justify-center py-4 text-sm text-muted-foreground">
-            <WifiOff className="h-4 w-4 mr-2" />
-            节点不可达
+          <div className="flex flex-col items-center justify-center gap-1 py-4 text-center text-sm text-muted-foreground">
+            <div className="flex items-center">
+              <WifiOff className="h-4 w-4 mr-2" />
+              节点不可达
+            </div>
+            {node.statusReason && (
+              <p className="max-w-full break-words text-xs">{node.statusReason}</p>
+            )}
           </div>
         )}
       </CardContent>

@@ -27,6 +27,7 @@ NC='\033[0m'
 
 CYRENE_REPO="${CYRENE_REPO:-ChuxinNeko/CyrenePanel}"
 CYRENE_HOME="${CYRENE_HOME:-/opt/CyrenePanel}"
+CYRENE_DATA_DIR="${CYRENE_DATA_DIR:-/var/lib/cyrene}"
 CYRENE_USER="${CYRENE_USER:-cyrene}"
 BACKEND_PORT="${BACKEND_PORT:-5677}"
 FRONTEND_PORT="${FRONTEND_PORT:-30198}"
@@ -322,6 +323,12 @@ uninstall_existing_install() {
   rm -f /etc/systemd/system/cyrene-updater.path
   systemctl daemon-reload
 
+  if [ -d "$CYRENE_HOME/backend/data" ]; then
+    rm -rf "$TMP_DIR/legacy-data"
+    mkdir -p "$TMP_DIR/legacy-data"
+    cp -a "$CYRENE_HOME/backend/data/." "$TMP_DIR/legacy-data/"
+  fi
+
   if [ -n "$CYRENE_HOME" ] && [ "$CYRENE_HOME" != "/" ] && [ -d "$CYRENE_HOME" ]; then
     rm -rf "$CYRENE_HOME"
   fi
@@ -356,7 +363,14 @@ extract_release() {
   mkdir -p "$CYRENE_HOME"
   cp -a "$package_root/." "$CYRENE_HOME/"
 
-  mkdir -p "$CYRENE_HOME/backend/data" "$CYRENE_HOME/backend/logs"
+  mkdir -p "$CYRENE_DATA_DIR" "$CYRENE_HOME/backend/logs"
+  if [ ! -f "$CYRENE_DATA_DIR/cyrene.db" ] && [ -d "$TMP_DIR/legacy-data" ]; then
+    cp -a "$TMP_DIR/legacy-data/." "$CYRENE_DATA_DIR/"
+  elif [ ! -f "$CYRENE_DATA_DIR/cyrene.db" ] && [ -d "$CYRENE_HOME/backend/data" ]; then
+    cp -a "$CYRENE_HOME/backend/data/." "$CYRENE_DATA_DIR/"
+  fi
+  rm -rf "$CYRENE_HOME/backend/data"
+  ln -s "$CYRENE_DATA_DIR" "$CYRENE_HOME/backend/data"
 
   chmod +x "$CYRENE_HOME/backend/server" 2>/dev/null || true
   success "文件已部署到：$CYRENE_HOME"
@@ -379,7 +393,8 @@ create_user_and_permissions() {
     warn "Docker group not found; install Docker first or add $CYRENE_USER to the Docker socket group later"
   fi
 
-  chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME"
+  chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME" "$CYRENE_DATA_DIR"
+  chmod 700 "$CYRENE_DATA_DIR"
   chmod 755 "$CYRENE_HOME/backend/logs"
   success "权限设置完成"
 }
@@ -457,6 +472,7 @@ install_cyp_command() {
 set -Eeuo pipefail
 
 CYRENE_HOME="${CYRENE_HOME:-__CYRENE_HOME__}"
+CYRENE_DATA_DIR="${CYRENE_DATA_DIR:-__CYRENE_DATA_DIR__}"
 CYRENE_USER="${CYRENE_USER:-__CYRENE_USER__}"
 BACKEND_PORT="${BACKEND_PORT:-__BACKEND_PORT__}"
 FRONTEND_PORT="${FRONTEND_PORT:-__FRONTEND_PORT__}"
@@ -474,7 +490,7 @@ warn() { echo -e "${YELLOW}$*${NC}"; }
 error() { echo -e "${RED}$*${NC}" >&2; }
 
 db_path() {
-  echo "$CYRENE_HOME/backend/data/cyrene.db"
+  echo "$CYRENE_DATA_DIR/cyrene.db"
 }
 
 require_root() {
@@ -706,6 +722,7 @@ CYP
 
   sed -i \
     -e "s#__CYRENE_HOME__#${CYRENE_HOME}#g" \
+    -e "s#__CYRENE_DATA_DIR__#${CYRENE_DATA_DIR}#g" \
     -e "s#__CYRENE_USER__#${CYRENE_USER}#g" \
     -e "s#__BACKEND_PORT__#${BACKEND_PORT}#g" \
     -e "s#__FRONTEND_PORT__#${FRONTEND_PORT}#g" \
@@ -718,20 +735,21 @@ CYP
 install_update_helper() {
   step "安装面板自动更新助手"
 
-  mkdir -p /usr/local/bin "$CYRENE_HOME/backend/data" "$CYRENE_HOME/backend/logs"
+  mkdir -p /usr/local/bin "$CYRENE_DATA_DIR" "$CYRENE_HOME/backend/logs"
 
   cat > /usr/local/bin/cyp-update-apply <<'UPDATER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
 CYRENE_HOME="${CYRENE_HOME:-__CYRENE_HOME__}"
+CYRENE_DATA_DIR="${CYRENE_DATA_DIR:-__CYRENE_DATA_DIR__}"
 CYRENE_USER="${CYRENE_USER:-__CYRENE_USER__}"
 BACKEND_PORT="${BACKEND_PORT:-__BACKEND_PORT__}"
 FRONTEND_PORT="${FRONTEND_PORT:-__FRONTEND_PORT__}"
 RUNTIME_PATH="${RUNTIME_PATH:-/usr/local/bin:/usr/bin:/bin}"
-REQUEST_FILE="$CYRENE_HOME/backend/data/update-request.json"
+REQUEST_FILE="$CYRENE_DATA_DIR/update-request.json"
 LOG_FILE="$CYRENE_HOME/backend/logs/update.log"
-STATUS_FILE="$CYRENE_HOME/backend/data/update-status.json"
+STATUS_FILE="$CYRENE_DATA_DIR/update-status.json"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 exec >>"$LOG_FILE" 2>&1
@@ -871,11 +889,6 @@ if [ ! -d "$PACKAGE_ROOT/backend" ] || [ ! -d "$PACKAGE_ROOT/frontend" ]; then
   exit 1
 fi
 
-DATA_TMP="$TMP_DIR/data"
-if [ -d "$CYRENE_HOME/backend/data" ]; then
-  cp -a "$CYRENE_HOME/backend/data" "$DATA_TMP"
-fi
-
 LOGS_TMP="$TMP_DIR/logs"
 if [ -d "$CYRENE_HOME/backend/logs" ]; then
   cp -a "$CYRENE_HOME/backend/logs" "$LOGS_TMP"
@@ -892,14 +905,12 @@ systemctl stop cyrene-backend 2>/dev/null || true
 write_status "installing" "Installing update package"
 
 rm -rf "$CYRENE_HOME"
-mkdir -p "$CYRENE_HOME"
+mkdir -p "$CYRENE_HOME" "$CYRENE_DATA_DIR"
 cp -a "$PACKAGE_ROOT/." "$CYRENE_HOME/"
+rm -rf "$CYRENE_HOME/backend/data"
+ln -s "$CYRENE_DATA_DIR" "$CYRENE_HOME/backend/data"
 
-mkdir -p "$CYRENE_HOME/backend/data" "$CYRENE_HOME/backend/logs"
-if [ -d "$DATA_TMP" ]; then
-  rm -rf "$CYRENE_HOME/backend/data"
-  cp -a "$DATA_TMP" "$CYRENE_HOME/backend/data"
-fi
+mkdir -p "$CYRENE_HOME/backend/logs"
 if [ -d "$LOGS_TMP" ]; then
   cp -a "$LOGS_TMP/." "$CYRENE_HOME/backend/logs/"
 fi
@@ -907,7 +918,8 @@ reopen_log
 
 chmod +x "$CYRENE_HOME/backend/server" 2>/dev/null || true
 
-chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME"
+chown -R "$CYRENE_USER:$CYRENE_USER" "$CYRENE_HOME" "$CYRENE_DATA_DIR"
+chmod 700 "$CYRENE_DATA_DIR"
 chmod 755 "$CYRENE_HOME/backend/logs"
 
 rm -f "$REQUEST_FILE"
@@ -920,6 +932,7 @@ UPDATER
 
   sed -i \
     -e "s#__CYRENE_HOME__#${CYRENE_HOME}#g" \
+    -e "s#__CYRENE_DATA_DIR__#${CYRENE_DATA_DIR}#g" \
     -e "s#__CYRENE_USER__#${CYRENE_USER}#g" \
     -e "s#__BACKEND_PORT__#${BACKEND_PORT}#g" \
     -e "s#__FRONTEND_PORT__#${FRONTEND_PORT}#g" \
@@ -943,7 +956,7 @@ EOF
 Description=Watch CyrenePanel update requests
 
 [Path]
-PathExists=$CYRENE_HOME/backend/data/update-request.json
+PathExists=$CYRENE_DATA_DIR/update-request.json
 Unit=cyrene-updater.service
 
 [Install]
@@ -969,6 +982,7 @@ Type=simple
 WorkingDirectory=$CYRENE_HOME/backend
 Environment=NODE_ENV=production
 Environment=PORT=$BACKEND_PORT
+Environment=CYRENE_DATA_DIR=$CYRENE_DATA_DIR
 ExecStart=$CYRENE_HOME/backend/server
 Restart=on-failure
 RestartSec=5

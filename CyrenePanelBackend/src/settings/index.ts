@@ -1,16 +1,10 @@
 import { Elysia, t } from "elysia";
 import { setConfig, getAllConfig } from "../db";
 import { logger } from "../logger/index";
-import { randomBytes } from "crypto";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 export const settingsRoutes = new Elysia()
-  .derive(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
-  })
+  .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
   // ── 获取所有设置 ──────────────────────────────────────────────────
   .get("/api/settings", async ({ profile }: any) => {
@@ -28,9 +22,6 @@ export const settingsRoutes = new Elysia()
           // Docker 设置
           dockerMirrorEnabled: allConfig["docker_mirror_enabled"] === "true",
           dockerMirrorUrl: allConfig["docker_mirror_url"] || "",
-          // API Key
-          apiKey: allConfig["api_key"] || "",
-          // 页脚设置
           footerCode: allConfig["footer_code"] || "",
         },
       };
@@ -130,33 +121,12 @@ export const settingsRoutes = new Elysia()
       if (profile.role !== "admin") return { success: false, message: "仅管理员可访问" };
 
       try {
-        const { code } = body || {};
-        if (typeof code === "string") {
-          setConfig("footer_code", code);
-        }
+        const code = typeof body?.code === "string" ? body.code : null;
+        if (code === null) return { success: false, message: "页脚代码必须为字符串" };
+        setConfig("footer_code", code);
         return { success: true, message: "页脚设置已保存" };
-      } catch (e: any) {
-        return { success: false, message: e.message };
+      } catch (error: any) {
+        return { success: false, message: error.message };
       }
     },
-    {
-      body: t.Object({
-        code: t.String(),
-      }),
-    }
-  )
-
-  // ── 重新生成 API Key ──────────────────────────────────────────────
-  .post("/api/settings/regenerate-api-key", async ({ profile }: any) => {
-    if (!profile) return { success: false, message: "未授权" };
-    if (profile.role !== "admin") return { success: false, message: "仅管理员可访问" };
-
-    try {
-      const newKey = randomBytes(16).toString("hex");
-      setConfig("api_key", newKey);
-      logger.info(`管理员 ${profile.username} 重新生成了 API Key`);
-      return { success: true, apiKey: newKey, message: "API Key 已重新生成" };
-    } catch (e: any) {
-      return { success: false, message: e.message };
-    }
-  });
+  );

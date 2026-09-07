@@ -14,6 +14,7 @@ import {
 import { basename, join, resolve } from "path";
 import { execSync } from "child_process";
 import { logger } from "../logger/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 type SiteStatus = "running" | "stopped";
 
@@ -650,10 +651,7 @@ function createSite(body: CreateSiteBody) {
 }
 
 async function authProfile(jwt: any, request: Request) {
-  const authHeader = request.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!token) return null;
-  return await jwt.verify(token);
+  return resolveRequestProfile(jwt, request);
 }
 
 export const siteRoutes = new Elysia()

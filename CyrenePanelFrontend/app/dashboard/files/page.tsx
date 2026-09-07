@@ -36,6 +36,7 @@ import {
   Save,
   Scissors,
   Search,
+  Share2,
   ShieldCheck,
   Trash2,
   UploadCloud,
@@ -70,7 +71,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NodeFileTransferDialog } from "@/components/node-file-transfer-dialog";
+import {
+  FilePreviewDialog,
+  type FilePreviewTarget,
+} from "@/components/file-preview-dialog";
+import { FileShareDialog, type ShareFileTarget } from "@/components/file-share-dialog";
 import { API_BASE } from "@/lib/api-base";
+import {
+  canEditFile,
+  canPreviewFile,
+  getMonacoLanguage,
+  resolveFileKind,
+} from "@/lib/file-kind";
 
 interface FileEntry {
   name: string;
@@ -97,7 +109,6 @@ interface NodeInfo {
   id: string;
   name: string;
   address: string;
-  apiKey: string;
   isMain: number;
   createdAt: number;
 }
@@ -126,16 +137,6 @@ type UploadTask = {
 
 const UPLOAD_CHUNK_SIZE = 1024 * 1024;
 const ARCHIVE_EXTENSIONS = [".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz"];
-const TEXT_EXTENSIONS = new Set([
-  ".txt", ".log", ".md", ".json", ".yml", ".yaml", ".xml", ".toml",
-  ".ini", ".conf", ".cfg", ".env", ".sh", ".bash", ".zsh", ".fish",
-  ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".scss", ".less",
-  ".html", ".htm", ".vue", ".svelte", ".go", ".rs", ".rb", ".java",
-  ".c", ".cpp", ".h", ".hpp", ".cs", ".php", ".sql", ".graphql",
-  ".csv", ".tsv", ".properties", ".gitignore", ".dockerignore",
-  ".dockerfile", ".makefile", ".editorconfig", ".prettierrc", ".eslintrc",
-  ".babelrc", ".lock", ".diff", ".patch", "",
-]);
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -211,38 +212,19 @@ function isArchive(entry: FileEntry): boolean {
 }
 
 function canEdit(entry: FileEntry): boolean {
-  return !entry.isDirectory && TEXT_EXTENSIONS.has(entry.extension.toLowerCase());
-}
-
-function getMonacoLanguage(ext: string): string {
-  const map: Record<string, string> = {
-    ".js": "javascript", ".jsx": "javascript", ".ts": "typescript", ".tsx": "typescript",
-    ".py": "python", ".go": "go", ".rs": "rust", ".java": "java", ".c": "c",
-    ".cpp": "cpp", ".cs": "csharp", ".php": "php", ".rb": "ruby", ".sh": "shell",
-    ".vue": "html", ".svelte": "html", ".json": "json", ".yml": "yaml",
-    ".yaml": "yaml", ".xml": "xml", ".toml": "ini", ".ini": "ini", ".conf": "ini",
-    ".cfg": "ini", ".css": "css", ".scss": "scss", ".less": "less", ".html": "html",
-    ".htm": "html", ".md": "markdown", ".txt": "plaintext", ".log": "plaintext",
-    ".csv": "plaintext", ".sql": "sql", ".graphql": "graphql", ".dockerfile": "dockerfile",
-    ".lua": "lua", ".r": "r", ".swift": "swift", ".kt": "kotlin", ".dart": "dart",
-    ".zig": "zig",
-  };
-  return map[ext] || "plaintext";
+  return canEditFile(entry);
 }
 
 function getFileIcon(entry: FileEntry) {
   if (entry.isDirectory) return <FolderOpen className="h-4 w-4 text-yellow-500" />;
-  const ext = entry.extension.toLowerCase();
+  const kind = resolveFileKind(entry);
   const codeExts = [".js", ".ts", ".jsx", ".tsx", ".py", ".go", ".rs", ".java", ".c", ".cpp", ".cs", ".php", ".rb", ".sh", ".vue", ".svelte"];
-  const imgExts = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp"];
-  const videoExts = [".mp4", ".webm", ".avi", ".mov", ".mkv"];
-  const audioExts = [".mp3", ".wav", ".ogg", ".flac", ".aac"];
-  if (codeExts.includes(ext)) return <FileCode className="h-4 w-4 text-green-500" />;
-  if (imgExts.includes(ext)) return <FileImage className="h-4 w-4 text-purple-500" />;
+  if (codeExts.includes(entry.extension.toLowerCase())) return <FileCode className="h-4 w-4 text-green-500" />;
+  if (kind === "image") return <FileImage className="h-4 w-4 text-purple-500" />;
   if (ARCHIVE_EXTENSIONS.some((archiveExt) => entry.name.toLowerCase().endsWith(archiveExt))) return <FileArchive className="h-4 w-4 text-orange-500" />;
-  if (videoExts.includes(ext)) return <Film className="h-4 w-4 text-pink-500" />;
-  if (audioExts.includes(ext)) return <Music className="h-4 w-4 text-cyan-500" />;
-  if ([".md", ".txt", ".log", ".csv"].includes(ext)) return <FileText className="h-4 w-4 text-blue-500" />;
+  if (kind === "video") return <Film className="h-4 w-4 text-pink-500" />;
+  if (kind === "audio") return <Music className="h-4 w-4 text-cyan-500" />;
+  if ([".md", ".txt", ".log", ".csv"].includes(entry.extension.toLowerCase())) return <FileText className="h-4 w-4 text-blue-500" />;
   return <File className="h-4 w-4 text-muted-foreground" />;
 }
 
@@ -409,6 +391,9 @@ function FilesPageContent() {
   const [fileLoading, setFileLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [fileMeta, setFileMeta] = useState<{ extension: string; size: number } | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<FilePreviewTarget | null>(null);
+  const [shareTarget, setShareTarget] = useState<ShareFileTarget | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const [treeSidebarOpen, setTreeSidebarOpen] = useState(true);
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -658,6 +643,7 @@ function FilesPageContent() {
     setFileContent("");
     setOriginalContent("");
     setFileMeta(null);
+    setPreviewTarget(null);
     fetchDir(path);
     expandTreeToPath(path, false);
   }, [currentPath, fetchDir, expandTreeToPath]);
@@ -720,10 +706,27 @@ function FilesPageContent() {
 
 
 
-  const handleOpenFile = useCallback(async (entryOrPath: FileEntry | string) => {
-    const filePath = typeof entryOrPath === "string" ? entryOrPath : entryOrPath.path;
+  const resolveEntry = useCallback((entryOrPath: FileEntry | string): FileEntry => {
+    if (typeof entryOrPath !== "string") return entryOrPath;
+    const found = entries.find((entry) => entry.path === entryOrPath);
+    if (found) return found;
+    const name = entryOrPath.replace(/\\/g, "/").split("/").filter(Boolean).pop() || entryOrPath;
+    const extension = name.includes(".") ? `.${name.split(".").pop()}` : "";
+    return {
+      name,
+      path: entryOrPath,
+      isDirectory: false,
+      size: 0,
+      modified: 0,
+      extension,
+      mimeType: false,
+    };
+  }, [entries]);
+
+  const openTextEditor = useCallback(async (filePath: string) => {
     if (!treeRoot) await initTreeRoot();
     await expandTreeToPath(filePath, true);
+    setPreviewTarget(null);
     setFileLoading(true);
     setOpenFile(filePath);
     try {
@@ -743,6 +746,40 @@ function FilesPageContent() {
       setFileLoading(false);
     }
   }, [expandTreeToPath, initTreeRoot, prefix, showToast, treeRoot]);
+
+  const openMediaPreview = useCallback((entry: FileEntry) => {
+    const kind = resolveFileKind(entry);
+    if (kind !== "image" && kind !== "video" && kind !== "audio") return;
+    setOpenFile(null);
+    setFileContent("");
+    setOriginalContent("");
+    setFileMeta(null);
+    setPreviewTarget({
+      path: entry.path,
+      name: entry.name,
+      kind,
+      size: entry.size,
+      mimeType: entry.mimeType,
+      nodeId: selectedNodeId,
+    });
+  }, [selectedNodeId]);
+
+  /** 统一打开：按类型分流到编辑 / 预览 / 提示下载 */
+  const handleOpenFile = useCallback(async (entryOrPath: FileEntry | string) => {
+    const entry = resolveEntry(entryOrPath);
+    if (entry.isDirectory) return;
+
+    const kind = resolveFileKind(entry);
+    if (kind === "text" || canEdit(entry)) {
+      await openTextEditor(entry.path);
+      return;
+    }
+    if (kind === "image" || kind === "video" || kind === "audio") {
+      openMediaPreview(entry);
+      return;
+    }
+    showToast("该文件类型不支持在线预览，请下载查看", "error");
+  }, [openMediaPreview, openTextEditor, resolveEntry, showToast]);
 
   const handleSave = useCallback(async () => {
     if (!openFile) return;
@@ -936,6 +973,18 @@ function FilesPageContent() {
     } catch {
       showToast("下载失败", "error");
     }
+  };
+
+  const openShareDialog = (entry: FileEntry | null) => {
+    if (!entry || entry.isDirectory) return;
+    setShareTarget({
+      path: entry.path,
+      name: entry.name,
+      size: entry.size,
+      nodeId: selectedNodeId,
+    });
+    setShareOpen(true);
+    setContextMenu(null);
   };
 
   const openArchiveDialog = () => {
@@ -1135,6 +1184,16 @@ function FilesPageContent() {
                   <Button size="sm" variant="ghost" className="h-8 text-primary hover:bg-primary/10 hover:text-primary" onClick={openArchiveDialog}>
                     <Archive className="h-4 w-4 sm:mr-1.5" />
                     <span className="hidden sm:inline">压缩</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 text-primary hover:bg-primary/10 hover:text-primary"
+                    disabled={!mainActionEntry || mainActionEntry.isDirectory}
+                    onClick={() => openShareDialog(mainActionEntry)}
+                  >
+                    <Share2 className="h-4 w-4 sm:mr-1.5" />
+                    <span className="hidden sm:inline">分享</span>
                   </Button>
                   <Button
                     size="sm"
@@ -1353,11 +1412,20 @@ function FilesPageContent() {
                                 </Button>
                               ) : (
                                 <>
-                                  <Button variant="ghost" size="icon-sm" title="编辑" disabled={!canEdit(entry)} onClick={(event) => { event.stopPropagation(); handleOpenFile(entry); }}>
-                                    <Edit3 className="h-4 w-4" />
-                                  </Button>
+                                  {canEdit(entry) ? (
+                                    <Button variant="ghost" size="icon-sm" title="编辑" onClick={(event) => { event.stopPropagation(); handleOpenFile(entry); }}>
+                                      <Edit3 className="h-4 w-4" />
+                                    </Button>
+                                  ) : canPreviewFile(entry) ? (
+                                    <Button variant="ghost" size="icon-sm" title="预览" onClick={(event) => { event.stopPropagation(); handleOpenFile(entry); }}>
+                                      <Eye className="h-4 w-4" />
+                                    </Button>
+                                  ) : null}
                                   <Button variant="ghost" size="icon-sm" title="下载" onClick={(event) => { event.stopPropagation(); handleDownload(entry); }}>
                                     <Download className="h-4 w-4" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon-sm" title="分享" onClick={(event) => { event.stopPropagation(); openShareDialog(entry); }}>
+                                    <Share2 className="h-4 w-4" />
                                   </Button>
                                 </>
                               )}
@@ -1432,7 +1500,11 @@ function FilesPageContent() {
             <>
               <button
                 className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
-                disabled={!contextActionEntry.isDirectory && !canEdit(contextActionEntry)}
+                disabled={
+                  !contextActionEntry.isDirectory
+                  && !canEdit(contextActionEntry)
+                  && !canPreviewFile(contextActionEntry)
+                }
                 onClick={() => {
                   setContextMenu(null);
                   if (contextActionEntry.isDirectory) navigateTo(contextActionEntry.path);
@@ -1440,19 +1512,34 @@ function FilesPageContent() {
                 }}
               >
                 <Eye className="h-4 w-4" />
-                {contextActionEntry.isDirectory ? "打开" : "编辑"}
+                {contextActionEntry.isDirectory
+                  ? "打开"
+                  : canEdit(contextActionEntry)
+                    ? "编辑"
+                    : canPreviewFile(contextActionEntry)
+                      ? "预览"
+                      : "打开"}
               </button>
               {!contextActionEntry.isDirectory && (
-                <button
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
-                  onClick={() => {
-                    setContextMenu(null);
-                    handleDownload(contextActionEntry);
-                  }}
-                >
-                  <Download className="h-4 w-4" />
-                  下载
-                </button>
+                <>
+                  <button
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+                    onClick={() => {
+                      setContextMenu(null);
+                      handleDownload(contextActionEntry);
+                    }}
+                  >
+                    <Download className="h-4 w-4" />
+                    下载
+                  </button>
+                  <button
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+                    onClick={() => openShareDialog(contextActionEntry)}
+                  >
+                    <Share2 className="h-4 w-4" />
+                    分享
+                  </button>
+                </>
               )}
               <div className="my-1 h-px bg-border" />
             </>
@@ -1777,6 +1864,25 @@ function FilesPageContent() {
         open={transferDialogOpen} 
         onOpenChange={setTransferDialogOpen} 
         nodes={nodes} 
+      />
+
+      <FilePreviewDialog
+        target={previewTarget}
+        onClose={() => setPreviewTarget(null)}
+        onDownload={(path) => {
+          const entry = entries.find((item) => item.path === path);
+          if (entry) handleDownload(entry);
+        }}
+      />
+
+      <FileShareDialog
+        target={shareTarget}
+        open={shareOpen}
+        onOpenChange={(open) => {
+          setShareOpen(open);
+          if (!open) setShareTarget(null);
+        }}
+        onCreated={() => showToast("分享已创建", "success")}
       />
     </div>
   );

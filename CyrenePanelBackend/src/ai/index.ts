@@ -1,7 +1,8 @@
 import { Elysia, t } from "elysia";
 import { getConfig, setConfig, dbGetNode } from "../db";
 import { logger } from "../logger/index";
-import { exchangeApiKeyForToken } from "../nodes/index";
+import { fetchNode } from "../nodes/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 // ── AI Provider 配置类型 ─────────────────────────────────────────
 
@@ -33,13 +34,7 @@ function saveProviders(providers: AIProvider[]) {
 // ── AI 路由 ─────────────────────────────────────────────────────
 
 export const aiRoutes = new Elysia()
-  .derive(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
-  })
+  .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
   // 检测当前服务器系统信息（支持子节点代理）
   .get("/api/ai/system-info", async ({ profile, query }: any) => {
@@ -52,12 +47,7 @@ export const aiRoutes = new Elysia()
       const node = dbGetNode(nodeId);
       if (!node) return { success: false, message: "节点不存在" };
       try {
-        const token = await exchangeApiKeyForToken(node.address, node.apiKey);
-        if (!token) return { success: false, message: "子节点不可达" };
-        const res = await fetch(`${node.address}/api/ai/system-info`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(10000),
-        });
+        const res = await fetchNode(node, "/api/ai/system-info", {}, 10_000);
         return await res.json();
       } catch (err: any) {
         return { success: false, message: `子节点系统信息获取失败: ${err.message}` };

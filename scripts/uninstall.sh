@@ -15,6 +15,7 @@ NC='\033[0m'
 BOLD='\033[1m'
 
 CYRENE_HOME="/opt/CyrenePanel"
+CYRENE_DATA_DIR="${CYRENE_DATA_DIR:-/var/lib/cyrene}"
 BACKEND_USER="cyrene"
 
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -40,6 +41,7 @@ fi
 
 echo -e "  ${RED}${BOLD}警告: 此操作将完全卸载 CyrenePanel！${NC}"
 echo -e "  ${YELLOW}安装目录: $CYRENE_HOME 将被删除${NC}"
+echo -e "  ${YELLOW}运行数据: $CYRENE_DATA_DIR 将被删除${NC}"
 echo -e "  ${YELLOW}服务 cyrene-backend 和 cyrene-frontend 将被移除${NC}"
 echo -e "  ${YELLOW}用户 $BACKEND_USER 将被删除${NC}"
 echo ""
@@ -94,6 +96,13 @@ if [ -d "$CYRENE_HOME" ]; then
     info "删除安装目录..."
     rm -rf "$CYRENE_HOME"
     success "安装目录已删除"
+fi
+
+# 删除持久化运行数据
+if [ -d "$CYRENE_DATA_DIR" ]; then
+    info "删除运行数据目录..."
+    rm -rf "$CYRENE_DATA_DIR"
+    success "运行数据已删除"
 fi
 
 # 删除备份文件

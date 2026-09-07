@@ -40,6 +40,7 @@ import {
   Globe2,
   ShieldCheck,
   Database,
+  Store,
 } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { api } from "@/lib/api";
@@ -63,6 +64,11 @@ const navGroups = [
         title: "实例管理",
         url: "/dashboard/instances",
         icon: Box,
+      },
+      {
+        title: "应用广场",
+        url: "/dashboard/appstore",
+        icon: Store,
       },
       {
         title: "文件管理",

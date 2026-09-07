@@ -14,7 +14,9 @@ import {
 import { basename, join } from "path";
 import { execSync } from "child_process";
 import { logger } from "../logger/index";
+import { DATA_DIR as APP_DATA_DIR } from "../runtime-paths";
 import { auditLog, getRequestIp } from "../audit/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 interface CertificateInput {
   name?: string;
@@ -71,7 +73,7 @@ interface NginxLayout {
   sslDir: string;
 }
 
-const DATA_DIR = join(process.cwd(), "data", "certificates");
+const DATA_DIR = join(APP_DATA_DIR, "certificates");
 const SSL_START = "# CyrenePanelSSLStart";
 const SSL_END = "# CyrenePanelSSLEnd";
 const HTTPS_REDIRECT_START = "# CyrenePanelHttpsRedirectStart";
@@ -812,10 +814,7 @@ async function renewCertificate(
 }
 
 async function authProfile(jwt: any, request: Request) {
-  const authHeader = request.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!token) return null;
-  return await jwt.verify(token);
+  return resolveRequestProfile(jwt, request);
 }
 
 export const certificateRoutes = new Elysia()

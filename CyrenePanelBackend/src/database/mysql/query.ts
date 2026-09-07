@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { dbGetMysqlConn } from "../../db";
 import { getPoolForConn } from "./pool";
+import { resolveRequestProfile } from "../../node-auth/request-profile";
 
 // ── 通用查询执行器 ────────────────────────────────────────────────────
 
@@ -18,10 +19,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 通用 SQL 执行
   .post("/api/mysql/query", async ({ jwt, request, body }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { connectionId, sql, database } = body || {};
@@ -107,10 +105,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 列出数据库
   .get("/api/mysql/databases", async ({ jwt, request, query }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const connectionId = query?.connectionId;
@@ -127,10 +122,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 创建数据库
   .post("/api/mysql/databases", async ({ jwt, request, body }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { connectionId, name, charset, collation } = body || {};
@@ -149,10 +141,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 删除数据库
   .delete("/api/mysql/databases/:db", async ({ jwt, request, params, query }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const connectionId = query?.connectionId;
@@ -168,10 +157,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 列出表
   .get("/api/mysql/databases/:db/tables", async ({ jwt, request, params, query }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const connectionId = query?.connectionId;
@@ -200,10 +186,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 创建表
   .post("/api/mysql/databases/:db/tables", async ({ jwt, request, params, body }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { connectionId, sql } = body || {};
@@ -219,10 +202,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 删除表
   .delete("/api/mysql/databases/:db/tables/:table", async ({ jwt, request, params, query }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const connectionId = query?.connectionId;
@@ -238,10 +218,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 表结构
   .get("/api/mysql/databases/:db/tables/:table/structure", async ({ jwt, request, params, query }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const connectionId = query?.connectionId;
@@ -296,10 +273,7 @@ export const mysqlQueryRoutes = new Elysia()
 
   // 修改表结构（执行 ALTER TABLE 语句）
   .put("/api/mysql/databases/:db/tables/:table/structure", async ({ jwt, request, params, body }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { success: false, message: "未授权" };
-    const profile = await jwt.verify(token);
+    const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
 
     const { connectionId, sql } = body || {};

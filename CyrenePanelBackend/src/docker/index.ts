@@ -2,6 +2,7 @@ import { Elysia } from "elysia";
 import { logger } from "../logger/index";
 import { storeApps } from "./store";
 import { getConfig, setConfig } from "../db";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 // ── Docker 镜像仓库镜像辅助 ───────────────────────────────────────
 
@@ -219,13 +220,7 @@ async function getDockerInfo(): Promise<any> {
 // ── 路由 ────────────────────────────────────────────────────────────
 
 export const dockerRoutes = new Elysia()
-  .derive(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
-  })
+  .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
   // ── Docker 信息 ───────────────────────────────────────────────────
   .get("/api/docker/info", async ({ profile }: any) => {

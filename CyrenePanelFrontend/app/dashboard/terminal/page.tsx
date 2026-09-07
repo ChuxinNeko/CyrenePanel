@@ -42,7 +42,6 @@ interface NodeInfo {
   id: string;
   name: string;
   address: string;
-  apiKey: string;
   isMain: number;
   createdAt: number;
 }

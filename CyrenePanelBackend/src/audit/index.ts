@@ -5,24 +5,11 @@ import {
   dbQueryAuditLogs,
   dbGetAllNodes,
   type AuditLogRow,
+  type NodeRow,
 } from "../db";
 import { logger } from "../logger/index";
-
-async function fetchNodeToken(address: string, apiKey: string): Promise<string | null> {
-  try {
-    const res = await fetch(`${address}/api/auth/key`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: apiKey }),
-      signal: AbortSignal.timeout(5000),
-    });
-    const data = (await res.json()) as any;
-    if (data?.success && data.token) return data.token;
-  } catch {
-    // ignore
-  }
-  return null;
-}
+import { fetchNode } from "../nodes/index";
+import { resolveRequestProfile } from "../node-auth/request-profile";
 
 export type AuditCategory =
   | "auth"
@@ -120,21 +107,9 @@ function rowToItem(row: AuditLogRow, nodeId: string, nodeName: string): AuditLog
   };
 }
 
-async function fetchNodeAuditLogs(
-  address: string,
-  apiKey: string,
-  limit: number,
-): Promise<AuditLogRow[]> {
+async function fetchNodeAuditLogs(node: NodeRow, limit: number): Promise<AuditLogRow[]> {
   try {
-    const token = await fetchNodeToken(address, apiKey);
-    if (!token) return [];
-    const res = await fetch(
-      `${address}/api/audit/logs?limit=${encodeURIComponent(String(limit))}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(5000),
-      },
-    );
+    const res = await fetchNode(node, `/api/audit/logs?limit=${encodeURIComponent(String(limit))}`, {}, 5000);
     const data = (await res.json()) as { success?: boolean; logs?: AuditLogRow[] };
     if (data?.success && Array.isArray(data.logs)) return data.logs;
   } catch {
@@ -144,13 +119,7 @@ async function fetchNodeAuditLogs(
 }
 
 export const auditRoutes = new Elysia()
-  .derive(async ({ jwt, request }: any) => {
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) return { profile: null };
-    const profile = await jwt.verify(token);
-    return { profile };
-  })
+  .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
   // 本机审计日志（包含主节点和子节点都可调用）
   .get("/api/audit/logs", ({ profile, query }: any) => {
@@ -174,7 +143,7 @@ export const auditRoutes = new Elysia()
     const nodes = dbGetAllNodes();
     const remoteResults = await Promise.all(
       nodes.map(async (node) => {
-        const rows = await fetchNodeAuditLogs(node.address, node.apiKey, limit);
+        const rows = await fetchNodeAuditLogs(node, limit);
         return rows.map((row) => rowToItem(row, node.id, node.name));
       }),
     );
