@@ -83,7 +83,10 @@ interface UnitListEntry {
 /**
  * 解析 `systemctl list-units --plain --no-legend` 的输出。
  * 列格式为 UNIT LOAD ACTIVE SUB DESCRIPTION；必须加 --plain，
- * 否则失败的单元行首会多出 "●" 导致整行错位、被漏掉。
+ * 否则状态异常的单元行首会多出 "●"，导致整行错位后被当成非法行丢弃——
+ * 真正 failed 的服务恰好就属于这一类，旧实现会让它们从列表里消失。
+ *
+ * LOAD 为 not-found 的是被其它单元引用但并未安装的占位条目，不是真实服务，跳过。
  */
 function parseSystemctlList(output: string): UnitListEntry[] {
   const entries: UnitListEntry[] = [];
@@ -91,6 +94,7 @@ function parseSystemctlList(output: string): UnitListEntry[] {
     if (!line.trim()) continue;
     const parts = line.trim().split(/\s+/);
     if (!parts[0]?.endsWith(".service")) continue;
+    if (parts[1] === "not-found") continue;
     entries.push({
       name: parts[0],
       activeState: parts[2] || "unknown",
