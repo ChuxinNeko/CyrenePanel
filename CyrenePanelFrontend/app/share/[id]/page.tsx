@@ -6,11 +6,7 @@ import {
   AlertCircle,
   Download,
   Eye,
-  File,
-  FileImage,
-  Film,
   Lock,
-  Music,
   RefreshCw,
   Share2,
 } from "lucide-react";
@@ -35,6 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { FileTypeIcon } from "@/lib/file-icons";
 import {
   canPreviewFile,
   checkPreviewSize,
@@ -76,13 +73,6 @@ function toListItems(share: PublicShareInfo): ShareListItem[] {
       mimeType: share.mimeType,
     },
   ];
-}
-
-function KindIcon({ kind, className = "h-4 w-4" }: { kind: FileKind; className?: string }) {
-  if (kind === "video") return <Film className={`${className} shrink-0 text-pink-500`} />;
-  if (kind === "audio") return <Music className={`${className} shrink-0 text-cyan-500`} />;
-  if (kind === "image") return <FileImage className={`${className} shrink-0 text-purple-500`} />;
-  return <File className={`${className} shrink-0 text-muted-foreground`} />;
 }
 
 function kindLabel(kind: FileKind): string {
@@ -132,7 +122,7 @@ function SharePreviewBody({
   if (!previewable || sizeError) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed bg-muted/20 px-4 py-16 text-center">
-        <KindIcon kind={kind} className="h-8 w-8" />
+        <FileTypeIcon entry={{ name: item.fileName }} className="h-8 w-8" />
         <p className="text-sm text-muted-foreground">
           {sizeError || "请下载后查看"}
         </p>
@@ -438,7 +428,7 @@ export default function PublicSharePage() {
                       <TableRow key={item.id} className="group">
                         <TableCell>
                           <div className="flex min-w-0 items-center gap-2">
-                            <KindIcon kind={kind} />
+                            <FileTypeIcon entry={{ name: item.fileName }} />
                             {canPreview ? (
                               <button
                                 type="button"
