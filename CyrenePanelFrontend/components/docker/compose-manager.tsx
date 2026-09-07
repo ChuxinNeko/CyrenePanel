@@ -8,7 +8,6 @@ import {
   CircleCheck,
   FileCode2,
   FileText,
-  Layers3,
   Loader2,
   Pencil,
   Plus,
