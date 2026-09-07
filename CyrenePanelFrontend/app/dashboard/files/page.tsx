@@ -198,6 +198,15 @@ function baseName(path: string): string {
   return path.replace(/\\/g, "/").split("/").filter(Boolean).pop() || path;
 }
 
+/**
+ * 文件管理是工作区型页面（双栏资源管理器），需要占满可用宽高，
+ * 因此不像其它页面那样用 max-w-* 居中——长路径和文件列表列都需要横向空间。
+ *
+ * 内边距由外层 <main className="p-6"> 提供，这里不再叠加；
+ * 高度 7rem = 顶栏 h-16 (4rem) + main 上下 p-6 (共 3rem)。
+ */
+const PAGE_SHELL_CLASS = "flex h-[calc(100vh-7rem)] w-full min-w-0 flex-col gap-3";
+
 function getArchiveExtension(path: string): string {
   const lower = path.toLowerCase();
   return ARCHIVE_EXTENSIONS.find((ext) => lower.endsWith(ext)) || "";
@@ -1034,7 +1043,7 @@ function FilesPageContent() {
 
   if (loading) {
     return (
-      <div className="mx-auto flex h-[calc(100vh-7rem)] w-full max-w-7xl flex-col gap-4 p-4">
+      <div className={PAGE_SHELL_CLASS}>
         <Skeleton className="h-10 w-72" />
         <Skeleton className="h-12 w-full" />
         <Skeleton className="h-full w-full" />
@@ -1043,15 +1052,12 @@ function FilesPageContent() {
   }
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-7rem)] w-full max-w-7xl flex-col gap-4 p-4">
-      <div className="flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">文件管理</h1>
-          <p className="text-sm text-muted-foreground">
-            {currentNode ? `${currentNode.name} · ${currentNode.address}` : "主节点"} · {entries.length} 项
-          </p>
-        </div>
-
+    <div className={PAGE_SHELL_CLASS}>
+      <div className="shrink-0">
+        <h1 className="text-3xl font-bold tracking-tight">文件管理</h1>
+        <p className="text-sm text-muted-foreground">
+          {currentNode ? `${currentNode.name} · ${currentNode.address}` : "主节点"} · {entries.length} 项
+        </p>
       </div>
 
       <Card className="flex flex-row min-h-0 flex-1 overflow-hidden p-0 gap-0">
@@ -1889,7 +1895,7 @@ export default function FilesPage() {
 
 function FilesPageFallback() {
   return (
-    <div className="mx-auto flex h-[calc(100vh-7rem)] w-full max-w-7xl flex-col gap-4 p-4">
+    <div className={PAGE_SHELL_CLASS}>
       <Skeleton className="h-10 w-72" />
       <Skeleton className="h-12 w-full" />
       <Skeleton className="h-full w-full" />
