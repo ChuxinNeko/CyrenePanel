@@ -7,8 +7,17 @@
 
 import { logger } from "../logger/index";
 
-export async function docker(args: string[]): Promise<string> {
-  const proc = Bun.spawn(["docker", ...args], { stdout: "pipe", stderr: "pipe" });
+export interface DockerRunOptions {
+  /** compose 项目需要在配置文件所在目录执行，相对路径挂载与 .env 才能解析 */
+  cwd?: string;
+}
+
+export async function docker(args: string[], options: DockerRunOptions = {}): Promise<string> {
+  const proc = Bun.spawn(["docker", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+  });
   const exitCode = await proc.exited;
   const stdout = await new Response(proc.stdout).text();
   if (exitCode !== 0) {
@@ -47,8 +56,13 @@ export async function dockerJsonLines<T = any>(args: string[]): Promise<T[]> {
 export async function dockerStream(
   args: string[],
   onLine: (line: string) => void,
+  options: DockerRunOptions = {},
 ): Promise<number> {
-  const proc = Bun.spawn(["docker", ...args], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(["docker", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+  });
 
   const pump = async (stream: ReadableStream<Uint8Array> | null) => {
     if (!stream) return;
