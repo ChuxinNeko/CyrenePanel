@@ -17,6 +17,7 @@ import { logger } from "../logger/index";
 import { DATA_DIR as APP_DATA_DIR } from "../runtime-paths";
 import { auditLog, getRequestIp } from "../audit/index";
 import { resolveRequestProfile } from "../node-auth/request-profile";
+import { detectNginxLayout } from "../sites/nginx-layout";
 
 interface CertificateInput {
   name?: string;
@@ -111,48 +112,16 @@ function safeId(value: string): string {
   return basename(value || "").replace(/[^a-zA-Z0-9._-]/g, "");
 }
 
-function detectNginxBinary(): string | null {
-  const candidates = [
-    "/www/server/nginx/sbin/nginx",
-    "/usr/sbin/nginx",
-    "/usr/local/sbin/nginx",
-  ];
-  for (const item of candidates) {
-    if (existsSync(item)) return item;
-  }
-  return execCmdSafe(process.platform === "win32" ? "where nginx" : "command -v nginx", 5000)?.split(/\r?\n/)[0] || null;
-}
-
 function detectLayout(): NginxLayout {
-  const binary = detectNginxBinary();
-  const installed = !!binary;
-  if (existsSync("/www/server/nginx")) {
-    return {
-      installed,
-      binary,
-      mode: "compiled",
-      availableDir: "/www/server/nginx/conf/vhost",
-      enabledDir: "/www/server/nginx/conf/vhost",
-      sslDir: "/www/server/nginx/conf/ssl",
-    };
-  }
-  if (existsSync("/etc/nginx/sites-available") || existsSync("/etc/nginx/sites-enabled")) {
-    return {
-      installed,
-      binary,
-      mode: "debian-sites",
-      availableDir: "/etc/nginx/sites-available",
-      enabledDir: "/etc/nginx/sites-enabled",
-      sslDir: "/etc/nginx/ssl/cyrene",
-    };
-  }
+  const base = detectNginxLayout();
+  const sslDir = base.mode === "compiled" ? "/www/server/nginx/conf/ssl" : "/etc/nginx/ssl/cyrene";
   return {
-    installed,
-    binary,
-    mode: installed ? "conf.d" : "unknown",
-    availableDir: installed ? "/etc/nginx/conf.d" : null,
-    enabledDir: installed ? "/etc/nginx/conf.d" : null,
-    sslDir: "/etc/nginx/ssl/cyrene",
+    installed: base.installed,
+    binary: base.binary,
+    mode: base.mode,
+    availableDir: base.availableDir,
+    enabledDir: base.enabledDir,
+    sslDir,
   };
 }
 

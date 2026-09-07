@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -37,6 +38,8 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { SiteCertificatePanel } from "@/components/site-certificate-panel";
+import { SiteCreateDialog } from "@/components/site-create-dialog";
+import { SiteRuntimePanel } from "@/components/site-runtime-panel";
 import { API_BASE } from "@/lib/api-base";
 import { toast } from "sonner";
 import {
@@ -119,6 +122,11 @@ interface SiteInfo {
   status: "running" | "stopped";
   ssl: boolean;
   php: boolean;
+  type: "static" | "php" | "runtime" | "proxy";
+  runtime: string | null;
+  appPort: number | null;
+  startCommand: string | null;
+  proxyTarget: string | null;
   configPath: string;
   rootExists: boolean;
   updatedAt: number | null;
@@ -142,17 +150,8 @@ interface SiteSummary {
   stopped: number;
   ssl: number;
   php: number;
-}
-
-interface CreateForm {
-  domain: string;
-  otherDomains: string;
-  root: string;
-  port: string;
-  index: string;
-  enablePhp: boolean;
-  phpUpstream: string;
-  remark: string;
+  runtime: number;
+  proxy: number;
 }
 
 interface SiteSettings {
@@ -177,17 +176,6 @@ interface SiteSettings {
   };
 }
 
-const defaultForm: CreateForm = {
-  domain: "",
-  otherDomains: "",
-  root: "",
-  port: "80",
-  index: "index.html index.htm index.php",
-  enablePhp: false,
-  phpUpstream: "unix:/run/php/php-fpm.sock",
-  remark: "",
-};
-
 const emptySettings: SiteSettings = {
   site: null,
   config: { path: "", content: "" },
@@ -195,6 +183,27 @@ const emptySettings: SiteSettings = {
   proxy: { enabled: false, path: "/api/", target: "" },
   logs: { accessPath: null, errorPath: null, access: "", error: "" },
 };
+
+const SITE_TYPE_LABELS: Record<string, string> = {
+  static: "静态",
+  php: "PHP",
+  runtime: "运行环境",
+  proxy: "反向代理",
+};
+
+const RUNTIME_LABELS: Record<string, string> = {
+  node: "Node.js",
+  java: "Java",
+  python: "Python",
+  go: "Go",
+};
+
+function typeLabel(site: SiteInfo) {
+  if (site.type === "runtime" && site.runtime) {
+    return RUNTIME_LABELS[site.runtime] || site.runtime;
+  }
+  return SITE_TYPE_LABELS[site.type] || "静态";
+}
 
 function statusColor(status: SiteInfo["status"]) {
   return status === "running"
@@ -233,13 +242,14 @@ export default function SitesPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState<CreateForm>(defaultForm);
+  const [phpUpstreams, setPhpUpstreams] = useState<{ version: string; upstream: string }[]>([]);
+  const [runtimeStatus, setRuntimeStatus] = useState<Record<string, "running" | "stopped" | "failed" | "unknown">>({});
   const [configSite, setConfigSite] = useState<SiteInfo | null>(null);
   const [configContent, setConfigContent] = useState("");
   const [configLoading, setConfigLoading] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [deleteSite, setDeleteSite] = useState<SiteInfo | null>(null);
+  const [purgeApp, setPurgeApp] = useState(true);
   const [actingSite, setActingSite] = useState<string | null>(null);
   const [settingSite, setSettingSite] = useState<SiteInfo | null>(null);
   const [settings, setSettings] = useState<SiteSettings>(emptySettings);
@@ -271,17 +281,20 @@ export default function SitesPage() {
         sites?: SiteInfo[];
         summary?: SiteSummary;
         nginx?: NginxInfo;
+        phpUpstreams?: { version: string; upstream: string }[];
         message?: string;
       }>(basePath);
       if (data.success) {
         setSites(data.sites || []);
         setSummary(data.summary || null);
         setNginx(data.nginx || null);
+        setPhpUpstreams(data.phpUpstreams || []);
         setError(null);
       } else {
         setSites([]);
         setSummary(null);
         setNginx(null);
+        setPhpUpstreams([]);
         setError(data.message || "网站列表加载失败");
       }
     } catch (e: any) {
@@ -331,41 +344,49 @@ export default function SitesPage() {
     );
   }, [search, sites]);
 
-  const resetForm = () => setForm(defaultForm);
-
-  const submitCreate = async () => {
-    const domain = form.domain.trim().toLowerCase();
-    if (!domain) {
-      toast.error("请填写主域名");
+  // 运行环境网站：懒加载 systemd 应用状态
+  useEffect(() => {
+    const runtimeSites = sites.filter((site) => site.type === "runtime");
+    if (runtimeSites.length === 0) {
+      setRuntimeStatus({});
       return;
     }
-    setCreating(true);
+    let cancelled = false;
+    Promise.all(
+      runtimeSites.map(async (site) => {
+        try {
+          const res = await apiGet<{
+            success: boolean;
+            app?: { status?: "running" | "stopped" | "failed" | "unknown" };
+          }>(`${basePath}/${encodeURIComponent(site.name)}/app`);
+          return [site.name, res.app?.status || "unknown"] as const;
+        } catch {
+          return [site.name, "unknown"] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setRuntimeStatus(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sites, basePath]);
+
+  const nginxAction = async (action: "test" | "reload") => {
+    setActingSite(`_nginx:${action}`);
     try {
-      const domains = [
-        domain,
-        ...form.otherDomains.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean),
-      ];
-      const res = await apiPost<{ success: boolean; message?: string }>(basePath, {
-        domains,
-        root: form.root.trim() || undefined,
-        port: Number(form.port || 80),
-        index: form.index,
-        enablePhp: form.enablePhp,
-        phpUpstream: form.phpUpstream,
-        remark: form.remark,
-      });
+      const res = await apiPost<{ success: boolean; message?: string }>(
+        `${basePath}/_nginx/${action}`
+      );
       if (res.success) {
-        toast.success(res.message || "网站创建成功");
-        setCreateOpen(false);
-        resetForm();
-        await fetchSites();
+        toast.success(res.message || "操作成功");
       } else {
-        toast.error(res.message || "网站创建失败");
+        toast.error(res.message || "操作失败");
       }
     } catch (e: any) {
-      toast.error(e.message || "网站创建失败");
+      toast.error(e.message || "操作失败");
     } finally {
-      setCreating(false);
+      setActingSite(null);
     }
   };
 
@@ -594,8 +615,9 @@ export default function SitesPage() {
     if (!deleteSite) return;
     setActingSite(`${deleteSite.name}:delete`);
     try {
+      const purge = deleteSite.type === "runtime" && purgeApp ? "?purgeApp=1" : "";
       const res = await apiDelete<{ success: boolean; message?: string }>(
-        `${basePath}/${encodeURIComponent(deleteSite.name)}`
+        `${basePath}/${encodeURIComponent(deleteSite.name)}${purge}`
       );
       if (res.success) {
         toast.success(res.message || "站点已删除");
@@ -632,15 +654,15 @@ export default function SitesPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">网站管理</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            基于 Nginx 的站点创建、配置和运行状态管理
+            静态 / PHP / Node.js / Java / Python / Go 运行环境与反向代理站点管理
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={() => runAction({ name: "_nginx", domains: [], primaryDomain: "_nginx", port: 80, root: "", status: "running", ssl: false, php: false, configPath: "", rootExists: false, updatedAt: null, remark: "" }, "test")}>
+          <Button variant="outline" onClick={() => nginxAction("test")} disabled={actingSite === "_nginx:test"}>
             <ShieldCheck className="h-4 w-4" />
             检查配置
           </Button>
-          <Button variant="outline" onClick={() => runAction({ name: "_nginx", domains: [], primaryDomain: "_nginx", port: 80, root: "", status: "running", ssl: false, php: false, configPath: "", rootExists: false, updatedAt: null, remark: "" }, "reload")}>
+          <Button variant="outline" onClick={() => nginxAction("reload")} disabled={actingSite === "_nginx:reload"}>
             <RotateCw className="h-4 w-4" />
             重载 Nginx
           </Button>
@@ -650,7 +672,7 @@ export default function SitesPage() {
           </Button>
           <Button onClick={() => setCreateOpen(true)} disabled={!nginx?.installed}>
             <Plus className="h-4 w-4" />
-            添加网站
+            创建网站
           </Button>
         </div>
       </div>
@@ -742,13 +764,15 @@ export default function SitesPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">SSL / PHP</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">SSL / 运行环境</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {summary?.ssl || 0} / {summary?.php || 0}
+              {summary?.ssl || 0} / {summary?.runtime || 0}
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">已检测配置</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              PHP {summary?.php || 0} · 反代 {summary?.proxy || 0}
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -759,22 +783,27 @@ export default function SitesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead className="min-w-52">域名</TableHead>
+                <TableHead>类型</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>端口</TableHead>
-                <TableHead className="min-w-64">根目录</TableHead>
-                <TableHead>能力</TableHead>
+                <TableHead className="min-w-64">目录 / 目标</TableHead>
                 <TableHead>更新时间</TableHead>
                 <TableHead className="w-64 text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredSites.map((site) => (
+              {filteredSites.map((site) => {
+                const appStatus = site.type === "runtime" ? runtimeStatus[site.name] : undefined;
+                return (
                 <TableRow key={site.name}>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Globe2 className="h-4 w-4 text-muted-foreground" />
                       <div className="min-w-0">
-                        <div className="truncate font-medium">{site.primaryDomain}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="truncate font-medium">{site.primaryDomain}</span>
+                          {site.ssl && <Badge variant="secondary">SSL</Badge>}
+                        </div>
                         <div className="truncate text-xs text-muted-foreground">
                           {site.domains.slice(1).join(" ") || site.remark || site.name}
                         </div>
@@ -782,23 +811,40 @@ export default function SitesPage() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className={statusColor(site.status)}>
-                      {statusLabel(site.status)}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{site.port}</TableCell>
-                  <TableCell>
-                    <div className="max-w-72 truncate font-mono text-xs">{site.root || "-"}</div>
-                    {!site.rootExists && (
-                      <div className="text-xs text-amber-600">目录不存在</div>
+                    <Badge variant="outline">{typeLabel(site)}</Badge>
+                    {site.type === "runtime" && site.appPort != null && (
+                      <div className="mt-1 font-mono text-xs text-muted-foreground">:{site.appPort}</div>
                     )}
                   </TableCell>
                   <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {site.ssl && <Badge variant="secondary">SSL</Badge>}
-                      {site.php && <Badge variant="secondary">PHP</Badge>}
-                      {!site.ssl && !site.php && <span className="text-xs text-muted-foreground">静态</span>}
+                    <div className="flex flex-col items-start gap-1">
+                      <Badge variant="outline" className={statusColor(site.status)}>
+                        {statusLabel(site.status)}
+                      </Badge>
+                      {appStatus && (
+                        <Badge
+                          variant="outline"
+                          className={
+                            appStatus === "running"
+                              ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                              : appStatus === "failed"
+                                ? "bg-destructive/15 text-destructive border-destructive/30"
+                                : "bg-muted text-muted-foreground border-muted"
+                          }
+                        >
+                          应用{appStatus === "running" ? "运行中" : appStatus === "failed" ? "失败" : "已停止"}
+                        </Badge>
+                      )}
                     </div>
+                  </TableCell>
+                  <TableCell>{site.port}</TableCell>
+                  <TableCell>
+                    <div className="max-w-72 truncate font-mono text-xs">
+                      {site.type === "proxy" ? site.proxyTarget || "-" : site.root || "-"}
+                    </div>
+                    {site.type !== "proxy" && site.root && !site.rootExists && (
+                      <div className="text-xs text-amber-600">目录不存在</div>
+                    )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {formatTime(site.updatedAt)}
@@ -841,11 +887,12 @@ export default function SitesPage() {
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
               {filteredSites.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
-                    {sites.length === 0 ? "暂无网站，添加第一个 Nginx 站点" : "没有匹配的网站"}
+                    {sites.length === 0 ? "暂无网站，点击「创建网站」添加第一个站点" : "没有匹配的网站"}
                   </TableCell>
                 </TableRow>
               )}
@@ -854,110 +901,14 @@ export default function SitesPage() {
         </CardContent>
       </Card>
 
-      <Dialog
+      <SiteCreateDialog
         open={createOpen}
-        onOpenChange={(open) => {
-          setCreateOpen(open);
-          if (!open) resetForm();
-        }}
-      >
-        <DialogContent className="max-h-[86vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              添加网站
-            </DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-4 py-2 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">主域名</label>
-              <Input
-                placeholder="example.com"
-                value={form.domain}
-                onChange={(e) => {
-                  const domain = e.target.value;
-                  const rootBase = nginx?.rootBase || "/www/wwwroot";
-                  setForm({
-                    ...form,
-                    domain,
-                    root: form.root || (domain ? `${rootBase}/${domain}` : ""),
-                  });
-                }}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">监听端口</label>
-              <Input
-                inputMode="numeric"
-                value={form.port}
-                onChange={(e) => setForm({ ...form, port: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-sm font-medium">其他域名</label>
-              <Input
-                placeholder="www.example.com api.example.com"
-                value={form.otherDomains}
-                onChange={(e) => setForm({ ...form, otherDomains: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-sm font-medium">网站目录</label>
-              <Input
-                className="font-mono text-sm"
-                placeholder={`${nginx?.rootBase || "/www/wwwroot"}/example.com`}
-                value={form.root}
-                onChange={(e) => setForm({ ...form, root: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-sm font-medium">默认文档</label>
-              <Input
-                className="font-mono text-sm"
-                value={form.index}
-                onChange={(e) => setForm({ ...form, index: e.target.value })}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-md border p-3 md:col-span-2">
-              <div>
-                <div className="text-sm font-medium">启用 PHP 转发</div>
-                <div className="text-xs text-muted-foreground">写入 fastcgi_pass 配置</div>
-              </div>
-              <Switch
-                checked={form.enablePhp}
-                onCheckedChange={(checked) => setForm({ ...form, enablePhp: checked })}
-              />
-            </div>
-            {form.enablePhp && (
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="text-sm font-medium">PHP FastCGI</label>
-                <Input
-                  className="font-mono text-sm"
-                  value={form.phpUpstream}
-                  onChange={(e) => setForm({ ...form, phpUpstream: e.target.value })}
-                />
-              </div>
-            )}
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-sm font-medium">备注</label>
-              <Input
-                placeholder="项目、负责人或用途"
-                value={form.remark}
-                onChange={(e) => setForm({ ...form, remark: e.target.value })}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={submitCreate} disabled={creating || !form.domain.trim()}>
-              {creating && <Loader2 className="h-4 w-4 animate-spin" />}
-              创建网站
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onOpenChange={setCreateOpen}
+        basePath={basePath}
+        rootBase={nginx?.rootBase || "/www/wwwroot"}
+        phpUpstreams={phpUpstreams}
+        onCreated={fetchSites}
+      />
 
       <Dialog
         open={!!settingSite}
@@ -984,14 +935,22 @@ export default function SitesPage() {
               加载设置中...
             </div>
           ) : (
-            <Tabs defaultValue="directory" className="min-h-0">
+            <Tabs defaultValue={settingSite?.type === "runtime" ? "app" : settingSite?.type === "proxy" ? "config" : "directory"} className="min-h-0">
               <div className="grid h-[68vh] grid-cols-[200px_minmax(0,1fr)]">
                 <div className="border-r bg-muted/30 p-3">
                   <TabsList className="h-auto w-full flex-col items-stretch justify-start gap-1 bg-transparent p-0">
-                    <TabsTrigger value="directory" className="h-9 justify-start px-3">
-                      <FolderOpen className="h-4 w-4" />
-                      网站目录
-                    </TabsTrigger>
+                    {settingSite?.type === "runtime" && (
+                      <TabsTrigger value="app" className="h-9 justify-start px-3">
+                        <PlayCircle className="h-4 w-4" />
+                        运行环境
+                      </TabsTrigger>
+                    )}
+                    {settingSite?.type !== "proxy" && (
+                      <TabsTrigger value="directory" className="h-9 justify-start px-3">
+                        <FolderOpen className="h-4 w-4" />
+                        {settingSite?.type === "runtime" ? "项目目录" : "网站目录"}
+                      </TabsTrigger>
+                    )}
                     <TabsTrigger value="config" className="h-9 justify-start px-3">
                       <FileCode2 className="h-4 w-4" />
                       配置文件
@@ -1000,10 +959,12 @@ export default function SitesPage() {
                       <ArrowRightLeft className="h-4 w-4" />
                       重定向
                     </TabsTrigger>
-                    <TabsTrigger value="proxy" className="h-9 justify-start px-3">
-                      <Network className="h-4 w-4" />
-                      反向代理
-                    </TabsTrigger>
+                    {settingSite?.type !== "runtime" && (
+                      <TabsTrigger value="proxy" className="h-9 justify-start px-3">
+                        <Network className="h-4 w-4" />
+                        反向代理
+                      </TabsTrigger>
+                    )}
                     <TabsTrigger value="certificate" className="h-9 justify-start px-3">
                       <Shield className="h-4 w-4" />
                       证书管理
@@ -1016,12 +977,24 @@ export default function SitesPage() {
                 </div>
 
                 <div className="min-w-0 overflow-hidden p-5">
+              {settingSite?.type === "runtime" && (
+                <TabsContent value="app" className="mt-0 h-full overflow-y-auto">
+                  <SiteRuntimePanel
+                    siteName={settingSite.name}
+                    basePath={basePath}
+                    onChanged={fetchSites}
+                  />
+                </TabsContent>
+              )}
+              {settingSite?.type !== "proxy" && (
               <TabsContent value="directory" className="mt-0 h-full overflow-y-auto">
                 <div className="space-y-4">
                   <div className="rounded-md border p-4">
                     <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
                       <div className="space-y-1.5">
-                        <label className="text-sm font-medium">网站根目录</label>
+                        <label className="text-sm font-medium">
+                          {settingSite?.type === "runtime" ? "项目目录" : "网站根目录"}
+                        </label>
                         <Input
                           className="font-mono text-sm"
                           value={rootValue}
@@ -1050,6 +1023,7 @@ export default function SitesPage() {
                   </div>
                 </div>
               </TabsContent>
+              )}
 
               <TabsContent value="config" className="mt-0 h-full overflow-hidden">
                 <div className="space-y-3">
@@ -1286,13 +1260,27 @@ export default function SitesPage() {
               删除网站
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-2 py-2">
+          <div className="space-y-3 py-2">
             <p className="text-sm">
-              确定删除 <span className="font-medium">{deleteSite?.primaryDomain}</span> 的 Nginx 站点配置吗？
+              确定删除 <span className="font-medium">{deleteSite?.primaryDomain}</span> 的站点配置吗？
             </p>
             <p className="text-xs text-muted-foreground">
-              只删除 Nginx 配置和启用链接，不删除网站根目录文件。
+              只删除 Nginx 配置和启用链接，不删除网站目录下的文件。
             </p>
+            {deleteSite?.type === "runtime" && (
+              <label className="flex cursor-pointer items-center gap-2 rounded-md border p-3">
+                <Checkbox
+                  checked={purgeApp}
+                  onChange={(e) => setPurgeApp(e.target.checked)}
+                />
+                <span>
+                  <span className="text-sm font-medium">同时删除应用服务</span>
+                  <span className="block text-xs text-muted-foreground">
+                    停止并移除 systemd 服务 {deleteSite.name}（cyrene-site-*），项目文件保留
+                  </span>
+                </span>
+              </label>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteSite(null)}>

@@ -15,18 +15,31 @@ import { basename, join, resolve } from "path";
 import { execSync } from "child_process";
 import { logger } from "../logger/index";
 import { resolveRequestProfile } from "../node-auth/request-profile";
+import { detectNginxLayout, NginxLayoutBase } from "./nginx-layout";
 
 type SiteStatus = "running" | "stopped";
+type SiteType = "static" | "php" | "runtime" | "proxy";
+type RuntimeKind = "node" | "java" | "python" | "go";
 
-interface NginxLayout {
-  installed: boolean;
-  binary: string | null;
-  version: string | null;
-  mode: "compiled" | "debian-sites" | "conf.d" | "unknown";
-  availableDir: string | null;
-  enabledDir: string | null;
+const RUNTIME_KINDS: RuntimeKind[] = ["node", "java", "python", "go"];
+const SERVICE_PREFIX = "cyrene-site-";
+
+interface NginxLayout extends NginxLayoutBase {
   rootBase: string;
   logDir: string;
+}
+
+interface SiteMeta {
+  v: number;
+  type: SiteType;
+  runtime?: RuntimeKind;
+  startCommand?: string;
+  appPort?: number;
+  user?: string;
+  env?: [string, string][];
+  autoStart?: boolean;
+  proxyTarget?: string;
+  root?: string;
 }
 
 interface SiteInfo {
@@ -38,6 +51,11 @@ interface SiteInfo {
   status: SiteStatus;
   ssl: boolean;
   php: boolean;
+  type: SiteType;
+  runtime: RuntimeKind | null;
+  appPort: number | null;
+  startCommand: string | null;
+  proxyTarget: string | null;
   configPath: string;
   enabledPath: string | null;
   rootExists: boolean;
@@ -46,6 +64,7 @@ interface SiteInfo {
 }
 
 interface CreateSiteBody {
+  type?: string;
   domain?: string;
   domains?: string[];
   root?: string;
@@ -54,6 +73,14 @@ interface CreateSiteBody {
   enablePhp?: boolean;
   phpUpstream?: string;
   remark?: string;
+  runtime?: string;
+  startCommand?: string;
+  appPort?: number;
+  user?: string;
+  env?: [string, string][];
+  autoStart?: boolean;
+  proxyTarget?: string;
+  proxyPath?: string;
 }
 
 interface ConfigBody {
@@ -83,6 +110,9 @@ const REDIRECT_START = "# CyrenePanelRedirectStart";
 const REDIRECT_END = "# CyrenePanelRedirectEnd";
 const PROXY_START = "# CyrenePanelProxyStart";
 const PROXY_END = "# CyrenePanelProxyEnd";
+const APP_PROXY_START = "# CyrenePanelAppProxyStart";
+const APP_PROXY_END = "# CyrenePanelAppProxyEnd";
+const META_PREFIX = "# CyreneSiteMeta: ";
 
 function execCmd(cmd: string, timeoutMs = 15000): string {
   return execSync(cmd, {
@@ -105,78 +135,287 @@ function execCmdSafe(cmd: string, timeoutMs = 15000): string | null {
   }
 }
 
-function detectNginxBinary(): string | null {
-  if (IS_WINDOWS) return execCmdSafe("where nginx", 5000)?.split(/\r?\n/)[0] || null;
-  const candidates = [
-    "/www/server/nginx/sbin/nginx",
-    "/usr/sbin/nginx",
-    "/usr/local/sbin/nginx",
-  ];
-  for (const item of candidates) {
-    if (existsSync(item)) return item;
-  }
-  return execCmdSafe("command -v nginx", 5000)?.split(/\r?\n/)[0] || null;
+// ── 站点元数据（写入 conf 头部注释，随配置文件派生，天然兼容远程节点） ──
+
+function encodeSiteMeta(meta: SiteMeta): string {
+  return Buffer.from(JSON.stringify(meta), "utf-8").toString("base64");
 }
 
-function getNginxVersion(binary: string | null): string | null {
-  if (!binary) return null;
-  const output = execCmdSafe(`${binary} -v 2>&1`, 5000);
-  return output?.match(/nginx\/([^\s]+)/)?.[1] || null;
+function decodeSiteMeta(content: string): SiteMeta | null {
+  const line = content.split(/\r?\n/).find((item) => item.startsWith(META_PREFIX));
+  if (!line) return null;
+  try {
+    const raw = line.slice(META_PREFIX.length).trim();
+    const parsed = JSON.parse(Buffer.from(raw, "base64").toString("utf-8"));
+    if (!parsed || typeof parsed !== "object") return null;
+    if (!["static", "php", "runtime", "proxy"].includes(parsed.type)) return null;
+    return parsed as SiteMeta;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSiteType(input: string | undefined, hasPhp = false): SiteType {
+  const value = (input || "").toLowerCase();
+  if (value === "static" || value === "php" || value === "runtime" || value === "proxy") return value;
+  return hasPhp ? "php" : "static";
+}
+
+function normalizeRuntimeKind(input: string | undefined): RuntimeKind {
+  const value = (input || "").toLowerCase();
+  return (RUNTIME_KINDS as string[]).includes(value) ? (value as RuntimeKind) : "node";
+}
+
+// ── systemd 应用服务管理（运行环境网站） ──────────────────────────
+
+function getServiceName(siteName: string): string {
+  return `${SERVICE_PREFIX}${siteName}.service`;
+}
+
+function unitFilePath(serviceName: string): string {
+  return `/etc/systemd/system/${serviceName}`;
+}
+
+function systemdAvailable(): boolean {
+  if (IS_WINDOWS) return false;
+  return !!execCmdSafe("systemctl --version", 5000);
+}
+
+function escapeUnitValue(value: string): string {
+  return value.replace(/%/g, "%%");
+}
+
+function buildUnitContent(options: {
+  description: string;
+  workingDir: string;
+  user: string;
+  startCommand: string;
+  env: [string, string][];
+  restart: string;
+}): string {
+  const execStart = options.startCommand.trim().startsWith("/")
+    ? escapeUnitValue(options.startCommand.trim())
+    : `/bin/bash -lc '${options.startCommand.trim().replace(/'/g, "'\\''")}'`;
+  const envLines = options.env
+    .filter(([key]) => key && key.trim())
+    .map(([key, value]) => `Environment="${escapeUnitValue(`${key.trim()}=${value ?? ""}`)}"`);
+
+  return [
+    "[Unit]",
+    `Description=${options.description}`,
+    "After=network.target",
+    "",
+    "[Service]",
+    "Type=simple",
+    `WorkingDirectory=${options.workingDir}`,
+    `User=${options.user || "root"}`,
+    ...(envLines.length ? ["", ...envLines] : []),
+    "",
+    `ExecStart=${execStart}`,
+    `Restart=${options.restart}`,
+    "RestartSec=3",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "",
+  ].join("\n");
+}
+
+function writeUnitFile(serviceName: string, content: string): void {
+  const path = unitFilePath(serviceName);
+  try {
+    writeFileSync(path, content, "utf-8");
+  } catch {
+    // 生产环境面板可能以非 root 运行，退回 sudo tee（与服务管理模块一致）
+    const escaped = content.replace(/'/g, "'\\''");
+    execCmd(`printf '%s' '${escaped}' | sudo tee ${path} > /dev/null`, 15000);
+  }
+}
+
+function removeUnitFile(serviceName: string): void {
+  const path = unitFilePath(serviceName);
+  if (!existsSync(path)) return;
+  try {
+    unlinkSync(path);
+  } catch {
+    execCmdSafe(`sudo rm -f ${path}`, 15000);
+  }
+}
+
+function daemonReload(): void {
+  execCmdSafe("systemctl daemon-reload", 15000);
+}
+
+function createAppService(options: {
+  siteName: string;
+  description: string;
+  workingDir: string;
+  user: string;
+  startCommand: string;
+  env: [string, string][];
+  autoStart: boolean;
+}): { success: boolean; message: string; serviceName: string } {
+  if (!systemdAvailable()) {
+    throw new Error("系统未安装 systemd，无法创建运行环境网站（仅支持 Linux）");
+  }
+  const serviceName = getServiceName(options.siteName);
+  if (existsSync(unitFilePath(serviceName))) {
+    throw new Error(`应用服务 ${serviceName} 已存在`);
+  }
+  const content = buildUnitContent({
+    description: options.description,
+    workingDir: options.workingDir,
+    user: options.user,
+    startCommand: options.startCommand,
+    env: options.env,
+    restart: "on-failure",
+  });
+  writeUnitFile(serviceName, content);
+  daemonReload();
+  if (options.autoStart) {
+    const enable = execCmdSafe(`systemctl enable --now ${serviceName}`, 30000);
+    if (enable === null) {
+      return { success: true, message: `应用服务已创建，但自启动失败，请手动启动`, serviceName };
+    }
+  }
+  return { success: true, message: "应用服务已创建", serviceName };
+}
+
+function updateAppService(options: {
+  siteName: string;
+  description: string;
+  workingDir: string;
+  user: string;
+  startCommand: string;
+  env: [string, string][];
+  autoStart: boolean;
+}): { success: boolean; message: string; serviceName: string } {
+  const serviceName = getServiceName(options.siteName);
+  if (!existsSync(unitFilePath(serviceName))) {
+    return createAppService(options);
+  }
+  const content = buildUnitContent({
+    description: options.description,
+    workingDir: options.workingDir,
+    user: options.user,
+    startCommand: options.startCommand,
+    env: options.env,
+    restart: "on-failure",
+  });
+  writeUnitFile(serviceName, content);
+  daemonReload();
+  if (options.autoStart) {
+    execCmdSafe(`systemctl enable ${serviceName}`, 15000);
+    const restart = execCmdSafe(`systemctl restart ${serviceName}`, 30000);
+    if (restart === null) {
+      return { success: true, message: "应用配置已更新，但重启失败，请手动启动", serviceName };
+    }
+  } else {
+    execCmdSafe(`systemctl disable ${serviceName}`, 15000);
+  }
+  return { success: true, message: "应用配置已更新", serviceName };
+}
+
+function removeAppService(siteName: string): { success: boolean; message: string } {
+  const serviceName = getServiceName(siteName);
+  if (!existsSync(unitFilePath(serviceName))) {
+    return { success: true, message: "无应用服务" };
+  }
+  execCmdSafe(`systemctl stop ${serviceName}`, 30000);
+  execCmdSafe(`systemctl disable ${serviceName}`, 15000);
+  removeUnitFile(serviceName);
+  daemonReload();
+  return { success: true, message: "应用服务已删除" };
+}
+
+function appServiceAction(siteName: string, action: "start" | "stop" | "restart"): { success: boolean; message: string } {
+  const serviceName = getServiceName(siteName);
+  if (!existsSync(unitFilePath(serviceName))) {
+    return { success: false, message: "应用服务不存在" };
+  }
+  const output = execCmdSafe(`systemctl ${action} ${serviceName}`, 30000);
+  if (output === null) {
+    return { success: false, message: `应用${action === "start" ? "启动" : action === "stop" ? "停止" : "重启"}失败，请查看日志` };
+  }
+  return { success: true, message: `应用已${action === "start" ? "启动" : action === "stop" ? "停止" : "重启"}` };
+}
+
+function appServiceStatus(siteName: string) {
+  const serviceName = getServiceName(siteName);
+  if (!existsSync(unitFilePath(serviceName))) {
+    return { exists: false, name: serviceName, status: "unknown" as const };
+  }
+  const output = execCmdSafe(`systemctl show ${serviceName} --no-pager`, 10000) || "";
+  const props: Record<string, string> = {};
+  for (const line of output.split("\n")) {
+    const idx = line.indexOf("=");
+    if (idx > 0) props[line.slice(0, idx)] = line.slice(idx + 1);
+  }
+  const activeState = props["ActiveState"] || "unknown";
+  const subState = props["SubState"] || "";
+  let status: "running" | "stopped" | "failed" | "unknown" = "unknown";
+  if (activeState === "active") status = subState === "exited" ? "stopped" : "running";
+  else if (activeState === "failed") status = "failed";
+  else if (activeState === "inactive" || activeState === "deactivating") status = "stopped";
+  const memoryCurrent = Number(props["MemoryCurrent"]);
+  return {
+    exists: true,
+    name: serviceName,
+    status,
+    activeState,
+    subState,
+    pid: props["MainPID"] && props["MainPID"] !== "0" ? Number(props["MainPID"]) : null,
+    memory: Number.isFinite(memoryCurrent) && memoryCurrent > 0 ? memoryCurrent : null,
+    enabled: props["UnitFileState"] === "enabled",
+    since: props["ExecMainStartTimestamp"] || null,
+  };
+}
+
+function appServiceLogs(siteName: string, lines = 200): string {
+  const serviceName = getServiceName(siteName);
+  if (!existsSync(unitFilePath(serviceName))) return "";
+  const count = Math.min(Math.max(lines, 20), 1000);
+  return execCmdSafe(`journalctl -u ${serviceName} -n ${count} --no-pager -o short`, 15000) || "";
+}
+
+// ── 端口占用检测 ───────────────────────────────────────────────────
+
+function isPortOccupied(port: number): { occupied: boolean; detail: string | null } {
+  if (IS_WINDOWS) return { occupied: false, detail: null };
+  const output = execCmdSafe(`ss -H -tlnp sport = :${port}`, 8000);
+  if (!output || !output.trim()) return { occupied: false, detail: null };
+  const line = output.trim().split("\n")[0];
+  return { occupied: true, detail: line.trim() };
+}
+
+// ── PHP 运行环境检测 ───────────────────────────────────────────────
+
+function detectPhpUpstreams(): { version: string; upstream: string }[] {
+  const found: { version: string; upstream: string }[] = [];
+  const push = (version: string, upstream: string) => {
+    if (!found.some((item) => item.version === version)) found.push({ version, upstream });
+  };
+  if (!IS_WINDOWS && existsSync("/run/php")) {
+    for (const entry of readdirSync("/run/php")) {
+      const match = entry.match(/^php(\d+(?:\.\d+)*)-fpm\.sock$/);
+      if (match) push(match[1], `unix:/run/php/${entry}`);
+    }
+  }
+  if (!IS_WINDOWS && existsSync("/tmp")) {
+    for (const entry of readdirSync("/tmp")) {
+      const match = entry.match(/^php-cgi-(\d+(?:\.\d+)*)\.sock$/);
+      if (match) push(match[1], `unix:/tmp/${entry}`);
+    }
+  }
+  return found.sort((a, b) => a.version.localeCompare(b.version, undefined, { numeric: true }));
 }
 
 function detectLayout(): NginxLayout {
-  const binary = detectNginxBinary();
-  const installed = !!binary;
-
-  if (existsSync("/www/server/nginx")) {
-    return {
-      installed,
-      binary,
-      version: getNginxVersion(binary),
-      mode: "compiled",
-      availableDir: "/www/server/nginx/conf/vhost",
-      enabledDir: "/www/server/nginx/conf/vhost",
-      rootBase: "/www/wwwroot",
-      logDir: "/www/wwwlogs",
-    };
-  }
-
-  if (existsSync("/etc/nginx/sites-available") || existsSync("/etc/nginx/sites-enabled")) {
-    return {
-      installed,
-      binary,
-      version: getNginxVersion(binary),
-      mode: "debian-sites",
-      availableDir: "/etc/nginx/sites-available",
-      enabledDir: "/etc/nginx/sites-enabled",
-      rootBase: "/var/www",
-      logDir: "/var/log/nginx",
-    };
-  }
-
-  if (existsSync("/etc/nginx/conf.d") || installed) {
-    return {
-      installed,
-      binary,
-      version: getNginxVersion(binary),
-      mode: "conf.d",
-      availableDir: "/etc/nginx/conf.d",
-      enabledDir: "/etc/nginx/conf.d",
-      rootBase: "/var/www",
-      logDir: "/var/log/nginx",
-    };
-  }
-
-  return {
-    installed,
-    binary,
-    version: null,
-    mode: "unknown",
-    availableDir: null,
-    enabledDir: null,
-    rootBase: "/var/www",
-    logDir: "/var/log/nginx",
-  };
+  const base = detectNginxLayout();
+  const extra = base.mode === "compiled"
+    ? { rootBase: "/www/wwwroot", logDir: "/www/wwwlogs" }
+    : { rootBase: "/var/www", logDir: "/var/log/nginx" };
+  return { ...base, ...extra };
 }
 
 function ensureLayout(layout = detectLayout()): NginxLayout {
@@ -268,29 +507,58 @@ function parseFirstNumber(value: string | null, fallback: number): number {
 function parseSiteConfig(path: string, disabled: boolean, layout: NginxLayout): SiteInfo | null {
   try {
     const content = readFileSync(path, "utf-8");
+    // 没有 server 块的文件（map/log_format 等辅助配置）不是网站
+    if (!/\bserver\s*\{/.test(content)) return null;
     const name = basename(path).replace(/\.conf(?:\.disabled)?$/, "");
     const serverName = content.match(/server_name\s+([^;]+);/i)?.[1] || name;
     const domains = serverName.split(/\s+/).map((item) => item.trim()).filter(Boolean);
     const listen = content.match(/listen\s+([^;]+);/i)?.[1] || "80";
     const root = content.match(/root\s+([^;]+);/i)?.[1]?.trim() || "";
-    const remark = content.match(/#\s*CyreneRemark:\s*(.+)/)?.[1]?.trim() || "";
+    const remark = content.match(/#[ \t]*CyreneRemark:[ \t]*(.+)/)?.[1]?.trim() || "";
     const ssl = /\blisten\s+443\b|ssl_certificate\s+/i.test(content);
-    const php = /fastcgi_pass\s+/i.test(content);
+    const hasPhp = /fastcgi_pass\s+/i.test(content);
     const enabledPath = disabled ? null : getEnabledPath(layout, name);
     const stats = existsSync(path) ? statSync(path) : null;
+
+    const meta = decodeSiteMeta(content);
+    let type = meta?.type || normalizeSiteType(undefined, hasPhp);
+    let runtime: RuntimeKind | null = meta?.runtime && (RUNTIME_KINDS as string[]).includes(meta.runtime) ? meta.runtime : null;
+    let proxyTarget: string | null = meta?.proxyTarget || null;
+
+    // 旧站点（无元数据）按配置内容推断类型，保持向后兼容
+    if (!meta) {
+      const userProxy = extractManagedBlock(content, PROXY_START, PROXY_END);
+      const appProxy = extractManagedBlock(content, APP_PROXY_START, APP_PROXY_END);
+      if (appProxy.trim()) {
+        type = "runtime";
+        runtime = normalizeRuntimeKind(undefined);
+        proxyTarget = appProxy.match(/proxy_pass\s+([^;]+);/i)?.[1]?.trim() || null;
+      } else if (userProxy.trim() && /location\s+\^~\s+\/\s*\{/i.test(userProxy)) {
+        type = "proxy";
+        proxyTarget = userProxy.match(/proxy_pass\s+([^;]+);/i)?.[1]?.trim() || null;
+      }
+    }
+
+    // 运行环境/代理站点没有 root 指令，项目目录从元数据读取
+    const effectiveRoot = root || meta?.root || "";
 
     return {
       name,
       domains,
       primaryDomain: domains[0] || name,
       port: parseFirstNumber(listen, 80),
-      root,
+      root: effectiveRoot,
       status: disabled || !enabledPath ? "stopped" : "running",
       ssl,
-      php,
+      php: hasPhp,
+      type,
+      runtime,
+      appPort: meta?.appPort ?? null,
+      startCommand: meta?.startCommand || null,
+      proxyTarget,
       configPath: path,
       enabledPath,
-      rootExists: !!root && existsSync(root),
+      rootExists: !!effectiveRoot && existsSync(effectiveRoot),
       updatedAt: stats?.mtimeMs || null,
       remark,
     };
@@ -420,13 +688,17 @@ function readTail(filePath: string | null, lines = 200): string {
   return content.split(/\r?\n/).slice(-lines).join("\n");
 }
 
-function listSites(): { sites: SiteInfo[]; nginx: NginxLayout; summary: Record<string, number> } {
+// 宝塔等面板的内部配置文件，不属于用户网站
+const INTERNAL_SITE_RE = /^(0\.|phpfpm_|waf)/i;
+
+function listSites(): { sites: SiteInfo[]; nginx: NginxLayout; summary: Record<string, number>; phpUpstreams: { version: string; upstream: string }[] } {
   const layout = detectLayout();
   if (!layout.availableDir || !existsSync(layout.availableDir)) {
     return {
       sites: [],
       nginx: layout,
-      summary: { total: 0, running: 0, stopped: 0, ssl: 0, php: 0 },
+      summary: { total: 0, running: 0, stopped: 0, ssl: 0, php: 0, runtime: 0, proxy: 0 },
+      phpUpstreams: detectPhpUpstreams(),
     };
   }
 
@@ -436,7 +708,9 @@ function listSites(): { sites: SiteInfo[]; nginx: NginxLayout; summary: Record<s
     if (!existsSync(dir)) continue;
     for (const entry of readdirSync(dir)) {
       if (/\.conf(?:\.disabled)?$/.test(entry)) {
-        names.add(entry.replace(/\.conf(?:\.disabled)?$/, ""));
+        const name = entry.replace(/\.conf(?:\.disabled)?$/, "");
+        if (INTERNAL_SITE_RE.test(name)) continue;
+        names.add(name);
       }
     }
   }
@@ -457,46 +731,106 @@ function listSites(): { sites: SiteInfo[]; nginx: NginxLayout; summary: Record<s
       running: sites.filter((site) => site.status === "running").length,
       stopped: sites.filter((site) => site.status === "stopped").length,
       ssl: sites.filter((site) => site.ssl).length,
-      php: sites.filter((site) => site.php).length,
+      php: sites.filter((site) => site.type === "php").length,
+      runtime: sites.filter((site) => site.type === "runtime").length,
+      proxy: sites.filter((site) => site.type === "proxy").length,
     },
+    phpUpstreams: detectPhpUpstreams(),
   };
 }
 
-function buildConfig(layout: NginxLayout, body: Required<CreateSiteBody> & { domains: string[]; root: string }): string {
+function buildProxyLocationBlock(
+  startMarker: string,
+  endMarker: string,
+  path: string,
+  target: string,
+  hostHeader?: string,
+): string {
+  let upstreamHost: string;
+  try {
+    upstreamHost = hostHeader || new URL(target).host;
+  } catch {
+    throw new Error("反向代理目标地址无效");
+  }
+  return `    ${startMarker}
+    location ^~ ${path} {
+        proxy_pass ${target};
+        proxy_http_version 1.1;
+        proxy_set_header Host ${upstreamHost};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        add_header X-Cyrene-Site $server_name always;
+    }
+    ${endMarker}`;
+}
+
+function buildConfig(
+  layout: NginxLayout,
+  body: CreateSiteBody & { domains: string[]; root: string },
+  meta: SiteMeta,
+): string {
   const serverNames = body.domains.join(" ");
   const accessLog = join(layout.logDir, `${body.domains[0]}.access.log`);
   const errorLog = join(layout.logDir, `${body.domains[0]}.error.log`);
-  const index = body.index.trim() || "index.html index.htm index.php";
-  const phpBlock = body.enablePhp
-    ? `
+  const metaLine = `${META_PREFIX}${encodeSiteMeta(meta)}`;
+  const remarkLine = `# CyreneRemark: ${(body.remark || "").replace(/\r?\n/g, " ")}`;
+
+  let bodyBlocks = "";
+
+  if (meta.type === "static" || meta.type === "php") {
+    const index = body.index?.trim() || "index.html index.htm index.php";
+    let rootBlock = `
+    location / {
+        try_files $uri $uri/ /index.html;
+    }`;
+    if (meta.type === "php") {
+      const upstream = body.phpUpstream || "unix:/run/php/php-fpm.sock";
+      rootBlock = `
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
     location ~ \\.php$ {
         try_files $uri =404;
         include fastcgi_params;
-        fastcgi_pass ${body.phpUpstream};
+        fastcgi_pass ${upstream};
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }`;
     }
-`
-    : "";
+    bodyBlocks = `    root ${body.root};
+    index ${index};
+${rootBlock}
+
+    location ~ /\\. {
+        deny all;
+    }`;
+  } else if (meta.type === "runtime") {
+    const target = `http://127.0.0.1:${meta.appPort}`;
+    // 应用代理保留原始域名 Host，便于后端按域名路由
+    bodyBlocks = buildProxyLocationBlock(APP_PROXY_START, APP_PROXY_END, "/", target, "$host");
+  } else {
+    // proxy 类型：整站反向代理
+    const path = body.proxyPath?.trim() || "/";
+    bodyBlocks = buildProxyLocationBlock(PROXY_START, PROXY_END, path, meta.proxyTarget || "");
+  }
 
   return `# Managed by CyrenePanel
-# CyreneRemark: ${body.remark.replace(/\r?\n/g, " ")}
+${metaLine}
+${remarkLine}
 server {
     listen ${body.port};
     server_name ${serverNames};
-    root ${body.root};
-    index ${index};
 
     access_log ${accessLog};
     error_log ${errorLog};
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-${phpBlock}
-    location ~ /\\. {
-        deny all;
-    }
+${bodyBlocks}
 }
 `;
 }
@@ -599,6 +933,14 @@ function disableSite(layout: NginxLayout, siteName: string): void {
   }
 }
 
+function normalizeEnvPairs(input: [string, string][] | undefined): [string, string][] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((pair) => Array.isArray(pair) && typeof pair[0] === "string" && pair[0].trim())
+    .slice(0, 64)
+    .map(([key, value]) => [key.trim(), String(value ?? "")] as [string, string]);
+}
+
 function createSite(body: CreateSiteBody) {
   const layout = ensureLayout();
   const domains = normalizeDomains(body.domains?.length ? body.domains : body.domain);
@@ -606,48 +948,138 @@ function createSite(body: CreateSiteBody) {
   const configPath = getConfPath(layout, siteName);
   const disabledPath = getDisabledConfPath(layout, siteName);
   if (existsSync(configPath) || existsSync(disabledPath)) {
-    throw new Error("站点已存在");
+    throw new Error("站点已存在，请更换域名或先删除同名站点");
+  }
+
+  // 兼容旧客户端：enablePhp=true 视为 php 类型
+  const type = normalizeSiteType(body.type, !!body.enablePhp);
+  const nginxPort = Number(body.port || 80);
+  if (!Number.isInteger(nginxPort) || nginxPort < 1 || nginxPort > 65535) {
+    throw new Error("监听端口范围必须在 1-65535 之间");
   }
 
   const form = {
     domain: domains[0],
     domains,
-    root: normalizeRoot(body.root, layout, domains[0]),
-    port: Number(body.port || 80),
-    index: body.index || "index.html index.htm index.php",
-    enablePhp: !!body.enablePhp,
-    phpUpstream: body.phpUpstream || "unix:/run/php/php-fpm.sock",
+    root: "",
+    port: nginxPort,
+    index: body.index || "",
+    enablePhp: type === "php",
+    phpUpstream: body.phpUpstream || "",
     remark: body.remark || "",
+    proxyPath: body.proxyPath || "/",
+    runtime: "",
+    startCommand: "",
+    appPort: 0,
+    user: "",
+    env: [] as [string, string][],
+    autoStart: body.autoStart !== false,
+    proxyTarget: "",
   };
 
-  if (!Number.isInteger(form.port) || form.port < 1 || form.port > 65535) {
-    throw new Error("端口范围必须在 1-65535 之间");
+  const meta: SiteMeta = { v: 1, type };
+  let appServiceResult: { success: boolean; message: string; serviceName: string } | null = null;
+
+  const rollback = () => {
+    disableSite(layout, siteName);
+    if (existsSync(configPath)) unlinkSync(configPath);
+    if (existsSync(disabledPath)) unlinkSync(disabledPath);
+    if (appServiceResult) removeAppService(siteName);
+  };
+
+  if (type === "static" || type === "php") {
+    form.root = normalizeRoot(body.root, layout, domains[0]);
+    if (type === "php") {
+      form.phpUpstream = body.phpUpstream?.trim() || "unix:/run/php/php-fpm.sock";
+    }
+    mkdirSync(form.root, { recursive: true });
+    const indexPath = join(form.root, "index.html");
+    if (!existsSync(indexPath)) {
+      writeFileSync(indexPath, `<h1>${domains[0]}</h1>\n<p>Created by CyrenePanel.</p>\n`, "utf-8");
+    }
+  } else if (type === "runtime") {
+    if (IS_WINDOWS) throw new Error("运行环境网站仅支持 Linux 系统");
+    const runtime = normalizeRuntimeKind(body.runtime);
+    const startCommand = (body.startCommand || "").trim();
+    const appPort = Number(body.appPort);
+    if (!startCommand) throw new Error("请填写应用启动命令");
+    if (!Number.isInteger(appPort) || appPort < 1 || appPort > 65535) {
+      throw new Error("应用端口范围必须在 1-65535 之间");
+    }
+    if (appPort === nginxPort) {
+      throw new Error("应用端口不能与网站监听端口相同");
+    }
+    const occupied = isPortOccupied(appPort);
+    if (occupied.occupied) {
+      throw new Error(`应用端口 ${appPort} 已被占用（${occupied.detail || "未知进程"}），请更换端口`);
+    }
+
+    form.root = normalizeRoot(body.root, layout, domains[0]);
+    form.runtime = runtime;
+    form.startCommand = startCommand;
+    form.appPort = appPort;
+    form.user = (body.user || "").trim();
+    form.env = normalizeEnvPairs(body.env);
+    mkdirSync(form.root, { recursive: true });
+
+    meta.runtime = runtime;
+    meta.startCommand = startCommand;
+    meta.appPort = appPort;
+    meta.user = form.user || undefined;
+    meta.env = form.env;
+    meta.root = form.root;
+    meta.autoStart = form.autoStart;
+
+    appServiceResult = createAppService({
+      siteName,
+      description: `CyrenePanel ${runtime} app for ${domains[0]}`,
+      workingDir: form.root,
+      user: form.user,
+      startCommand,
+      env: form.env,
+      autoStart: form.autoStart,
+    });
+  } else if (type === "proxy") {
+    const target = normalizeProxyTarget(body.proxyTarget);
+    form.proxyTarget = target;
+    meta.proxyTarget = target;
+    normalizeLocationPath(body.proxyPath, "/");
+  } else {
+    throw new Error("不支持的网站类型");
   }
 
-  mkdirSync(form.root, { recursive: true });
-  const indexPath = join(form.root, "index.html");
-  if (!existsSync(indexPath)) {
-    writeFileSync(indexPath, `<h1>${domains[0]}</h1>\n<p>Created by CyrenePanel.</p>\n`, "utf-8");
-  }
-
-  const content = buildConfig(layout, form);
+  const content = buildConfig(layout, form, meta);
   writeFileSync(configPath, content, "utf-8");
   enableSite(layout, siteName);
 
   const test = testNginx(layout);
   if (!test.success) {
-    disableSite(layout, siteName);
-    if (existsSync(configPath)) unlinkSync(configPath);
-    if (existsSync(disabledPath)) unlinkSync(disabledPath);
+    rollback();
     throw new Error(test.message);
   }
 
   const reload = reloadNginx(layout);
+  if (!reload.success) {
+    logger.warn(`网站 ${siteName} 创建成功，但 nginx 重载失败: ${reload.message}`);
+  }
+
+  const messages = ["网站创建成功"];
+  if (appServiceResult) messages.push(appServiceResult.message);
+  if (!reload.success) messages.push(`nginx 重载失败: ${reload.message}`);
+
   return {
     success: true,
-    message: reload.success ? "网站创建成功，nginx 已重载" : `网站创建成功，但 ${reload.message}`,
+    message: messages.join("，"),
     site: parseSiteConfig(configPath, false, layout),
   };
+}
+
+function updateSiteMeta(content: string, meta: SiteMeta): string {
+  const line = `${META_PREFIX}${encodeSiteMeta(meta)}`;
+  if (content.includes(META_PREFIX)) {
+    return content.replace(new RegExp(`^${escapeRegExp(META_PREFIX)}.*$`, "m"), line);
+  }
+  return content.replace(/^(# Managed by CyrenePanel)\r?\n/, `$1\n${line}\n`);
 }
 
 async function authProfile(jwt: any, request: Request) {
@@ -670,10 +1102,147 @@ export const siteRoutes = new Elysia()
     const profile = await authProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     try {
-      return createSite(body || {});
+      const result = createSite(body || {});
+      logger.info(`网站创建成功: ${(body || {}).type || "static"} ${result?.site?.primaryDomain}`);
+      return result;
     } catch (e: any) {
       logger.err(`网站创建失败: ${e.message}`);
       return { success: false, message: e.message || "网站创建失败" };
+    }
+  })
+
+  .get("/api/sites/:name/app", async ({ jwt, request, params }: any) => {
+    const profile = await authProfile(jwt, request);
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      const layout = ensureLayout();
+      const siteName = normalizeSiteParam(params.name);
+      const config = findSiteConfig(layout, siteName);
+      if (!config) return { success: false, message: "站点不存在" };
+      const site = parseSiteConfig(config.path, config.disabled, layout);
+      if (!site || site.type !== "runtime") {
+        return { success: false, message: "该站点不是运行环境网站" };
+      }
+      const meta = decodeSiteMeta(readFileSync(config.path, "utf-8")) || { v: 1, type: "runtime" };
+      return {
+        success: true,
+        site: { name: site.name, primaryDomain: site.primaryDomain, type: site.type, runtime: site.runtime },
+        app: {
+          ...appServiceStatus(siteName),
+          runtime: site.runtime,
+          startCommand: meta.startCommand || site.startCommand || "",
+          appPort: meta.appPort ?? site.appPort,
+          user: meta.user || "",
+          env: meta.env || [],
+          autoStart: meta.autoStart !== false,
+          workingDir: site.root,
+        },
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || "应用状态读取失败" };
+    }
+  })
+
+  .post("/api/sites/:name/app/:action", async ({ jwt, request, params }: any) => {
+    const profile = await authProfile(jwt, request);
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      const layout = ensureLayout();
+      const siteName = normalizeSiteParam(params.name);
+      const action = String(params.action || "");
+      if (!["start", "stop", "restart"].includes(action)) {
+        return { success: false, message: "不支持的操作" };
+      }
+      const config = findSiteConfig(layout, siteName);
+      if (!config) return { success: false, message: "站点不存在" };
+      const site = parseSiteConfig(config.path, config.disabled, layout);
+      if (!site || site.type !== "runtime") {
+        return { success: false, message: "该站点不是运行环境网站" };
+      }
+      return appServiceAction(siteName, action as "start" | "stop" | "restart");
+    } catch (e: any) {
+      return { success: false, message: e.message || "操作失败" };
+    }
+  })
+
+  .get("/api/sites/:name/app/logs", async ({ jwt, request, params, query }: any) => {
+    const profile = await authProfile(jwt, request);
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      const layout = ensureLayout();
+      const siteName = normalizeSiteParam(params.name);
+      const config = findSiteConfig(layout, siteName);
+      if (!config) return { success: false, message: "站点不存在" };
+      const site = parseSiteConfig(config.path, config.disabled, layout);
+      if (!site || site.type !== "runtime") {
+        return { success: false, message: "该站点不是运行环境网站" };
+      }
+      const lines = Math.min(Math.max(Number(query?.lines || 200), 20), 1000);
+      return { success: true, logs: appServiceLogs(siteName, lines) };
+    } catch (e: any) {
+      return { success: false, message: e.message || "应用日志读取失败" };
+    }
+  })
+
+  .put("/api/sites/:name/app", async ({ jwt, request, params, body }: any) => {
+    const profile = await authProfile(jwt, request);
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      const payload = (body || {}) as CreateSiteBody;
+      const layout = ensureLayout();
+      const siteName = normalizeSiteParam(params.name);
+      const config = findSiteConfig(layout, siteName);
+      if (!config) return { success: false, message: "站点不存在" };
+      const site = parseSiteConfig(config.path, config.disabled, layout);
+      if (!site || site.type !== "runtime") {
+        return { success: false, message: "该站点不是运行环境网站" };
+      }
+
+      const content = readFileSync(config.path, "utf-8");
+      const meta = decodeSiteMeta(content) || { v: 1, type: "runtime" as SiteType };
+      const startCommand = (payload.startCommand ?? meta.startCommand ?? "").trim();
+      const appPort = Number(payload.appPort ?? meta.appPort);
+      const user = (payload.user ?? meta.user ?? "").trim();
+      const env = payload.env ? normalizeEnvPairs(payload.env) : meta.env || [];
+      const autoStart = payload.autoStart !== undefined ? payload.autoStart !== false : meta.autoStart !== false;
+
+      if (!startCommand) throw new Error("请填写应用启动命令");
+      if (!Number.isInteger(appPort) || appPort < 1 || appPort > 65535) {
+        throw new Error("应用端口范围必须在 1-65535 之间");
+      }
+      if (appPort === site.port) {
+        throw new Error("应用端口不能与网站监听端口相同");
+      }
+      if (appPort !== meta.appPort) {
+        const occupied = isPortOccupied(appPort);
+        if (occupied.occupied) {
+          throw new Error(`应用端口 ${appPort} 已被占用（${occupied.detail || "未知进程"}），请更换端口`);
+        }
+      }
+
+      const nextMeta: SiteMeta = { ...meta, type: "runtime", startCommand, appPort, user: user || undefined, env, autoStart };
+      let nextContent = updateSiteMeta(content, nextMeta);
+      if (appPort !== meta.appPort) {
+        const block = buildProxyLocationBlock(APP_PROXY_START, APP_PROXY_END, "/", `http://127.0.0.1:${appPort}`, "$host");
+        nextContent = replaceManagedBlock(nextContent, APP_PROXY_START, APP_PROXY_END, block);
+      }
+
+      const saved = saveConfigWithTest(layout, config.path, nextContent);
+      if (!saved.success) return saved;
+
+      const serviceResult = updateAppService({
+        siteName,
+        description: `CyrenePanel ${site.runtime || "app"} app for ${site.primaryDomain}`,
+        workingDir: site.root,
+        user,
+        startCommand,
+        env,
+        autoStart,
+      });
+      const messages = [saved.message, serviceResult.message];
+      return { success: true, message: messages.join("，") };
+    } catch (e: any) {
+      return { success: false, message: e.message || "应用配置保存失败" };
     }
   })
 
@@ -716,8 +1285,35 @@ export const siteRoutes = new Elysia()
       const siteName = normalizeSiteParam(params.name);
       const config = findSiteConfig(layout, siteName);
       if (!config) return { success: false, message: "站点不存在" };
+      const site = parseSiteConfig(config.path, config.disabled, layout);
       const root = normalizeRoot(payload.root, layout, siteName);
       mkdirSync(root, { recursive: true });
+
+      if (site?.type === "proxy") {
+        return { success: false, message: "反向代理站点没有网站目录" };
+      }
+
+      if (site?.type === "runtime") {
+        // 运行环境站点：目录是应用工作目录，写入元数据并同步 systemd WorkingDirectory
+        const content = readFileSync(config.path, "utf-8");
+        const meta = decodeSiteMeta(content) || { v: 1, type: "runtime" as SiteType };
+        const nextContent = updateSiteMeta(content, { ...meta, type: "runtime", root });
+        writeFileSync(config.path, nextContent, "utf-8");
+        const serviceResult = updateAppService({
+          siteName,
+          description: `CyrenePanel ${site.runtime || "app"} app for ${site.primaryDomain}`,
+          workingDir: root,
+          user: meta.user || "",
+          startCommand: meta.startCommand || "",
+          env: meta.env || [],
+          autoStart: meta.autoStart !== false,
+        });
+        return {
+          success: true,
+          message: `项目目录已更新，${serviceResult.message}`,
+        };
+      }
+
       const content = replaceFirstDirective(readFileSync(config.path, "utf-8"), "root", root);
       return saveConfigWithTest(layout, config.path, content);
     } catch (e: any) {
@@ -918,7 +1514,7 @@ export const siteRoutes = new Elysia()
     }
   })
 
-  .delete("/api/sites/:name", async ({ jwt, request, params }: any) => {
+  .delete("/api/sites/:name", async ({ jwt, request, params, query }: any) => {
     const profile = await authProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     try {
@@ -926,6 +1522,14 @@ export const siteRoutes = new Elysia()
       const siteName = normalizeSiteParam(params.name);
       const config = findSiteConfig(layout, siteName);
       if (!config) return { success: false, message: "站点不存在" };
+
+      const site = parseSiteConfig(config.path, config.disabled, layout);
+      const purgeApp = query?.purgeApp === "1" || query?.purgeApp === "true";
+      let appMessage = "";
+      if (site?.type === "runtime" && purgeApp) {
+        const removed = removeAppService(siteName);
+        appMessage = `，${removed.message}`;
+      }
 
       disableSite(layout, siteName);
       if (existsSync(config.path)) unlinkSync(config.path);
@@ -937,7 +1541,9 @@ export const siteRoutes = new Elysia()
       const reload = reloadNginx(layout);
       return {
         success: reload.success,
-        message: reload.success ? "站点配置已删除，nginx 已重载" : `站点配置已删除，但 ${reload.message}`,
+        message: reload.success
+          ? `站点配置已删除，nginx 已重载${appMessage}`
+          : `站点配置已删除，但 ${reload.message}${appMessage}`,
       };
     } catch (e: any) {
       return { success: false, message: e.message || "删除失败" };
