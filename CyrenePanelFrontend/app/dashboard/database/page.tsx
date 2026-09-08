@@ -315,6 +315,8 @@ export default function DatabasePage() {
                   db={db}
                   onRemove={handleRemove}
                 />
+              ) : tab.id === "mongodb" && db?.installed && db.running ? (
+                <MongoEntryCard db={db} onRemove={handleRemove} />
               ) : db && !db.installed ? (
                 <DatabaseEmptyState db={db} onClickInstall={() => setInstallDialogDb(db)} installing={installingId === db.id} />
               ) : db ? (
@@ -519,6 +521,53 @@ function DatabaseInstallDialog({
 }
 
 // ── 已安装状态组件 ───────────────────────────────────────────────────
+
+/**
+ * MongoDB 的管理界面在独立路由（数据浏览 + 运行状态），
+ * 这里只做入口卡片，不像 MySQL 那样内联。
+ */
+function MongoEntryCard({
+  db,
+  onRemove,
+}: {
+  db: DatabaseInfo;
+  onRemove: (db: DatabaseInfo) => void;
+}) {
+  const router = useRouter();
+  return (
+    <Card>
+      <CardContent className="p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="rounded-lg bg-muted p-3">
+              <Icon icon={db.icon} className="h-8 w-8" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">{db.displayName}</h3>
+              <p className="text-muted-foreground text-sm">
+                {db.version || "未知版本"} · 端口 {db.port} · 运行中
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => router.push("/dashboard/database/mongodb")}>
+              进入管理
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => onRemove(db)}>
+              <Trash2 className="h-4 w-4 mr-2" />
+              卸载
+            </Button>
+          </div>
+        </div>
+
+        <p className="mt-4 text-sm text-muted-foreground">
+          支持数据库与集合管理、文档增删改查、索引管理、运行状态、当前操作监控与备份恢复。
+          也可在管理页里添加远程 MongoDB 或副本集连接。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
 
 function DatabaseInstalledCard({
   db,
