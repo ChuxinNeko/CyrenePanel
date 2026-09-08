@@ -33,6 +33,7 @@ import { alertRoutes, notifyAlertOnAudit, startAlertChecker } from "./alerts/ind
 import { securityRoutes } from "./security/index";
 import { databaseRoutes } from "./database/index";
 import { mysqlManageRoutes } from "./database/mysql/index";
+import { mongoManageRoutes } from "./database/mongodb/index";
 import { aiRoutes } from "./ai/index";
 import { shareRoutes } from "./shares/index";
 import { appstoreRoutes } from "./appstore/index";
@@ -180,6 +181,7 @@ export const app = new Elysia()
   .use(securityRoutes)
   .use(databaseRoutes)
   .use(mysqlManageRoutes)
+  .use(mongoManageRoutes)
   .use(aiRoutes)
   .use(shareRoutes)
   .use(appstoreRoutes)

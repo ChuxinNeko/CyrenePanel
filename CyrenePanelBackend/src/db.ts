@@ -642,6 +642,77 @@ export function dbDeleteMysqlConn(id: string): boolean {
   return result.changes > 0;
 }
 
+// ── mongodb_connections 表 ───────────────────────────────────────────
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mongodb_connections (
+    id        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    host      TEXT NOT NULL DEFAULT '127.0.0.1',
+    port      INTEGER NOT NULL DEFAULT 27017,
+    username  TEXT NOT NULL DEFAULT '',
+    password  TEXT NOT NULL DEFAULT '',
+    authDb    TEXT NOT NULL DEFAULT 'admin',
+    uri       TEXT NOT NULL DEFAULT '',
+    createdAt INTEGER NOT NULL
+  );
+`);
+
+export interface MongoConnRow {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  /** 认证库，副本集/分片场景常常不是 admin */
+  authDb: string;
+  /** 填了就直接用完整连接串，忽略上面的 host/port 等字段 */
+  uri: string;
+  createdAt: number;
+}
+
+const mongoConnInsertStmt = db.prepare(
+  "INSERT INTO mongodb_connections (id, name, host, port, username, password, authDb, uri, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+);
+const mongoConnGetStmt = db.prepare("SELECT * FROM mongodb_connections WHERE id = ?");
+const mongoConnAllStmt = db.prepare("SELECT * FROM mongodb_connections ORDER BY createdAt DESC");
+const mongoConnDeleteStmt = db.prepare("DELETE FROM mongodb_connections WHERE id = ?");
+const mongoConnUpdateStmt = db.prepare(
+  "UPDATE mongodb_connections SET name = ?, host = ?, port = ?, username = ?, password = ?, authDb = ?, uri = ? WHERE id = ?"
+);
+
+export function dbListMongoConns(): MongoConnRow[] {
+  return mongoConnAllStmt.all() as MongoConnRow[];
+}
+
+export function dbGetMongoConn(id: string): MongoConnRow | undefined {
+  return mongoConnGetStmt.get(id) as MongoConnRow | undefined;
+}
+
+export function dbInsertMongoConn(conn: MongoConnRow): void {
+  mongoConnInsertStmt.run(
+    conn.id, conn.name, conn.host, conn.port, conn.username,
+    conn.password, conn.authDb, conn.uri, conn.createdAt,
+  );
+}
+
+export function dbUpdateMongoConn(
+  id: string,
+  fields: { name: string; host: string; port: number; username: string; password: string; authDb: string; uri: string },
+): boolean {
+  const result = mongoConnUpdateStmt.run(
+    fields.name, fields.host, fields.port, fields.username,
+    fields.password, fields.authDb, fields.uri, id,
+  );
+  return result.changes > 0;
+}
+
+export function dbDeleteMongoConn(id: string): boolean {
+  const result = mongoConnDeleteStmt.run(id);
+  return result.changes > 0;
+}
+
 // ── file_shares 表 ───────────────────────────────────────────────────
 
 db.exec(`
