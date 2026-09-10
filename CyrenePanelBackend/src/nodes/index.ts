@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
 import { randomBytes } from "crypto";
 import { cpus, hostname, platform, totalmem, freemem } from "os";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { execFileSync } from "child_process";
 import {
   dbCreateNodePairingCode,
@@ -24,6 +24,9 @@ import {
   registerNodeController,
 } from "../node-auth/verifier";
 import { CYRENE_VERSION } from "../version";
+
+/** /proc/diskstats 的扇区计数按惯例固定是 512 字节，与实际物理扇区大小无关 */
+const SECTOR_SIZE = 512;
 
 interface NodeReachability {
   online: boolean;
@@ -97,7 +100,7 @@ let lastNetworkUsage: NetworkUsage = {
   receivedBytes: 0,
   transmittedBytes: 0,
 };
-const lastDiskIoUsage: DiskIoUsage = {
+let lastDiskIoUsage: DiskIoUsage = {
   read: 0,
   write: 0,
   readFormatted: "0 B/s",
@@ -108,6 +111,18 @@ const lastDiskIoUsage: DiskIoUsage = {
   writeLatencyMs: 0,
   latencyMs: 0,
 };
+
+interface DiskIoSnapshot {
+  timestamp: number;
+  readBytes: number;
+  writeBytes: number;
+  readOps: number;
+  writeOps: number;
+  readMs: number;
+  writeMs: number;
+}
+
+let previousDiskIoSnapshot: DiskIoSnapshot | null = null;
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -205,12 +220,138 @@ export function getLocalNetworkUsage(): NetworkUsage {
   return lastNetworkUsage;
 }
 
+/**
+ * 采集磁盘累计 IO 计数器。和网络一样只取快照，速率靠两次快照做差。
+ *
+ * Linux 读 /proc/diskstats。那里既有整盘（sda）也有分区（sda1），
+ * 两者的计数是重复的，全加会翻倍，所以只统计 /sys/block 下存在的整盘，
+ * 并排除 loop / ram / zram 这些不落到物理介质上的设备。
+ */
+function readDiskIoSnapshot(): DiskIoSnapshot | null {
+  try {
+    if (platform() === "win32") {
+      // _Total 实例本身就是各物理盘的汇总，不需要再挑设备
+      const output = execFileSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk -Filter \"Name='_Total'\" | Select DiskReadBytesPerSec,DiskWriteBytesPerSec,DiskReadsPerSec,DiskWritesPerSec,PercentDiskReadTime,PercentDiskWriteTime | ConvertTo-Json -Compress",
+        ],
+        { encoding: "utf-8", timeout: 3000, windowsHide: true },
+      );
+      const row = JSON.parse(output || "{}");
+      // PerfRawData 里这些字段是累计原始值，不是"每秒"，正好当计数器用
+      return {
+        timestamp: Date.now(),
+        readBytes: Number(row?.DiskReadBytesPerSec || 0),
+        writeBytes: Number(row?.DiskWriteBytesPerSec || 0),
+        readOps: Number(row?.DiskReadsPerSec || 0),
+        writeOps: Number(row?.DiskWritesPerSec || 0),
+        // 单位是 100ns 刻度，换算成毫秒
+        readMs: Number(row?.PercentDiskReadTime || 0) / 10_000,
+        writeMs: Number(row?.PercentDiskWriteTime || 0) / 10_000,
+      };
+    }
+
+    const content = readFileSync("/proc/diskstats", "utf-8");
+    const snapshot: DiskIoSnapshot = {
+      timestamp: Date.now(),
+      readBytes: 0,
+      writeBytes: 0,
+      readOps: 0,
+      writeOps: 0,
+      readMs: 0,
+      writeMs: 0,
+    };
+
+    for (const line of content.split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      // major minor name reads merged sectors ms writes merged sectors ms …
+      if (parts.length < 11) continue;
+      const name = parts[2];
+      if (!name) continue;
+      if (/^(loop|ram|zram|fd)\d/.test(name)) continue;
+      // 只认整盘：分区在 /sys/block 下没有同名目录
+      if (!existsSync(`/sys/block/${name}`)) continue;
+
+      const nums = parts.slice(3).map(Number);
+      if (nums.some(Number.isNaN)) continue;
+
+      snapshot.readOps += nums[0];
+      snapshot.readBytes += nums[2] * SECTOR_SIZE;
+      snapshot.readMs += nums[3];
+      snapshot.writeOps += nums[4];
+      snapshot.writeBytes += nums[6] * SECTOR_SIZE;
+      snapshot.writeMs += nums[7];
+    }
+
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 只在定时采集里调用，不对外暴露。
+ *
+ * 速率是两次快照做差算出来的，采样点必须等间隔。如果放开给 /api/system
+ * 每次请求都触发，就会和 10 秒一次的采集循环交错出相邻几毫秒的调用，
+ * 差值被钳到 1 秒后算出接近零的速率，图上会冒出虚假的凹陷。
+ */
+function sampleDiskIoUsage(): DiskIoUsage {
+  const current = readDiskIoSnapshot();
+  if (!current) return lastDiskIoUsage;
+
+  // 第一次只留基准，没有前一份快照就算不出速率
+  if (!previousDiskIoSnapshot) {
+    previousDiskIoSnapshot = current;
+    return lastDiskIoUsage;
+  }
+
+  const elapsedSeconds = Math.max(
+    (current.timestamp - previousDiskIoSnapshot.timestamp) / 1000,
+    1,
+  );
+  const delta = (key: keyof Omit<DiskIoSnapshot, "timestamp">) =>
+    Math.max(0, current[key] - previousDiskIoSnapshot![key]);
+
+  const readBytes = delta("readBytes");
+  const writeBytes = delta("writeBytes");
+  const readOps = delta("readOps");
+  const writeOps = delta("writeOps");
+  const readMs = delta("readMs");
+  const writeMs = delta("writeMs");
+
+  // 平均单次耗时：区间内花的毫秒数 ÷ 区间内的请求数
+  const readLatency = readOps > 0 ? readMs / readOps : 0;
+  const writeLatency = writeOps > 0 ? writeMs / writeOps : 0;
+  const totalOps = readOps + writeOps;
+  const latency = totalOps > 0 ? (readMs + writeMs) / totalOps : 0;
+
+  previousDiskIoSnapshot = current;
+  lastDiskIoUsage = {
+    read: Math.round(readBytes / elapsedSeconds),
+    write: Math.round(writeBytes / elapsedSeconds),
+    readFormatted: `${formatBytes(readBytes / elapsedSeconds)}/s`,
+    writeFormatted: `${formatBytes(writeBytes / elapsedSeconds)}/s`,
+    readOps: Math.round(readOps / elapsedSeconds),
+    writeOps: Math.round(writeOps / elapsedSeconds),
+    readLatencyMs: Number(readLatency.toFixed(2)),
+    writeLatencyMs: Number(writeLatency.toFixed(2)),
+    latencyMs: Number(latency.toFixed(2)),
+  };
+  return lastDiskIoUsage;
+}
+
+/** 对外只读最近一次采样结果，不触发新的采样 */
 export function getLocalDiskIoUsage(): DiskIoUsage {
   return lastDiskIoUsage;
 }
 
 function collectLocalMetrics(): void {
   const network = getLocalNetworkUsage();
+  const diskIo = sampleDiskIoUsage();
   const total = totalmem();
   localMetrics.push({
     timestamp: Date.now(),
@@ -218,11 +359,11 @@ function collectLocalMetrics(): void {
     memoryPercentage: total > 0 ? Math.round(((total - freemem()) / total) * 100) : 0,
     networkDownload: network.download,
     networkUpload: network.upload,
-    diskRead: 0,
-    diskWrite: 0,
-    diskReadOps: 0,
-    diskWriteOps: 0,
-    diskLatency: 0,
+    diskRead: diskIo.read,
+    diskWrite: diskIo.write,
+    diskReadOps: diskIo.readOps,
+    diskWriteOps: diskIo.writeOps,
+    diskLatency: diskIo.latencyMs,
   });
   while (localMetrics.length > METRICS_MAX_POINTS) localMetrics.shift();
 }
