@@ -36,7 +36,6 @@ import { mysqlManageRoutes } from "./database/mysql/index";
 import { mongoManageRoutes } from "./database/mongodb/index";
 import { aiRoutes } from "./ai/index";
 import { shareRoutes } from "./shares/index";
-import { appstoreRoutes } from "./appstore/index";
 import { isNodeAuthEndpoint, requiredNodeCapability } from "./node-auth/access";
 import { captureNodeRequestBody, resolveNodePrincipal } from "./node-auth/principal";
 import { nodeCan } from "./node-auth/verifier";
@@ -184,7 +183,6 @@ export const app = new Elysia()
   .use(mongoManageRoutes)
   .use(aiRoutes)
   .use(shareRoutes)
-  .use(appstoreRoutes)
   .listen({ port: Number(process.env.PORT || 5677), hostname: "0.0.0.0" });
 
 setAuditAlertHook(notifyAlertOnAudit);

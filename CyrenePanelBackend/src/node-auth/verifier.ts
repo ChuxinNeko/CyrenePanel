@@ -28,7 +28,6 @@ export const DEFAULT_NODE_CAPABILITIES = [
   "sites:operate",
   "certificates:operate",
   "audit:read",
-  "appstore:deploy",
   "ai:read",
 ] as const;
 

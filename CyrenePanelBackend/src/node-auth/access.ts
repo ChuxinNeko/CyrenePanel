@@ -8,7 +8,6 @@ const nodeCapabilityForPath = (pathname: string, method: string): string | null 
   if (pathname.startsWith("/api/sites")) return "sites:operate";
   if (pathname.startsWith("/api/certificates")) return "certificates:operate";
   if (pathname.startsWith("/api/audit")) return "audit:read";
-  if (pathname.startsWith("/api/appstore")) return "appstore:deploy";
   if (pathname.startsWith("/api/ai")) return "ai:read";
   if (pathname.startsWith("/api/self-check")) return method === "GET" ? "environments:operate" : "environments:operate";
   if (pathname.startsWith("/api/mysql") || pathname.startsWith("/api/databases")) return "databases:operate";
