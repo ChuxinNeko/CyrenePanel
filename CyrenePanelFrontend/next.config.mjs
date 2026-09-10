@@ -1,4 +1,12 @@
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+/**
+ * 仓库外层（父目录）可能也存在 lockfile，Next 会据此把工作区根推断到上一级，
+ * 于是 Turbopack 和 Tailwind 的自动源扫描都会去爬整个父目录。这里钉死到前端目录。
+ */
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const backendUrl =
   process.env.CYRENE_BACKEND_URL ||
@@ -32,6 +40,7 @@ function resolveDevOrigins() {
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  turbopack: { root: projectRoot },
   allowedDevOrigins: resolveDevOrigins(),
   async rewrites() {
     return [
