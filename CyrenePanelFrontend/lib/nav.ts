@@ -62,6 +62,7 @@ export const navGroups: NavGroup[] = [
 const subRouteLabels: Record<string, string> = {
   "/dashboard/database/mysql": "MySQL",
   "/dashboard/database/mongodb": "MongoDB",
+  "/dashboard/audit/ssh": "SSH 登录",
 };
 
 export function isNavItemActive(url: string, pathname: string): boolean {

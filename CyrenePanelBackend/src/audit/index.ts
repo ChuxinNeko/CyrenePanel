@@ -13,6 +13,9 @@ import {
 import { logger } from "../logger/index";
 import { fetchNode } from "../nodes/index";
 import { resolveRequestProfile } from "../node-auth/request-profile";
+import { parseSshLogLines } from "../security/ssh-log";
+import { readSshLog } from "../security/ssh-log-source";
+import { formatLocation, lookupIpLocations } from "../security/ip-location";
 
 export type AuditCategory =
   | "auth"
@@ -292,4 +295,57 @@ export const auditRoutes = new Elysia()
 
     merged.usernames = [...new Set(merged.usernames)].sort();
     return { success: true, stats: merged, nodeCount: nodes.length + 1 };
+  })
+
+  /**
+   * SSH 登录日志。与面板操作审计分开：前者来自 sshd 的系统日志，
+   * 后者是面板自己写库的，两者的来源、留存和粒度都不一样。
+   */
+  .get("/api/audit/ssh", async ({ profile, query }: any) => {
+    if (!profile) return { success: false, message: "未授权" };
+
+    const limit = Math.min(Math.max(Number(query?.limit) || 200, 1), 1000);
+    const statusFilter = typeof query?.status === "string" ? query.status.trim() : "";
+    const keyword = typeof query?.keyword === "string" ? query.keyword.trim().toLowerCase() : "";
+
+    const source = readSshLog();
+    if (source.kind === "none") {
+      return { success: true, entries: [], source: source.kind, message: source.message, stats: null };
+    }
+
+    const all = parseSshLogLines(source.content);
+
+    // 统计基于全量，不受分页 limit 影响
+    const stats = {
+      total: all.length,
+      success: all.filter((e) => e.success).length,
+      failed: all.filter((e) => !e.success).length,
+      uniqueIps: new Set(all.map((e) => e.ip)).size,
+    };
+
+    const filtered = all.filter((entry) => {
+      if (statusFilter === "success" && !entry.success) return false;
+      if (statusFilter === "failed" && entry.success) return false;
+      if (!keyword) return true;
+      return (
+        entry.ip.toLowerCase().includes(keyword) ||
+        entry.user.toLowerCase().includes(keyword) ||
+        entry.method.toLowerCase().includes(keyword)
+      );
+    });
+
+    const page = filtered.slice(0, limit);
+    // 只为当前页出现的 IP 查归属地，且内部按唯一 IP 去重 + 缓存
+    const locations = await lookupIpLocations(page.map((e) => e.ip));
+
+    return {
+      success: true,
+      source: source.kind,
+      stats,
+      entries: page.map((entry) => ({
+        ...entry,
+        location: locations[entry.ip] ?? null,
+        locationText: formatLocation(locations[entry.ip] ?? null),
+      })),
+    };
   });

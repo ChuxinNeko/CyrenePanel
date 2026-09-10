@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusDot } from "@/components/status-dot";
+import { AuditTabs } from "@/components/audit-tabs";
 import {
   Select,
   SelectContent,
@@ -313,6 +314,8 @@ export default function AuditPage() {
           </Button>
         </div>
       </div>
+
+      <AuditTabs />
 
       {/* 统计。数字来自服务端整表聚合，不受当前页数限制 */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
