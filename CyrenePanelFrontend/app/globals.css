@@ -3,11 +3,33 @@
 @import "shadcn/tailwind.css";
 @import "@xterm/xterm/css/xterm.css";
 
+@source "../app";
+@source "../components";
+@source "../lib";
+@source "../hooks";
+
 @custom-variant dark (&:is(.dark *));
 
+/**
+ * 设计语言：Vercel（design-md/vercel/DESIGN.md）
+ *
+ * 这是应用内界面，不是营销页，所以按规范"两套圆角尺度只能选一套"的要求
+ * 统一走 6px --geist-radius 那一档，不用 100px 药丸；品牌网格渐变属于
+ * hero 级装饰，规范明确禁止缩小使用，因此面板里完全不出现。
+ *
+ * 亮色令牌全部取自规范 frontmatter。暗色是把亮色阶梯做极性翻转推导出来的
+ * ——规范本身是亮色优先的，只给了 primary(#171717) 作为深色band，没有成套暗色值。
+ */
+
 @theme inline {
-    --font-heading: var(--font-sans);
-    --font-sans: var(--font-sans);
+    --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* 显示级字号的负字距是品牌声音的一部分，规范里反复强调 */
+    --tracking-display: -0.04em;
+    --tracking-hero: -0.05em;
+
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -39,92 +61,196 @@
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
-    --radius-sm: calc(var(--radius) * 0.6);
-    --radius-md: calc(var(--radius) * 0.8);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) * 1.4);
-    --radius-2xl: calc(var(--radius) * 1.8);
-    --radius-3xl: calc(var(--radius) * 2.2);
-    --radius-4xl: calc(var(--radius) * 2.6);
+
+    /* 规范里 ink / body / mute 三档文字色，muted-foreground 已经吃掉 body 档，
+       mute 单列出来给占位符、细则这类最低优先级文本 */
+    --color-mute: var(--mute);
+    /* 面板需要"运行中/健康"色。规范禁止引入第六个强调色，所以复用调色板里
+       已有的 cyan / amber 档，而不是新造颜色。
+       原值只够做圆点、图表描边、进度条；当小字用对比度不足（#29bc9b 在白底
+       上只有 2.3:1），所以按规范自己的 link-deep / error-deep / warning-deep
+       套路补一档可读的 *-fg，同色相压深，不算新增强调色。 */
+    --color-success: var(--success);
+    --color-success-fg: var(--success-fg);
+    --color-warning: var(--warning);
+    --color-warning-fg: var(--warning-fg);
+    --color-link: var(--link);
+    --color-surface-inset: var(--surface-inset);
+
+    /* 规范 rounded 档位：xs 4 / sm 6(--geist-radius) / md 8(卡片) / lg 12 / xl 16 */
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+    --radius-2xl: 16px;
+    --radius-3xl: 20px;
+    --radius-4xl: 24px;
+
+    /* 规范 Elevation 表：堆叠式小偏移 + inset 发丝环，不用单层重投影 */
+    --shadow-elev-1: var(--elev-1);
+    --shadow-elev-2: var(--elev-2);
+    --shadow-elev-3: var(--elev-3);
+    --shadow-elev-4: var(--elev-4);
+    --shadow-elev-5: var(--elev-5);
 }
 
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    /* 页面底色用 canvas-soft，卡片才是纯白 canvas —— 规范的表面阶梯 */
+    --background: #fafafa;
+    --foreground: #171717;
+    --card: #ffffff;
+    --card-foreground: #171717;
+    --popover: #ffffff;
+    --popover-foreground: #171717;
+    --primary: #171717;
+    --primary-foreground: #ffffff;
+    --secondary: #f5f5f5;
+    --secondary-foreground: #171717;
+    --muted: #f5f5f5;
+    --muted-foreground: #4d4d4d;
+    --accent: #f5f5f5;
+    --accent-foreground: #171717;
+    --destructive: #ee0000;
+    --border: #ebebeb;
+    --input: #ebebeb;
+    --ring: #0070f3;
+
+    --mute: #888888;
+    --success: #29bc9b;
+    --success-fg: #0f7a63;
+    --warning: #f5a623;
+    --warning-fg: #ab570a;
+    --link: #0070f3;
+    --surface-inset: #f5f5f5;
+
+    /* 分类图表色。取自规范已有的渐变调色板，顺序固定、不循环。
+       前 3 槽经 dataviz 校验器全配对通过（亮/暗双模式、零警告）：
+       亮度带 / 色度下限 / 色盲分离 / 常视分离 / 对比度 五项全 PASS。
+       chart-4/5 是备用槽，同时用到 4 条以上序列时必须重跑校验器再定。 */
+    --chart-1: #0070f3;
+    --chart-2: #eb367f;
+    --chart-3: #ab570a;
+    --chart-4: #29bc9b;
+    --chart-5: #7928ca;
+
+    --radius: 6px;
+
+    --sidebar: #fafafa;
+    --sidebar-foreground: #171717;
+    --sidebar-primary: #171717;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #f0f0f0;
+    --sidebar-accent-foreground: #171717;
+    --sidebar-border: #ebebeb;
+    --sidebar-ring: #0070f3;
+
+    --elev-1: inset 0 0 0 1px rgb(0 0 0 / 0.08);
+    --elev-2:
+        0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04),
+        inset 0 0 0 1px rgb(0 0 0 / 0.08);
+    --elev-3:
+        0 2px 2px rgb(0 0 0 / 0.04), 0 8px 8px -8px rgb(0 0 0 / 0.04),
+        inset 0 0 0 1px rgb(0 0 0 / 0.08);
+    --elev-4:
+        0 2px 2px rgb(0 0 0 / 0.04), 0 8px 16px -4px rgb(0 0 0 / 0.04),
+        inset 0 0 0 1px rgb(0 0 0 / 0.08);
+    --elev-5:
+        0 1px 1px rgb(0 0 0 / 0.02), 0 8px 16px -4px rgb(0 0 0 / 0.04),
+        0 24px 32px -8px rgb(0 0 0 / 0.06), inset 0 0 0 1px rgb(0 0 0 / 0.08);
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    /* 极性翻转：亮色的 canvas-soft 变成暗色的墨色，primary(#171717) 成为卡片表面 */
+    --background: #0a0a0a;
+    --foreground: #fafafa;
+    --card: #171717;
+    --card-foreground: #fafafa;
+    --popover: #171717;
+    --popover-foreground: #fafafa;
+    --primary: #fafafa;
+    --primary-foreground: #171717;
+    --secondary: #1f1f1f;
+    --secondary-foreground: #fafafa;
+    --muted: #1f1f1f;
+    --muted-foreground: #a1a1a1;
+    --accent: #1f1f1f;
+    --accent-foreground: #fafafa;
+    /* 暗底上 #ee0000 偏闷，换成调色板里已有的 ship 渐变起始红 */
+    --destructive: #ff4d4d;
+    --border: #2e2e2e;
+    --input: #2e2e2e;
+    --ring: #0070f3;
+
+    /* 暗底上原值本身就够亮，*-fg 直接等于原值 */
+    --mute: #6f6f6f;
+    --success: #50e3c2;
+    --success-fg: #50e3c2;
+    --warning: #f5a623;
+    --warning-fg: #f5a623;
+    --link: #47a3ff;
+    --surface-inset: #1f1f1f;
+
+    /* 暗色不是亮色的自动翻转，是在同色相上另选的步进（校验器要求） */
+    --chart-1: #0070f3;
+    --chart-2: #eb367f;
+    --chart-3: #b8791a;
+    --chart-4: #29bc9b;
+    --chart-5: #7928ca;
+
+    --sidebar: #0a0a0a;
+    --sidebar-foreground: #fafafa;
+    --sidebar-primary: #fafafa;
+    --sidebar-primary-foreground: #171717;
+    --sidebar-accent: #1f1f1f;
+    --sidebar-accent-foreground: #fafafa;
+    --sidebar-border: #2e2e2e;
+    --sidebar-ring: #0070f3;
+
+    /* 暗色下黑投影不可见，改用发丝环承担全部层级线索 */
+    --elev-1: inset 0 0 0 1px rgb(255 255 255 / 0.08);
+    --elev-2:
+        0 1px 2px rgb(0 0 0 / 0.4), inset 0 0 0 1px rgb(255 255 255 / 0.08);
+    --elev-3:
+        0 2px 4px rgb(0 0 0 / 0.4), inset 0 0 0 1px rgb(255 255 255 / 0.09);
+    --elev-4:
+        0 4px 12px rgb(0 0 0 / 0.5), inset 0 0 0 1px rgb(255 255 255 / 0.1);
+    --elev-5:
+        0 8px 32px rgb(0 0 0 / 0.6), inset 0 0 0 1px rgb(255 255 255 / 0.12);
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
+    * {
+        @apply border-border outline-ring/50;
     }
-  body {
-    @apply bg-background text-foreground;
+
+    body {
+        @apply bg-background text-foreground;
     }
-  html {
-    @apply font-sans;
+
+    html {
+        @apply font-sans;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+    }
+
+    /* 规范 selection-bg / selection-fg */
+    ::selection {
+        background: var(--primary);
+        color: var(--primary-foreground);
+    }
+
+    /* 数字在滚动刷新的面板里必须等宽，否则每秒都在抖 */
+    .font-mono {
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+@layer components {
+    /**
+     * 章节眉标：规范要求"每个 section eyebrow 和小标签用等宽面"，
+     * 这是全站技术标签的统一声音。
+     */
+    .eyebrow {
+        @apply font-mono text-[11px] leading-4 tracking-[0.04em] text-mute uppercase;
     }
 }

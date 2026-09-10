@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter, usePathname } from "next/navigation";
+import { ChevronRight, LogOut, Terminal as TerminalIcon } from "lucide-react";
+
 import {
   Sidebar,
   SidebarContent,
@@ -22,117 +26,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Server,
-  Users,
-  Settings,
-  LogOut,
-  LayoutDashboard,
-  FolderOpen,
-  Box,
-  ChevronRight,
-  Terminal,
-  Container,
-  Settings2,
-  Layers,
-  Globe2,
-  ShieldCheck,
-  Database,
-  Store,
-} from "lucide-react";
-import { useRouter, usePathname } from "next/navigation";
 import { clearMeCache, fetchMe } from "@/lib/me";
 import { usePanelName } from "@/lib/panel-name-context";
-
-const navGroups = [
-  {
-    title: "概览",
-    items: [
-      {
-        title: "仪表盘",
-        url: "/dashboard",
-        icon: LayoutDashboard,
-      },
-    ],
-  },
-  {
-    title: "实例管理",
-    items: [
-      {
-        title: "实例管理",
-        url: "/dashboard/instances",
-        icon: Box,
-      },
-      {
-        title: "应用广场",
-        url: "/dashboard/appstore",
-        icon: Store,
-      },
-      {
-        title: "文件管理",
-        url: "/dashboard/files",
-        icon: FolderOpen,
-      },
-      {
-        title: "节点管理",
-        url: "/dashboard/nodes",
-        icon: Server,
-      },
-      {
-        title: "Docker 管理",
-        url: "/dashboard/docker",
-        icon: Container,
-      },
-      {
-        title: "数据库管理",
-        url: "/dashboard/database",
-        icon: Database,
-      },
-      {
-        title: "服务管理",
-        url: "/dashboard/services",
-        icon: Settings2,
-      },
-      {
-        title: "网站管理",
-        url: "/dashboard/sites",
-        icon: Globe2,
-      },
-      {
-        title: "环境管理",
-        url: "/dashboard/environments",
-        icon: Layers,
-      },
-      {
-        title: "终端",
-        url: "/dashboard/terminal",
-        icon: Terminal,
-      },
-    ],
-  },
-  {
-    title: "系统管理",
-    items: [
-      {
-        title: "用户管理",
-        url: "/dashboard/users",
-        icon: Users,
-      },
-      {
-        title: "安全",
-        url: "/dashboard/security",
-        icon: ShieldCheck,
-      },
-      {
-        title: "系统设置",
-        url: "/dashboard/settings",
-        icon: Settings,
-      },
-    ],
-  },
-];
+import { isNavItemActive, navGroups } from "@/lib/nav";
 
 export function AppSidebar() {
   const router = useRouter();
@@ -147,11 +47,6 @@ export function AppSidebar() {
     });
   }, []);
 
-  const isActive = (url: string) => {
-    if (url === "/dashboard") return pathname === "/dashboard";
-    return pathname.startsWith(url);
-  };
-
   const handleLogout = () => {
     localStorage.removeItem("token");
     clearMeCache();
@@ -159,41 +54,57 @@ export function AppSidebar() {
   };
 
   return (
-    <Sidebar>
-      <SidebarHeader className="h-16 flex items-center justify-center border-b px-4">
-        <h2 className="text-lg font-bold truncate w-full text-center">{panelName}</h2>
+    <Sidebar className="border-r">
+      {/* 与顶栏同高，两条发丝线在视觉上连成一条 */}
+      <SidebarHeader className="h-16 shrink-0 justify-center border-b px-4">
+        <Link href="/dashboard" className="flex items-center gap-2.5 overflow-hidden">
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
+            <TerminalIcon className="size-3.5" />
+          </span>
+          <span className="truncate text-sm font-semibold tracking-display">
+            {panelName}
+          </span>
+        </Link>
       </SidebarHeader>
-      <SidebarContent>
+
+      <SidebarContent className="gap-0 py-2">
         {navGroups.map((group) => (
-          <Collapsible
-            key={group.title}
-            defaultOpen={true}
-            className="group/collapsible"
-          >
-            <SidebarGroup>
-              <SidebarGroupLabel asChild>
-                <CollapsibleTrigger>
+          <Collapsible key={group.title} defaultOpen className="group/collapsible">
+            <SidebarGroup className="py-1">
+              <SidebarGroupLabel asChild className="h-7 text-mute hover:text-foreground">
+                <CollapsibleTrigger className="eyebrow w-full">
                   {group.title}
-                  <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                  <ChevronRight className="ml-auto size-3.5 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent>
                   <SidebarMenu>
-                    {group.items.map((item) => (
-                      <SidebarMenuItem key={item.title}>
-                        <SidebarMenuButton
-                          asChild
-                          isActive={isActive(item.url)}
-                          tooltip={item.title}
-                        >
-                          <a href={item.url}>
-                            <item.icon />
-                            <span>{item.title}</span>
-                          </a>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
+                    {group.items.map((item) => {
+                      const active = isNavItemActive(item.url, pathname);
+                      return (
+                        <SidebarMenuItem key={item.url}>
+                          {/* 规范 ex-app-shell-row：选中态用品牌主色做左边缘指示条 */}
+                          {active && (
+                            <span
+                              aria-hidden
+                              className="absolute top-1/2 left-0 h-4 w-0.5 -translate-y-1/2 rounded-full bg-sidebar-primary"
+                            />
+                          )}
+                          <SidebarMenuButton
+                            asChild
+                            isActive={active}
+                            tooltip={item.title}
+                            className="h-8 gap-2.5 rounded-md px-2 text-sm data-[active=true]:font-medium"
+                          >
+                            <Link href={item.url}>
+                              <item.icon className="size-4 shrink-0" />
+                              <span className="truncate">{item.title}</span>
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      );
+                    })}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </CollapsibleContent>
@@ -201,33 +112,43 @@ export function AppSidebar() {
           </Collapsible>
         ))}
       </SidebarContent>
-      <SidebarFooter className="p-2 border-t">
+
+      <SidebarFooter className="border-t p-2">
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  size="lg"
-                  className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-                >
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                    <span className="text-primary text-sm font-medium">{username ? username.charAt(0).toUpperCase() : "U"}</span>
-                  </div>
-                  <div className="grid flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-semibold">{username || "加载中..."}</span>
-                    <span className="truncate text-xs text-muted-foreground">管理员</span>
-                  </div>
-                  <ChevronRight className="ml-auto size-4" />
+                <SidebarMenuButton className="h-11 gap-2.5 rounded-md px-2 data-open:bg-sidebar-accent">
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium">
+                    {username ? username.charAt(0).toUpperCase() : "—"}
+                  </span>
+                  <span className="grid flex-1 text-left leading-tight">
+                    <span className="truncate text-sm font-medium">
+                      {username || "加载中…"}
+                    </span>
+                    <span className="truncate text-xs text-mute">管理员</span>
+                  </span>
+                  <ChevronRight className="ml-auto size-4 text-mute" />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 side="top"
-                className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg"
                 align="start"
+                className="w-(--radix-dropdown-menu-trigger-width) min-w-56 shadow-elev-5"
               >
-                <DropdownMenuItem onClick={handleLogout} className="text-red-500 focus:text-red-500 focus:bg-red-500/10">
-                  <LogOut className="mr-2 h-4 w-4" />
-                  <span>退出登录</span>
+                <DropdownMenuLabel className="eyebrow px-2 py-1.5">
+                  已登录
+                </DropdownMenuLabel>
+                <DropdownMenuItem disabled className="font-mono text-xs opacity-100">
+                  {username || "—"}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={handleLogout}
+                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                >
+                  <LogOut className="mr-2 size-4" />
+                  退出登录
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
