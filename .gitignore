@@ -69,3 +69,5 @@ yarn.lock
 pnpm-lock.yaml
 /officalserver
 /.cursor
+# 设计参考库（本地资料，不入库）
+design-md/
