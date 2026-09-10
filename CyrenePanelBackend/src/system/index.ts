@@ -4,6 +4,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { spawn, execSync } from "child_process";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
+import { parseLinuxMounts, type MountEntry } from "./mounts";
 import { DATA_DIR, LOG_DIR } from "../runtime-paths";
 import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
@@ -221,28 +222,15 @@ function getLinuxDisks(): DiskInfo[] {
   const disks: DiskInfo[] = [];
   const { statfsSync, readFileSync } = require("fs");
 
-  // Parse /proc/mounts to find real mount points
-  let mountPoints: string[] = [];
+  let mounts: MountEntry[];
   try {
-    const content = readFileSync("/proc/mounts", "utf-8");
-    const seen = new Set<string>();
-    for (const line of content.split("\n")) {
-      const parts = line.split(" ");
-      if (parts.length < 2) continue;
-      const device = parts[0];
-      const mount = parts[1];
-      // Only consider real block devices (e.g. /dev/sda1, /dev/nvme0n1p2)
-      if (!device.startsWith("/dev/")) continue;
-      if (seen.has(mount)) continue;
-      seen.add(mount);
-      mountPoints.push(mount);
-    }
+    mounts = parseLinuxMounts(readFileSync("/proc/mounts", "utf-8"));
   } catch {
-    // fallback: just check root
-    mountPoints = ["/"];
+    // 读不到就退回只看根分区
+    mounts = [{ device: "/", mount: "/" }];
   }
 
-  for (const mount of mountPoints) {
+  for (const { device, mount } of mounts) {
     try {
       const stats = statfsSync(mount);
       const total = Number(stats.blocks) * Number(stats.bsize);
@@ -250,7 +238,8 @@ function getLinuxDisks(): DiskInfo[] {
       const free = Number(stats.bfree) * Number(stats.bsize);
       const used = total - free;
       disks.push({
-        filesystem: mount,
+        // 这里以前填的是挂载点，导致界面上同一个路径显示两遍
+        filesystem: device,
         mount,
         total,
         used,
