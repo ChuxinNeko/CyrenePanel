@@ -534,12 +534,6 @@ export interface AuditLogRow {
 const auditInsertStmt = db.prepare(
   "INSERT INTO audit_logs (timestamp, username, category, action, target, detail, ip, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 );
-const auditQueryStmt = db.prepare(
-  "SELECT * FROM audit_logs ORDER BY timestamp DESC, id DESC LIMIT ?"
-);
-const auditQueryBeforeStmt = db.prepare(
-  "SELECT * FROM audit_logs WHERE timestamp < ? ORDER BY timestamp DESC, id DESC LIMIT ?"
-);
 const auditPruneStmt = db.prepare(
   "DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs ORDER BY timestamp ASC, id ASC LIMIT ?)"
 );
@@ -575,13 +569,128 @@ export function dbInsertAuditLog(entry: {
   }
 }
 
-export function dbQueryAuditLogs(limit: number, before?: number): AuditLogRow[] {
+export interface AuditFilter {
+  category?: string;
+  username?: string;
+  /** true 只看成功，false 只看失败，undefined 不限 */
+  success?: boolean;
+  /** 在 action / target / detail / ip 上做模糊匹配 */
+  keyword?: string;
+  /** 时间闭区间，毫秒时间戳 */
+  from?: number;
+  to?: number;
+}
+
+/**
+ * 把筛选条件拼成 WHERE 子句。
+ * 列名全部是这里写死的字面量，用户输入只进占位符，不存在拼接注入。
+ */
+function buildAuditWhere(filter: AuditFilter): { sql: string; params: unknown[] } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (filter.category) {
+    clauses.push("category = ?");
+    params.push(filter.category);
+  }
+  if (filter.username) {
+    clauses.push("username = ?");
+    params.push(filter.username);
+  }
+  if (filter.success !== undefined) {
+    clauses.push("success = ?");
+    params.push(filter.success ? 1 : 0);
+  }
+  if (filter.from !== undefined) {
+    clauses.push("timestamp >= ?");
+    params.push(filter.from);
+  }
+  if (filter.to !== undefined) {
+    clauses.push("timestamp <= ?");
+    params.push(filter.to);
+  }
+  if (filter.keyword) {
+    // LIKE 的通配符要转义，否则用户搜 "100%" 会变成前缀匹配
+    const escaped = filter.keyword.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const like = `%${escaped}%`;
+    clauses.push(
+      "(action LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\' OR ip LIKE ? ESCAPE '\\')"
+    );
+    params.push(like, like, like, like);
+  }
+
+  return {
+    sql: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+    params,
+  };
+}
+
+/** 带筛选的分页查询。before 是时间戳游标，用于「加载更多」 */
+export function dbQueryAuditLogsFiltered(
+  limit: number,
+  filter: AuditFilter = {},
+  before?: number
+): AuditLogRow[] {
   const cap = Math.min(Math.max(limit, 1), 500);
-  return (
-    before
-      ? (auditQueryBeforeStmt.all(before, cap) as AuditLogRow[])
-      : (auditQueryStmt.all(cap) as AuditLogRow[])
-  );
+  const { sql: where, params } = buildAuditWhere(filter);
+
+  const cursor = before !== undefined ? (where ? "AND timestamp < ?" : "WHERE timestamp < ?") : "";
+  const cursorParams = before !== undefined ? [before] : [];
+
+  const sql = `SELECT * FROM audit_logs ${where} ${cursor} ORDER BY timestamp DESC, id DESC LIMIT ?`;
+  return db.prepare(sql).all(...params, ...cursorParams, cap) as AuditLogRow[];
+}
+
+export interface AuditStats {
+  total: number;
+  failed: number;
+  byCategory: Record<string, number>;
+  usernames: string[];
+  earliest: number | null;
+  latest: number | null;
+}
+
+/** 统计信息基于整表（受同一组筛选约束），不受分页 limit 影响 */
+export function dbAuditStats(filter: AuditFilter = {}): AuditStats {
+  const { sql: where, params } = buildAuditWhere(filter);
+
+  const totals = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed,
+              MIN(timestamp) AS earliest,
+              MAX(timestamp) AS latest
+       FROM audit_logs ${where}`
+    )
+    .get(...params) as {
+    total: number;
+    failed: number | null;
+    earliest: number | null;
+    latest: number | null;
+  };
+
+  const catRows = db
+    .prepare(
+      `SELECT category, COUNT(*) AS count FROM audit_logs ${where} GROUP BY category`
+    )
+    .all(...params) as Array<{ category: string; count: number }>;
+
+  // 用户下拉列表不跟随筛选，否则选了某个用户之后列表就只剩他自己
+  const userRows = db
+    .prepare("SELECT DISTINCT username FROM audit_logs ORDER BY username")
+    .all() as Array<{ username: string }>;
+
+  const byCategory: Record<string, number> = {};
+  for (const row of catRows) byCategory[row.category] = row.count;
+
+  return {
+    total: totals.total ?? 0,
+    failed: totals.failed ?? 0,
+    byCategory,
+    usernames: userRows.map((r) => r.username),
+    earliest: totals.earliest ?? null,
+    latest: totals.latest ?? null,
+  };
 }
 
 // ── mysql_connections 表 ─────────────────────────────────────────────
