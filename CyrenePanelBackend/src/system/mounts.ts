@@ -26,6 +26,8 @@ const REAL_NON_DEV_FILESYSTEMS = new Set([
 export interface MountEntry {
   device: string;
   mount: string;
+  /** 文件系统类型，如 ext4 / xfs / vfat */
+  fstype: string;
 }
 
 /** /proc/mounts 会把空格等字符写成八进制转义 */
@@ -56,7 +58,7 @@ export function parseLinuxMounts(content: string): MountEntry[] {
     if (seen.has(mount)) continue;
 
     seen.add(mount);
-    mounts.push({ device, mount });
+    mounts.push({ device, mount, fstype });
   }
 
   return mounts;

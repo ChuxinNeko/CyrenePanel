@@ -13,6 +13,12 @@ import { Badge } from "@/components/ui/badge";
 import { StatusDot } from "@/components/status-dot";
 import { RingGauge } from "@/components/ring-gauge";
 import { MetricChart, type ChartSeries } from "@/components/metric-chart";
+import {
+  CpuDetailCard,
+  DiskDetailCard,
+  LoadDetailCard,
+  MemoryDetailCard,
+} from "@/components/gauge-details";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
@@ -66,7 +72,23 @@ interface SystemInfo {
     five: number;
     fifteen: number;
     percentage: number;
+    runningProcesses: number;
+    totalProcesses: number;
     supported: boolean;
+  };
+  cpuDetail?: {
+    times: {
+      user: number; nice: number; system: number; idle: number; iowait: number;
+      irq: number; softirq: number; steal: number; guest: number; guestNice: number;
+    } | null;
+    coreUsage: number[];
+    fullTimesSupported: boolean;
+  };
+  cpuTopology?: {
+    model: string;
+    physicalCount: number;
+    physicalCores: number;
+    logicalCores: number;
   };
   uptime: string;
   uptimeSeconds: number;
@@ -81,6 +103,11 @@ interface SystemInfo {
     totalFormatted: string;
     usedFormatted: string;
     freeFormatted: string;
+    sharedFormatted: string;
+    availableFormatted: string;
+    buffersFormatted: string;
+    cachedFormatted: string;
+    detailSupported: boolean;
     percentage: number;
   };
   network?: {
@@ -99,6 +126,7 @@ interface SystemInfo {
   disks: Array<{
     filesystem: string;
     mount: string;
+    fstype: string;
     total: number;
     used: number;
     free: number;
@@ -106,6 +134,7 @@ interface SystemInfo {
     totalFormatted: string;
     usedFormatted: string;
     freeFormatted: string;
+    inodes: { total: number; used: number; free: number; percentage: number } | null;
   }>;
   nodeCount: number;
   onlineNodeCount: number;
@@ -491,23 +520,63 @@ export default function DashboardPage() {
                     value={load.percentage}
                     label="运行负载"
                     caption={`${load.one} / ${load.five} / ${load.fifteen}`}
+                    details={
+                      <LoadDetailCard
+                        load={load}
+                        times={system.cpuDetail?.times ?? null}
+                        fullTimesSupported={system.cpuDetail?.fullTimesSupported ?? false}
+                      />
+                    }
                   />
                 )}
                 <RingGauge
                   value={system.cpu.usage}
                   label="CPU"
                   caption={`${system.cpu.cores} 核`}
+                  details={
+                    <CpuDetailCard
+                      model={system.cpuTopology?.model ?? system.cpu.model}
+                      physicalCount={system.cpuTopology?.physicalCount ?? 1}
+                      physicalCores={system.cpuTopology?.physicalCores ?? system.cpu.cores}
+                      logicalCores={system.cpuTopology?.logicalCores ?? system.cpu.cores}
+                      coreUsage={system.cpuDetail?.coreUsage ?? []}
+                    />
+                  }
                 />
                 <RingGauge
                   value={system.memory.percentage}
                   label="内存"
                   caption={`${system.memory.usedFormatted} / ${system.memory.totalFormatted}`}
+                  details={
+                    <MemoryDetailCard
+                      free={system.memory.freeFormatted}
+                      used={system.memory.usedFormatted}
+                      total={system.memory.totalFormatted}
+                      shared={system.memory.sharedFormatted}
+                      available={system.memory.availableFormatted}
+                      buffers={system.memory.buffersFormatted}
+                      cached={system.memory.cachedFormatted}
+                      detailSupported={system.memory.detailSupported}
+                    />
+                  }
                 />
                 {primaryDisk && (
                   <RingGauge
                     value={primaryDisk.percentage}
                     label="磁盘"
                     caption={`${primaryDisk.usedFormatted} / ${primaryDisk.totalFormatted}`}
+                    details={
+                      <DiskDetailCard
+                        mount={primaryDisk.mount}
+                        filesystem={primaryDisk.filesystem}
+                        fstype={primaryDisk.fstype}
+                        totalFormatted={primaryDisk.totalFormatted}
+                        freeFormatted={primaryDisk.freeFormatted}
+                        usedFormatted={primaryDisk.usedFormatted}
+                        percentage={primaryDisk.percentage}
+                        inodes={primaryDisk.inodes}
+                      />
+                    }
                   />
                 )}
               </div>

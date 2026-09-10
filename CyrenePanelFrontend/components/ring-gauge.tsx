@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
+
 /**
  * 环形计量条。
  *
@@ -33,6 +39,7 @@ export function RingGauge({
   caption,
   size = 104,
   stroke = 8,
+  details,
 }: {
   /** 0–100 */
   value: number;
@@ -41,6 +48,8 @@ export function RingGauge({
   caption?: string;
   size?: number;
   stroke?: number;
+  /** 传入则悬停展示详情气泡 */
+  details?: React.ReactNode;
 }) {
   const clamped = Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
   const tone = gaugeTone(clamped);
@@ -48,7 +57,7 @@ export function RingGauge({
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - clamped / 100);
 
-  return (
+  const body = (
     <div className="flex min-w-0 flex-col items-center gap-2">
       <div className="relative" style={{ width: size, height: size }}>
         {/* -90° 让进度从正上方起笔 */}
@@ -97,5 +106,23 @@ export function RingGauge({
         )}
       </div>
     </div>
+  );
+
+  if (!details) return body;
+
+  return (
+    <HoverCard>
+      {/* 用 button 而不是 div：键盘 Tab 也能聚焦触发，不是纯鼠标可达 */}
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          aria-label={`${label} ${clamped}%，查看详情`}
+        >
+          {body}
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent className="w-72">{details}</HoverCardContent>
+    </HoverCard>
   );
 }

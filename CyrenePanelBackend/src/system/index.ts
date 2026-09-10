@@ -5,6 +5,13 @@ import { join } from "path";
 import { spawn, execSync } from "child_process";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
 import { parseLinuxMounts, type MountEntry } from "./mounts";
+import {
+  getCpuDetail,
+  getCpuTopology,
+  getLoadDetail,
+  getMemoryDetail,
+  sampleCpuDetail,
+} from "./detail";
 import { DATA_DIR, LOG_DIR } from "../runtime-paths";
 import { getMemoryInfo } from "../memory";
 import { CYRENE_VERSION } from "../version";
@@ -13,6 +20,11 @@ import { resolveRequestProfile } from "../node-auth/request-profile";
 import { logger } from "../logger/index";
 
 const startTime = Date.now();
+
+// CPU 时间分布是两次 /proc/stat 快照做差算的，采样点必须等间隔。
+// 挂在固定周期上而不是随请求触发，否则相邻几毫秒的两次请求会算出失真的值。
+sampleCpuDetail();
+setInterval(sampleCpuDetail, 5000);
 
 interface OfficialPanelRelease {
   version?: unknown;
@@ -163,9 +175,18 @@ function getCpuUsage(): number {
   return totalTick > 0 ? Math.round((1 - totalIdle / totalTick) * 100) : 0;
 }
 
+interface DiskInode {
+  total: number;
+  used: number;
+  free: number;
+  percentage: number;
+}
+
 interface DiskInfo {
   filesystem: string;
   mount: string;
+  /** 文件系统类型，如 ext4；Windows 上留空 */
+  fstype: string;
   total: number;
   used: number;
   free: number;
@@ -173,6 +194,22 @@ interface DiskInfo {
   totalFormatted: string;
   usedFormatted: string;
   freeFormatted: string;
+  /** statfs 报不出 inode 的文件系统（如 vfat）为 null */
+  inodes: DiskInode | null;
+}
+
+/** statfs 的 files/ffree 就是 inode 总数与空闲数；vfat 之类会返回 0 */
+function readInodes(stats: any): DiskInode | null {
+  const total = Number(stats.files ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const free = Number(stats.ffree ?? 0);
+  const used = Math.max(0, total - free);
+  return {
+    total,
+    used,
+    free,
+    percentage: Math.round((used / total) * 10000) / 100,
+  };
 }
 
 function getDiskUsage(): DiskInfo[] {
@@ -203,6 +240,7 @@ function getWindowsDisks(): DiskInfo[] {
       disks.push({
         filesystem: `${letter}:`,
         mount,
+        fstype: "",
         total,
         used,
         free,
@@ -210,6 +248,7 @@ function getWindowsDisks(): DiskInfo[] {
         totalFormatted: formatBytes(total),
         usedFormatted: formatBytes(used),
         freeFormatted: formatBytes(free),
+        inodes: readInodes(stats),
       });
     } catch {
       // drive not ready or inaccessible, skip
@@ -227,10 +266,10 @@ function getLinuxDisks(): DiskInfo[] {
     mounts = parseLinuxMounts(readFileSync("/proc/mounts", "utf-8"));
   } catch {
     // 读不到就退回只看根分区
-    mounts = [{ device: "/", mount: "/" }];
+    mounts = [{ device: "/", mount: "/", fstype: "" }];
   }
 
-  for (const { device, mount } of mounts) {
+  for (const { device, mount, fstype } of mounts) {
     try {
       const stats = statfsSync(mount);
       const total = Number(stats.blocks) * Number(stats.bsize);
@@ -241,6 +280,7 @@ function getLinuxDisks(): DiskInfo[] {
         // 这里以前填的是挂载点，导致界面上同一个路径显示两遍
         filesystem: device,
         mount,
+        fstype,
         total,
         used,
         free,
@@ -248,6 +288,7 @@ function getLinuxDisks(): DiskInfo[] {
         totalFormatted: formatBytes(total),
         usedFormatted: formatBytes(used),
         freeFormatted: formatBytes(free),
+        inodes: readInodes(stats),
       });
     } catch {
       // inaccessible mount, skip
@@ -264,6 +305,7 @@ function getLinuxDisks(): DiskInfo[] {
       disks.push({
         filesystem: "/",
         mount: "/",
+        fstype: "",
         total,
         used,
         free,
@@ -271,6 +313,7 @@ function getLinuxDisks(): DiskInfo[] {
         totalFormatted: formatBytes(total),
         usedFormatted: formatBytes(used),
         freeFormatted: formatBytes(free),
+        inodes: readInodes(stats),
       });
     } catch {
       // ignore
@@ -653,7 +696,7 @@ export const systemRoutes = new Elysia()
         architecture: arch(),
         hostAddress: getHostAddress(),
         bootTime: formatDateTime(Date.now() - uptime() * 1000),
-        loadAverage: getLoadAverage(),
+        loadAverage: getLoadDetail(),
         uptime: formatUptime(uptime()),
         uptimeSeconds: Math.floor(uptime()),
         serverUptime: formatUptime((Date.now() - startTime) / 1000),
@@ -664,15 +707,21 @@ export const systemRoutes = new Elysia()
           model: cpus()[0]?.model || "Unknown",
           usage: latestMetric?.cpu ?? getCpuUsage(),
         },
-        memory: {
-          total: mem.total,
-          used: mem.used,
-          free: mem.free,
-          totalFormatted: formatBytes(mem.total),
-          usedFormatted: formatBytes(mem.used),
-          freeFormatted: formatBytes(mem.free),
-          percentage: Math.round((mem.used / mem.total) * 100),
-        },
+        memory: (() => {
+          const detail = getMemoryDetail();
+          return {
+            ...detail,
+            totalFormatted: formatBytes(detail.total),
+            usedFormatted: formatBytes(detail.used),
+            freeFormatted: formatBytes(detail.free),
+            sharedFormatted: formatBytes(detail.shared),
+            availableFormatted: formatBytes(detail.available),
+            buffersFormatted: formatBytes(detail.buffers),
+            cachedFormatted: formatBytes(detail.cached),
+          };
+        })(),
+        cpuDetail: getCpuDetail(),
+        cpuTopology: getCpuTopology(),
         disks,
         network,
         diskIo,
@@ -774,6 +823,27 @@ export const systemRoutes = new Elysia()
   })
 
   // ── 进程列表（按 CPU/内存排序） ──────────────────────────────────
+  /**
+   * 状态卡悬停用的 top5。单独成端点而不是塞进 /api/system，
+   * 是因为取进程要 spawn 一次 ps/Get-Process，跟着 5 秒轮询跑太浪费；
+   * 这里只在鼠标悬停时拉一次。
+   */
+  .get("/api/system/top-processes", async ({ jwt, request }: any) => {
+    const profile = await resolveRequestProfile(jwt, request);
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      const all = getProcessList();
+      return {
+        success: true,
+        // getProcessList 已按 CPU 降序，内存榜要另排一次
+        byCpu: all.slice(0, 5),
+        byMemory: [...all].sort((a, b) => b.memoryBytes - a.memoryBytes).slice(0, 5),
+      };
+    } catch (e: any) {
+      return { success: false, message: `获取进程列表失败: ${e.message}` };
+    }
+  })
+
   .get("/api/system/processes", async ({ jwt, request }: any) => {
     const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
