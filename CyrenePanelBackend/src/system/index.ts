@@ -411,12 +411,82 @@ function getWindowsProcessList(): ProcessInfo[] {
 }
 
 function formatUptime(seconds: number): string {
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (days > 0) return `${days}天 ${hours}小时 ${minutes}分钟`;
-  if (hours > 0) return `${hours}小时 ${minutes}分钟`;
-  return `${minutes}分钟`;
+  const total = Math.floor(seconds);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (days > 0) return `${days}天 ${hours}小时 ${minutes}分钟 ${secs}秒`;
+  if (hours > 0) return `${hours}小时 ${minutes}分钟 ${secs}秒`;
+  if (minutes > 0) return `${minutes}分钟 ${secs}秒`;
+  return `${secs}秒`;
+}
+
+function formatDateTime(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * 发行版本。Linux 上 release() 拿到的是内核版本（5.15.0-92-generic），
+ * 面板要显示的是「Ubuntu 22.04.3 LTS」这种发行版名，得读 /etc/os-release。
+ */
+function getDistroName(): string {
+  if (platform() === "win32") return `Windows ${release()}`;
+  if (platform() === "darwin") return `macOS ${release()}`;
+  try {
+    const content = readFileSync("/etc/os-release", "utf-8");
+    const pretty = content.match(/^PRETTY_NAME="?([^"\n]+)"?/m);
+    if (pretty?.[1]) return pretty[1];
+    const name = content.match(/^NAME="?([^"\n]+)"?/m);
+    if (name?.[1]) return name[1];
+  } catch {
+    // 非标准发行版或读不到，退回内核信息
+  }
+  return `${platform()} ${release()}`;
+}
+
+/** 主机地址：第一个非回环 IPv4，用于在面板上标识这台机器 */
+function getHostAddress(): string {
+  try {
+    const { networkInterfaces } = require("os");
+    for (const nets of Object.values(networkInterfaces()) as any[]) {
+      for (const net of nets ?? []) {
+        if ((net.family === "IPv4" || net.family === 4) && !net.internal) {
+          return net.address;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+interface LoadAverage {
+  one: number;
+  five: number;
+  fifteen: number;
+  /** 按核心数归一化的百分比，供环形进度条直接使用 */
+  percentage: number;
+}
+
+/**
+ * 运行负载。Windows 上 os.loadavg() 恒返回 [0,0,0]，没有等价概念，
+ * 前端据此隐藏该项而不是画一个永远为 0 的环。
+ */
+function getLoadAverage(): LoadAverage & { supported: boolean } {
+  const { loadavg } = require("os");
+  const [one = 0, five = 0, fifteen = 0] = loadavg() as number[];
+  const cores = Math.max(cpus().length, 1);
+  return {
+    one: Number(one.toFixed(2)),
+    five: Number(five.toFixed(2)),
+    fifteen: Number(fifteen.toFixed(2)),
+    percentage: Math.min(100, Math.round((one / cores) * 100)),
+    supported: platform() !== "win32",
+  };
 }
 
 export const systemRoutes = new Elysia()
@@ -575,8 +645,15 @@ export const systemRoutes = new Elysia()
       system: {
         hostname: hostname(),
         platform: platform(),
+        // osVersion 历史上就是内核版本，保留字段名避免破坏既有调用；
+        // kernelVersion 是语义更清楚的别名，distro 才是发行版名
         osVersion: release(),
+        kernelVersion: release(),
+        distro: getDistroName(),
         architecture: arch(),
+        hostAddress: getHostAddress(),
+        bootTime: formatDateTime(Date.now() - uptime() * 1000),
+        loadAverage: getLoadAverage(),
         uptime: formatUptime(uptime()),
         uptimeSeconds: Math.floor(uptime()),
         serverUptime: formatUptime((Date.now() - startTime) / 1000),

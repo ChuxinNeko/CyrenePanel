@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { API_BASE } from "@/lib/api-base";
@@ -11,6 +11,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { StatusDot } from "@/components/status-dot";
+import { RingGauge } from "@/components/ring-gauge";
+import { MetricChart, type ChartSeries } from "@/components/metric-chart";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -19,17 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Cpu,
-  MemoryStick,
-  HardDrive,
-  Server,
-  RefreshCw,
-  Box,
-  Download as DownloadIcon,
-  Upload as UploadIcon,
-  Activity,
-} from "lucide-react";
+import { Box, Database, Globe2, RefreshCw, Server } from "lucide-react";
 
 function authHeaders(): HeadersInit {
   const token =
@@ -63,7 +56,18 @@ interface SystemInfo {
   hostname: string;
   platform: string;
   osVersion: string;
+  kernelVersion: string;
+  distro: string;
   architecture: string;
+  hostAddress: string;
+  bootTime: string;
+  loadAverage: {
+    one: number;
+    five: number;
+    fifteen: number;
+    percentage: number;
+    supported: boolean;
+  };
   uptime: string;
   uptimeSeconds: number;
   serverUptime: string;
@@ -80,24 +84,16 @@ interface SystemInfo {
     percentage: number;
   };
   network?: {
-    download: number;
-    upload: number;
     downloadFormatted: string;
     uploadFormatted: string;
     receivedFormatted: string;
     transmittedFormatted: string;
-    receivedBytes: number;
-    transmittedBytes: number;
   };
   diskIo?: {
-    read: number;
-    write: number;
     readFormatted: string;
     writeFormatted: string;
     readOps: number;
     writeOps: number;
-    readLatencyMs: number;
-    writeLatencyMs: number;
     latencyMs: number;
   };
   disks: Array<{
@@ -130,8 +126,6 @@ interface NodeOverview {
   online: boolean;
   cpu?: number;
   memory?: {
-    used: number;
-    total: number;
     usedFormatted: string;
     totalFormatted: string;
     percentage: number;
@@ -139,12 +133,6 @@ interface NodeOverview {
   runningInstances?: number;
   totalInstances?: number;
   version?: string;
-}
-
-function formatClock(timestamp: number): string {
-  const d = new Date(timestamp);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -155,24 +143,15 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-function formatBandwidth(bytesPerSecond?: number): string {
-  return `${formatBytes(bytesPerSecond ?? 0)}/s`;
+const formatRate = (value: number) => `${formatBytes(value)}/s`;
+
+function formatClock(timestamp: number): string {
+  const d = new Date(timestamp);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function formatOps(value?: number): string {
-  if (!Number.isFinite(value ?? 0) || (value ?? 0) <= 0) return "0/s";
-  return `${(value ?? 0).toFixed((value ?? 0) >= 100 ? 0 : 1)}/s`;
-}
-
-function formatLatency(value?: number): string {
-  if (!Number.isFinite(value ?? 0) || (value ?? 0) <= 0) return "0 ms";
-  return `${(value ?? 0).toFixed((value ?? 0) >= 10 ? 0 : 1)} ms`;
-}
-
-/**
- * 占用率的严重度阶梯。按 dataviz 规则，填充色走 accent → warning → danger，
- * 未填充轨道用同一色相的浅一档，让状态在整条 bar 上都读得出来。
- */
+/** 占用率的严重度阶梯，与环形计量条共用同一套阈值 */
 function meterTone(pct: number) {
   if (pct >= 90)
     return { fill: "bg-destructive", track: "bg-destructive/15", text: "text-destructive" };
@@ -181,14 +160,7 @@ function meterTone(pct: number) {
   return { fill: "bg-chart-1", track: "bg-chart-1/15", text: "text-foreground" };
 }
 
-/** 占用率计量条：数值直接标在旁边，不依赖颜色单独承载信息 */
-function Meter({
-  value,
-  className,
-}: {
-  value: number;
-  className?: string;
-}) {
+function Meter({ value, className }: { value: number; className?: string }) {
   const tone = meterTone(value);
   return (
     <Progress
@@ -199,196 +171,7 @@ function Meter({
   );
 }
 
-/**
- * 趋势图：2px 线 + 10% 同色相面积 + ≥8px 端点（带 2px 表面色描环）。
- * 悬停给十字准星和数值气泡——HTML 图表默认就该是可交互的。
- */
-function TrendChart({
-  data,
-  color,
-  title,
-  subtitle,
-  unit = "%",
-}: {
-  data: number[];
-  color: string;
-  title: string;
-  subtitle: string;
-  unit?: string;
-}) {
-  const [hover, setHover] = useState<number | null>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  if (data.length < 2) {
-    return (
-      <div className="space-y-2">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="eyebrow">{title}</span>
-        </div>
-        <div className="flex h-24 items-center justify-center rounded-md bg-surface-inset text-xs text-mute">
-          暂无趋势数据
-        </div>
-      </div>
-    );
-  }
-
-  // 上界留一点余量，避免曲线永远贴顶
-  const max = Math.max(Math.max(...data) * 1.15, 20);
-  const coords = data.map((value, index) => ({
-    x: (index / (data.length - 1)) * 100,
-    y: 100 - (value / max) * 100,
-    value,
-  }));
-  const line = coords.map((p) => `${p.x},${p.y}`).join(" ");
-  const area = `0,100 ${line} 100,100`;
-  const last = coords[coords.length - 1];
-  const active = hover === null ? last : coords[hover];
-
-  const clampIndex = (index: number) =>
-    Math.min(Math.max(index, 0), data.length - 1);
-
-  const handleMove = (event: React.MouseEvent<HTMLDivElement>) => {
-    const box = boxRef.current;
-    if (!box) return;
-    const rect = box.getBoundingClientRect();
-    const ratio = (event.clientX - rect.left) / rect.width;
-    setHover(clampIndex(Math.round(ratio * (data.length - 1))));
-  };
-
-  // 键盘要能读到和悬停一样的值，不能让数值只挂在鼠标上
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      event.preventDefault();
-      const step = event.key === "ArrowLeft" ? -1 : 1;
-      setHover((prev) => clampIndex((prev ?? data.length - 1) + step));
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      setHover(0);
-    } else if (event.key === "End") {
-      event.preventDefault();
-      setHover(data.length - 1);
-    } else if (event.key === "Escape") {
-      setHover(null);
-    }
-  };
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="eyebrow truncate">{title}</span>
-        {/* 直接标注当前值：颜色之外始终有文字承载信息，键盘逐点时同步播报 */}
-        <span className="shrink-0 text-sm font-semibold tabular-nums" aria-live="polite">
-          {active.value}
-          {unit}
-        </span>
-      </div>
-
-      <div
-        ref={boxRef}
-        tabIndex={0}
-        role="group"
-        aria-label={`${title}趋势，方向键逐点读数`}
-        className="relative h-24 w-full cursor-crosshair rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-        onMouseMove={handleMove}
-        onMouseLeave={() => setHover(null)}
-        onKeyDown={handleKeyDown}
-        onBlur={() => setHover(null)}
-      >
-        <svg
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-          className="absolute inset-0 h-full w-full"
-          role="img"
-          aria-label={`${title}趋势，当前 ${active.value}${unit}`}
-        >
-          {/* 网格线：贴近表面的灰、1px 实线、退到后面 */}
-          {[25, 50, 75].map((y) => (
-            <line
-              key={y}
-              x1="0"
-              x2="100"
-              y1={y}
-              y2={y}
-              stroke="var(--border)"
-              strokeWidth="1"
-              vectorEffect="non-scaling-stroke"
-            />
-          ))}
-          <polygon points={area} fill={color} fillOpacity="0.1" />
-          <polyline
-            points={line}
-            fill="none"
-            stroke={color}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
-            vectorEffect="non-scaling-stroke"
-          />
-          {hover !== null && (
-            <line
-              x1={active.x}
-              x2={active.x}
-              y1="0"
-              y2="100"
-              stroke="var(--border)"
-              strokeWidth="1"
-              vectorEffect="non-scaling-stroke"
-            />
-          )}
-        </svg>
-
-        {/* 端点单独用 DOM 画：SVG 在 preserveAspectRatio=none 下会把圆压成椭圆 */}
-        <span
-          className="pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{
-            left: `${active.x}%`,
-            top: `${active.y}%`,
-            backgroundColor: color,
-            boxShadow: "0 0 0 2px var(--card)",
-          }}
-        />
-
-        {hover !== null && (
-          <span
-            className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-md bg-primary px-1.5 py-0.5 font-mono text-[11px] text-primary-foreground shadow-elev-4"
-            style={{ left: `${active.x}%`, top: `${Math.max(active.y - 6, 6)}%` }}
-          >
-            {active.value}
-            {unit}
-          </span>
-        )}
-      </div>
-
-      <p className="truncate text-xs text-mute">{subtitle}</p>
-    </div>
-  );
-}
-
-/** 键值指标行：标签在左、等宽数值在右 */
-function MetricRow({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-md bg-surface-inset px-2.5 py-2">
-      <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-        <Icon className="size-3.5 shrink-0 text-mute" />
-        <span className="truncate">{label}</span>
-      </span>
-      <span className="shrink-0 font-mono text-xs font-medium">{value}</span>
-    </div>
-  );
-}
-
-/**
- * KPI 磁贴。规范：label 句式小写、value 用无衬线 600。
- * 大数字用比例数字而非 tabular——tabular 会让显示级数字显得松散。
- */
+/** 顶部 KPI 磁贴 */
 function StatTile({
   icon: Icon,
   label,
@@ -410,9 +193,28 @@ function StatTile({
         <div className="text-[28px] leading-8 font-semibold tracking-display">
           {value}
         </div>
-        {sub && <p className="truncate text-xs text-mute" title={sub}>{sub}</p>}
+        {sub && (
+          <p className="truncate text-xs text-mute" title={sub}>
+            {sub}
+          </p>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+/** 系统信息卡的键值行 */
+function InfoRow({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+      <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
+      <dd
+        className="min-w-0 truncate text-right font-mono text-xs font-medium"
+        title={value || undefined}
+      >
+        {value || "—"}
+      </dd>
+    </div>
   );
 }
 
@@ -422,6 +224,8 @@ export default function DashboardPage() {
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [nodesOverview, setNodesOverview] = useState<NodeOverview[]>([]);
+  const [siteCount, setSiteCount] = useState(0);
+  const [dbConnCount, setDbConnCount] = useState({ mysql: 0, mongo: 0 });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
@@ -443,9 +247,7 @@ export default function DashboardPage() {
       const data = await apiGet<{ success: boolean; instances: Instance[] }>(
         "/api/instances"
       );
-      if (data.success) {
-        setInstances(data.instances);
-      }
+      if (data.success) setInstances(data.instances);
     } catch {
       // ignore
     }
@@ -456,12 +258,32 @@ export default function DashboardPage() {
       const data = await apiGet<{ success: boolean; nodes: NodeOverview[] }>(
         "/api/nodes/overview"
       );
-      if (data.success) {
-        setNodesOverview(data.nodes);
-      }
+      if (data.success) setNodesOverview(data.nodes);
     } catch {
       // ignore
     }
+  }, []);
+
+  // 网站与数据库连接数只用于 KPI，各自失败不影响其他卡片
+  const fetchCounts = useCallback(async () => {
+    const [sites, mysql, mongo] = await Promise.allSettled([
+      apiGet<{ success: boolean; sites?: unknown[] }>("/api/sites"),
+      apiGet<{ success: boolean; connections?: unknown[] }>("/api/mysql/connections"),
+      apiGet<{ success: boolean; connections?: unknown[] }>("/api/mongodb/connections"),
+    ]);
+    if (sites.status === "fulfilled" && sites.value.success) {
+      setSiteCount(sites.value.sites?.length ?? 0);
+    }
+    setDbConnCount({
+      mysql:
+        mysql.status === "fulfilled" && mysql.value.success
+          ? mysql.value.connections?.length ?? 0
+          : 0,
+      mongo:
+        mongo.status === "fulfilled" && mongo.value.success
+          ? mongo.value.connections?.length ?? 0
+          : 0,
+    });
   }, []);
 
   useEffect(() => {
@@ -474,6 +296,7 @@ export default function DashboardPage() {
           fetchSystem(),
           fetchInstances(),
           fetchNodesOverview(),
+          fetchCounts(),
         ]);
 
         if (!me) {
@@ -488,7 +311,7 @@ export default function DashboardPage() {
       }
     };
     init();
-  }, [router, fetchSystem, fetchInstances, fetchNodesOverview]);
+  }, [router, fetchSystem, fetchInstances, fetchNodesOverview, fetchCounts]);
 
   useEffect(() => {
     if (loading) return;
@@ -502,40 +325,72 @@ export default function DashboardPage() {
       fetchSystem(),
       fetchInstances(),
       fetchNodesOverview(),
+      fetchCounts(),
     ]);
     setRefreshing(false);
   };
 
-  const cpuTrend = system?.metrics?.map((metric) => metric.cpu) ?? [];
-  const memoryTrend =
-    system?.metrics?.map((metric) => metric.memoryPercentage) ?? [];
-  const latestMetric =
-    system?.metrics && system.metrics.length > 0
-      ? system.metrics[system.metrics.length - 1]
-      : undefined;
-  const downloadRate =
-    system?.network?.downloadFormatted ??
-    formatBandwidth(latestMetric?.networkDownload);
-  const uploadRate =
-    system?.network?.uploadFormatted ??
-    formatBandwidth(latestMetric?.networkUpload);
-  const totalReceived = system?.network?.receivedFormatted ?? "0 B";
-  const totalTransmitted = system?.network?.transmittedFormatted ?? "0 B";
-  const diskReadRate =
-    system?.diskIo?.readFormatted ?? formatBandwidth(latestMetric?.diskRead);
-  const diskWriteRate =
-    system?.diskIo?.writeFormatted ?? formatBandwidth(latestMetric?.diskWrite);
-  const diskReadOps = formatOps(system?.diskIo?.readOps ?? latestMetric?.diskReadOps);
-  const diskWriteOps = formatOps(
-    system?.diskIo?.writeOps ?? latestMetric?.diskWriteOps
-  );
-  const diskLatency = formatLatency(
-    system?.diskIo?.latencyMs ?? latestMetric?.diskLatency
+  const metrics = useMemo(() => system?.metrics ?? [], [system]);
+
+  // 四个监控视图共用一份采样序列，Tab 只切换渲染哪几条
+  const charts = useMemo<Record<string, ChartSeries[]>>(
+    () => ({
+      cpu: [
+        {
+          name: "CPU 使用率",
+          color: "var(--chart-1)",
+          data: metrics.map((m) => m.cpu),
+          format: (v) => `${v}%`,
+        },
+      ],
+      memory: [
+        {
+          name: "内存使用率",
+          color: "var(--chart-2)",
+          data: metrics.map((m) => m.memoryPercentage),
+          format: (v) => `${v}%`,
+        },
+      ],
+      network: [
+        {
+          name: "下载",
+          color: "var(--chart-1)",
+          data: metrics.map((m) => m.networkDownload ?? 0),
+          format: formatRate,
+        },
+        {
+          name: "上传",
+          color: "var(--chart-2)",
+          data: metrics.map((m) => m.networkUpload ?? 0),
+          format: formatRate,
+        },
+      ],
+      diskio: [
+        {
+          name: "读取",
+          color: "var(--chart-1)",
+          data: metrics.map((m) => m.diskRead ?? 0),
+          format: formatRate,
+        },
+        {
+          name: "写入",
+          color: "var(--chart-2)",
+          data: metrics.map((m) => m.diskWrite ?? 0),
+          format: formatRate,
+        },
+      ],
+    }),
+    [metrics]
   );
 
   const runningCount = instances.filter((i) => i.status === "running").length;
   const stoppedCount = instances.filter((i) => i.status === "stopped").length;
   const errorCount = instances.filter((i) => i.status === "error").length;
+  const dbTotal = dbConnCount.mysql + dbConnCount.mongo;
+
+  // 状态卡默认展示主节点：/api/system 返回的就是本机数据
+  const primaryDisk = system?.disks?.[0];
+  const load = system?.loadAverage;
 
   if (loading) {
     return (
@@ -549,19 +404,14 @@ export default function DashboardPage() {
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {[...Array(4)].map((_, i) => (
-            <Card key={i} size="sm">
-              <CardContent className="space-y-2">
-                <Skeleton className="h-3 w-20" />
-                <Skeleton className="h-7 w-16" />
-                <Skeleton className="h-3 w-28" />
-              </CardContent>
-            </Card>
+            <Skeleton key={i} className="h-24" />
           ))}
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
-          <Skeleton className="h-72 lg:col-span-2" />
-          <Skeleton className="h-72" />
+          <Skeleton className="h-64 lg:col-span-2" />
+          <Skeleton className="h-64" />
         </div>
+        <Skeleton className="h-80 w-full" />
       </div>
     );
   }
@@ -588,19 +438,14 @@ export default function DashboardPage() {
               更新于 {formatClock(updatedAt)}
             </span>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRefresh}
-            disabled={refreshing}
-          >
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing}>
             <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
             刷新
           </Button>
         </div>
       </div>
 
-      {/* KPI 行：只给当前值，趋势交给下面的图，不重复编码同一份数据 */}
+      {/* KPI 行 */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatTile
           icon={Server}
@@ -609,136 +454,133 @@ export default function DashboardPage() {
           sub={`共 ${system?.nodeCount ?? 0} 个节点接入`}
         />
         <StatTile
-          icon={Cpu}
-          label="CPU 使用率"
-          value={`${system?.cpu.usage ?? 0}%`}
-          sub={`${system?.cpu.cores ?? 0} 核 · ${system?.cpu.model ?? "未知"}`}
-        />
-        <StatTile
-          icon={MemoryStick}
-          label="内存使用"
-          value={system?.memory.usedFormatted ?? "—"}
-          sub={`共 ${system?.memory.totalFormatted ?? "—"} · ${system?.memory.percentage ?? 0}%`}
-        />
-        <StatTile
           icon={Box}
           label="实例运行"
           value={`${runningCount} / ${instances.length}`}
           sub={`运行 ${runningCount} · 停止 ${stoppedCount}${errorCount > 0 ? ` · 异常 ${errorCount}` : ""}`}
         />
+        <StatTile
+          icon={Globe2}
+          label="网站数量"
+          value={siteCount}
+          sub={siteCount > 0 ? "已配置站点" : "尚未添加站点"}
+        />
+        <StatTile
+          icon={Database}
+          label="数据库连接"
+          value={dbTotal}
+          sub={`MySQL ${dbConnCount.mysql} · MongoDB ${dbConnCount.mongo}`}
+        />
       </div>
 
+      {/* 状态 + 系统信息 */}
       <div className="grid items-start gap-4 lg:grid-cols-3">
-        {/* 资源趋势 */}
         <Card className="lg:col-span-2">
           <CardHeader className="border-b pb-4">
-            <CardTitle className="text-base">资源使用</CardTitle>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-base">状态</CardTitle>
+              <Badge variant="secondary">主节点</Badge>
+            </div>
           </CardHeader>
-          <CardContent className="space-y-5">
+          <CardContent>
             {system ? (
-              <>
-                <div className="grid gap-5 md:grid-cols-2">
-                  <TrendChart
-                    data={cpuTrend}
-                    color="var(--chart-1)"
-                    title="CPU"
-                    subtitle={`${system.cpu.cores} 核 · ${system.cpu.model}`}
+              <div className="flex flex-wrap items-start justify-around gap-6 py-2">
+                {/* Windows 上 loadavg 恒为 0，没有等价概念，直接不展示 */}
+                {load?.supported && (
+                  <RingGauge
+                    value={load.percentage}
+                    label="运行负载"
+                    caption={`${load.one} / ${load.five} / ${load.fifteen}`}
                   />
-                  <TrendChart
-                    data={memoryTrend}
-                    color="var(--chart-2)"
-                    title="内存"
-                    subtitle={`${system.memory.usedFormatted} / ${system.memory.totalFormatted}`}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <p className="eyebrow">网络</p>
-                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <MetricRow icon={DownloadIcon} label="实时下载" value={downloadRate} />
-                    <MetricRow icon={UploadIcon} label="实时上传" value={uploadRate} />
-                    <MetricRow icon={DownloadIcon} label="总接收" value={totalReceived} />
-                    <MetricRow icon={UploadIcon} label="总发送" value={totalTransmitted} />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="eyebrow">磁盘 IO</p>
-                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-                    <MetricRow icon={DownloadIcon} label="读取" value={diskReadRate} />
-                    <MetricRow icon={UploadIcon} label="写入" value={diskWriteRate} />
-                    <MetricRow icon={Activity} label="读次数" value={diskReadOps} />
-                    <MetricRow icon={Activity} label="写次数" value={diskWriteOps} />
-                    <MetricRow icon={Activity} label="IO 延迟" value={diskLatency} />
-                  </div>
-                </div>
-
-                {system.disks.length > 0 && (
-                  <div className="space-y-2.5">
-                    <p className="eyebrow">磁盘容量</p>
-                    {system.disks.map((disk) => (
-                      <div key={disk.mount} className="space-y-1.5">
-                        <div className="flex items-center justify-between gap-3 text-xs">
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            <HardDrive className="size-3 shrink-0 text-mute" />
-                            <span className="shrink-0 font-mono">{disk.filesystem}</span>
-                            <span className="truncate text-mute">{disk.mount}</span>
-                          </span>
-                          <span
-                            className={`shrink-0 font-mono font-medium ${meterTone(disk.percentage).text}`}
-                          >
-                            {disk.usedFormatted} / {disk.totalFormatted} ·{" "}
-                            {disk.percentage}%
-                          </span>
-                        </div>
-                        <Meter value={disk.percentage} />
-                      </div>
-                    ))}
-                  </div>
                 )}
-              </>
+                <RingGauge
+                  value={system.cpu.usage}
+                  label="CPU"
+                  caption={`${system.cpu.cores} 核`}
+                />
+                <RingGauge
+                  value={system.memory.percentage}
+                  label="内存"
+                  caption={`${system.memory.usedFormatted} / ${system.memory.totalFormatted}`}
+                />
+                {primaryDisk && (
+                  <RingGauge
+                    value={primaryDisk.percentage}
+                    label="磁盘"
+                    caption={`${primaryDisk.usedFormatted} / ${primaryDisk.totalFormatted}`}
+                  />
+                )}
+              </div>
             ) : (
-              <p className="py-8 text-center text-sm text-mute">暂无系统数据</p>
+              <p className="py-10 text-center text-sm text-mute">暂无系统数据</p>
+            )}
+
+            {/* 主盘之外的挂载点用条形计量条补充，避免环形铺满一屏 */}
+            {system && system.disks.length > 1 && (
+              <div className="mt-4 space-y-2.5 border-t pt-4">
+                <p className="eyebrow">其他挂载点</p>
+                {system.disks.slice(1).map((disk) => (
+                  <div key={disk.mount} className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="shrink-0 font-mono">{disk.filesystem}</span>
+                        <span className="truncate text-mute">{disk.mount}</span>
+                      </span>
+                      <span
+                        className={`shrink-0 font-mono font-medium ${meterTone(disk.percentage).text}`}
+                      >
+                        {disk.usedFormatted} / {disk.totalFormatted} · {disk.percentage}%
+                      </span>
+                    </div>
+                    <Meter value={disk.percentage} />
+                  </div>
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>
 
-        {/* 系统信息 */}
         <Card>
           <CardHeader className="border-b pb-4">
             <CardTitle className="text-base">系统信息</CardTitle>
           </CardHeader>
           <CardContent>
-            <dl className="divide-y divide-border text-sm">
-              {[
-                { k: "主机名", v: system?.hostname, mono: true },
-                {
-                  k: "系统",
-                  v: system ? `${system.platform} ${system.architecture}` : undefined,
-                },
-                { k: "内核", v: system?.osVersion, mono: true },
-                { k: "运行时", v: system?.runtimeVersion, mono: true },
-                { k: "面板版本", v: system?.panelVersion, mono: true },
-                { k: "系统运行时间", v: system?.uptime },
-                { k: "服务运行时间", v: system?.serverUptime },
-              ].map((row) => (
-                <div
-                  key={row.k}
-                  className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
-                >
-                  <dt className="shrink-0 text-muted-foreground">{row.k}</dt>
-                  <dd
-                    className={`min-w-0 truncate text-right font-medium ${row.mono ? "font-mono text-xs" : ""}`}
-                    title={row.v ?? undefined}
-                  >
-                    {row.v ?? "—"}
-                  </dd>
-                </div>
-              ))}
+            <dl className="divide-y divide-border">
+              <InfoRow label="主机名称" value={system?.hostname} />
+              <InfoRow label="发行版本" value={system?.distro} />
+              <InfoRow label="内核版本" value={system?.kernelVersion ?? system?.osVersion} />
+              <InfoRow label="系统类型" value={system?.architecture} />
+              <InfoRow label="主机地址" value={system?.hostAddress} />
+              <InfoRow label="启动时间" value={system?.bootTime} />
+              <InfoRow label="运行时间" value={system?.uptime} />
+              <InfoRow label="运行时" value={system?.runtimeVersion} />
+              <InfoRow label="面板版本" value={system?.panelVersion} />
             </dl>
           </CardContent>
         </Card>
       </div>
+
+      {/* 监控：四个视图共用一份采样，Tab 切换 */}
+      <Card>
+        <CardHeader className="border-b pb-4">
+          <CardTitle className="text-base">监控</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Tabs defaultValue="cpu">
+            <TabsList className="w-fit">
+              <TabsTrigger value="cpu">CPU</TabsTrigger>
+              <TabsTrigger value="memory">内存</TabsTrigger>
+              <TabsTrigger value="network">网络</TabsTrigger>
+              <TabsTrigger value="diskio">磁盘 IO</TabsTrigger>
+            </TabsList>
+            {Object.entries(charts).map(([key, series]) => (
+              <TabsContent key={key} value={key} className="pt-4">
+                <MetricChart series={series} />
+              </TabsContent>
+            ))}
+          </Tabs>
+        </CardContent>
+      </Card>
 
       {/* 节点状态总览 */}
       <Card>
@@ -827,7 +669,6 @@ export default function DashboardPage() {
           )}
         </CardContent>
       </Card>
-
     </div>
   );
 }
