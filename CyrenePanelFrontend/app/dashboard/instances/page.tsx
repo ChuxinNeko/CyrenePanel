@@ -1,13 +1,28 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatusDot } from "@/components/status-dot";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -19,40 +34,25 @@ import {
 import {
   Box,
   Plus,
-  Terminal,
-  FolderOpen,
-  Clock,
   AlertCircle,
   Trash2,
   Play,
   Square,
-  Settings,
-  Server,
-  Home,
-  ChevronRight,
   RefreshCw,
   FolderSearch,
+  Search,
+  RotateCcw,
+  SquareTerminal,
+  Pencil,
 } from "lucide-react";
 import { API_BASE } from "@/lib/api-base";
-
-// ── 类型 ─────────────────────────────────────────────────────────────────
-
-interface Instance {
-  id: string;
-  name: string;
-  command: string;
-  cwd: string;
-  env: Record<string, string>;
-  autoRestart: boolean;
-  createdAt: number;
-  status: "running" | "stopped" | "error";
-  pid?: number;
-  startedAt?: number;
-  exitCode: number | null;
-  logs: string[];
-  nodeId: string;
-  nodeName: string;
-}
+import {
+  DirectoryBrowserDialog,
+  MAIN_NODE,
+} from "@/components/directory-browser-dialog";
+import { InstanceEditDialog } from "@/components/instance-edit-dialog";
+import { runtimeSummary, statusMeta, type Instance } from "@/lib/instances";
+import { useNow } from "@/hooks/use-now";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────────
 
@@ -80,42 +80,6 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
-async function apiDelete<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
-  return res.json();
-}
-
-// ── 工具函数 ─────────────────────────────────────────────────────────────
-
-function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, { label: string; color: string }> = {
-    running: { label: "运行中", color: "bg-emerald-500" },
-    stopped: { label: "已停止", color: "bg-zinc-400" },
-    error: { label: "错误", color: "bg-red-500" },
-  };
-  const info = map[status] ?? { label: status, color: "bg-zinc-400" };
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-      <span className={`h-2 w-2 rounded-full ${info.color}`} />
-      {info.label}
-    </span>
-  );
-}
-
-function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}天 ${h}时 ${m}分`;
-  if (h > 0) return `${h}时 ${m}分`;
-  if (m > 0) return `${m}分`;
-  return `< 1分`;
-}
-
 // ── 新建实例对话框 ────────────────────────────────────────────────────────
 
 interface EnvPair {
@@ -128,15 +92,6 @@ interface NodeInfo {
   name: string;
   address: string;
   isMain: number;
-}
-
-interface FileEntry {
-  name: string;
-  path: string;
-  isDirectory: boolean;
-  size: number;
-  modified: number;
-  extension: string;
 }
 
 function CreateInstanceDialog({
@@ -156,16 +111,12 @@ function CreateInstanceDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  // 节点选择
-  const [nodeId, setNodeId] = useState("");
+  // 节点选择。Select 不接受空字符串作为值，用哨兵值代表主节点
+  const [nodeId, setNodeId] = useState(MAIN_NODE);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
 
-  // 文件浏览器
+  // 目录选择器（与编辑对话框共用同一个组件）
   const [browseOpen, setBrowseOpen] = useState(false);
-  const [browsePath, setBrowsePath] = useState("");
-  const [browseEntries, setBrowseEntries] = useState<FileEntry[]>([]);
-  const [browseFetching, setBrowseFetching] = useState(false);
-  const [browseRoot, setBrowseRoot] = useState("");
 
   // 获取子节点列表
   useEffect(() => {
@@ -184,54 +135,6 @@ function CreateInstanceDialog({
     })();
   }, [open]);
 
-  // 文件浏览器：加载目录
-  const fetchBrowseDir = async (path: string) => {
-    setBrowseFetching(true);
-    try {
-      const prefix =
-        nodeId ? `/api/nodes/${nodeId}` : "/api";
-      const data = await apiGet<{
-        success: boolean;
-        entries?: FileEntry[];
-        root?: string;
-        message?: string;
-      }>(`${prefix}/files?path=${encodeURIComponent(path)}`);
-      if (data.success && data.entries) {
-        setBrowseEntries(data.entries);
-        if (data.root) setBrowseRoot(data.root);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setBrowseFetching(false);
-    }
-  };
-
-  // 打开文件浏览器
-  const openBrowse = () => {
-    setBrowsePath("");
-    setBrowseOpen(true);
-    fetchBrowseDir("");
-  };
-
-  // 文件浏览器导航
-  const browseNavigate = (path: string) => {
-    setBrowsePath(path);
-    fetchBrowseDir(path);
-  };
-
-  // 选择当前目录
-  const selectBrowseDir = () => {
-    // 将文件浏览器中的路径格式转为系统路径
-    const selectedPath = browseRoot
-      ? browsePath
-        ? `${browseRoot.replace(/\\/g, "/").replace(/\/+$/, "")}/${browsePath}`
-        : browseRoot.replace(/\\/g, "/").replace(/\/+$/, "")
-      : browsePath || "/";
-    setCwd(selectedPath);
-    setBrowseOpen(false);
-  };
-
   const reset = () => {
     setName("");
     setCommand("");
@@ -239,7 +142,7 @@ function CreateInstanceDialog({
     setAutoRestart(false);
     setEnvPairs([]);
     setError("");
-    setNodeId("");
+    setNodeId(MAIN_NODE);
   };
 
   const addEnv = () => setEnvPairs([...envPairs, { key: "", value: "" }]);
@@ -272,7 +175,7 @@ function CreateInstanceDialog({
         env,
         autoRestart,
       };
-      if (nodeId) body.nodeId = nodeId;
+      if (nodeId !== MAIN_NODE) body.nodeId = nodeId;
 
       const res = await apiPost<{ success: boolean; message?: string }>(
         "/api/instances",
@@ -310,22 +213,22 @@ function CreateInstanceDialog({
           </DialogHeader>
 
           <div className="space-y-4 py-2">
-            {/* 节点选择 */}
             {nodes.length > 0 && (
               <div className="space-y-2">
                 <Label>运行节点</Label>
-                <select
-                  value={nodeId}
-                  onChange={(e) => setNodeId(e.target.value)}
-                  className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-                >
-                  <option value="">主节点（本地）</option>
-                  {nodes.map((node) => (
-                    <option key={node.id} value={node.id}>
-                      {node.name}
-                    </option>
-                  ))}
-                </select>
+                <Select value={nodeId} onValueChange={setNodeId}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={MAIN_NODE}>主节点（本地）</SelectItem>
+                    {nodes.map((node) => (
+                      <SelectItem key={node.id} value={node.id}>
+                        {node.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
 
@@ -352,37 +255,33 @@ function CreateInstanceDialog({
               <Label>工作目录 *</Label>
               <div className="flex gap-2">
                 <Input
-                  placeholder="例如：/home/user/myapp 或 D:\projects\myapp"
+                  placeholder="例如：/home/user/myapp"
                   value={cwd}
                   onChange={(e) => setCwd(e.target.value)}
-                  className="font-mono flex-1"
+                  className="flex-1 font-mono"
                 />
                 <Button
                   variant="outline"
                   size="icon"
                   type="button"
-                  onClick={openBrowse}
+                  onClick={() => setBrowseOpen(true)}
                   title="浏览目录"
                 >
-                  <FolderSearch className="h-4 w-4" />
+                  <FolderSearch className="size-4" />
                 </Button>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
-              <Switch
-                checked={autoRestart}
-                onCheckedChange={setAutoRestart}
-              />
+              <Switch checked={autoRestart} onCheckedChange={setAutoRestart} />
               <Label className="cursor-pointer">崩溃后自动重启</Label>
             </div>
 
-            {/* 环境变量 */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label>环境变量</Label>
                 <Button variant="outline" size="sm" onClick={addEnv} type="button">
-                  <Plus className="h-3 w-3" />
+                  <Plus className="size-3" />
                   添加
                 </Button>
               </div>
@@ -394,21 +293,22 @@ function CreateInstanceDialog({
                         placeholder="KEY"
                         value={pair.key}
                         onChange={(e) => updateEnv(i, "key", e.target.value)}
-                        className="font-mono flex-1"
+                        className="flex-1 font-mono"
                       />
                       <Input
                         placeholder="VALUE"
                         value={pair.value}
                         onChange={(e) => updateEnv(i, "value", e.target.value)}
-                        className="font-mono flex-1"
+                        className="flex-1 font-mono"
                       />
                       <Button
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => removeEnv(i)}
                         type="button"
+                        aria-label={`删除第 ${i + 1} 个环境变量`}
                       >
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        <Trash2 className="size-3.5 text-destructive" />
                       </Button>
                     </div>
                   ))}
@@ -417,8 +317,8 @@ function CreateInstanceDialog({
             </div>
 
             {error && (
-              <p className="text-sm text-red-500 flex items-center gap-1">
-                <AlertCircle className="h-3.5 w-3.5" />
+              <p className="flex items-center gap-1.5 text-sm text-destructive">
+                <AlertCircle className="size-3.5 shrink-0" />
                 {error}
               </p>
             )}
@@ -429,192 +329,158 @@ function CreateInstanceDialog({
               取消
             </Button>
             <Button onClick={handleSubmit} disabled={submitting}>
-              {submitting ? "创建中..." : "创建实例"}
+              {submitting ? "创建中…" : "创建实例"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* 文件浏览器对话框 */}
-      <Dialog open={browseOpen} onOpenChange={setBrowseOpen}>
-        <DialogContent className="max-w-2xl h-[500px] flex flex-col">
-          <DialogHeader>
-            <DialogTitle>选择工作目录</DialogTitle>
-            <DialogDescription>
-              当前浏览: {browseRoot ? `${browseRoot}${browsePath ? `/${browsePath}` : ""}` : (browsePath || "根目录")}
-            </DialogDescription>
-          </DialogHeader>
-
-          {/* 面包屑导航 */}
-          <div className="flex items-center gap-1 text-sm border rounded-md px-2 py-1.5 bg-muted/30 flex-shrink-0 overflow-x-auto">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 shrink-0"
-              onClick={() => browseNavigate("")}
-            >
-              <Home className="h-3.5 w-3.5" />
-            </Button>
-            {browsePath && (
-              <>
-                {browsePath.split("/").map((part, i, arr) => {
-                  const subPath = arr.slice(0, i + 1).join("/");
-                  const isLast = i === arr.length - 1;
-                  return (
-                    <div key={i} className="flex items-center gap-0.5 shrink-0">
-                      <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                      <Button
-                        variant={isLast ? "secondary" : "ghost"}
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => browseNavigate(subPath)}
-                      >
-                        {part}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </>
-            )}
-            <div className="flex-1" />
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0"
-              onClick={() => fetchBrowseDir(browsePath)}
-              disabled={browseFetching}
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${browseFetching ? "animate-spin" : ""}`} />
-            </Button>
-          </div>
-
-          {/* 目录列表 */}
-          <div className="flex-1 overflow-auto min-h-0 border rounded-md">
-            {browseFetching ? (
-              <div className="flex items-center justify-center py-12 text-muted-foreground">
-                <RefreshCw className="h-5 w-5 animate-spin mr-2" />
-                加载中...
-              </div>
-            ) : browseEntries.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                <FolderOpen className="h-8 w-8 mb-2 opacity-30" />
-                <p className="text-sm">此目录为空</p>
-              </div>
-            ) : (
-              <div className="divide-y">
-                {browseEntries
-                  .filter((e) => e.isDirectory)
-                  .map((entry) => (
-                    <div
-                      key={entry.path}
-                      className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/80 transition-colors text-sm"
-                      onClick={() => browseNavigate(entry.path)}
-                    >
-                      <FolderOpen className="h-4 w-4 text-yellow-500 shrink-0" />
-                      <span className="truncate">{entry.name}</span>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </div>
-
-          <DialogFooter className="flex-shrink-0">
-            <Button variant="outline" onClick={() => setBrowseOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={selectBrowseDir}>
-              选择此目录
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DirectoryBrowserDialog
+        open={browseOpen}
+        onOpenChange={setBrowseOpen}
+        nodeId={nodeId}
+        onSelect={setCwd}
+      />
     </>
   );
 }
 
 // ── 实例卡片 ─────────────────────────────────────────────────────────────
 
+/** 卡片里的键值信息行 */
+function SpecRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5">
+      <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
+      <dd
+        className={`min-w-0 truncate text-right text-xs ${mono ? "font-mono" : ""}`}
+        title={value}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * MCSManager 风格的实例卡：顶部实例名 + 状态标签，中间键值信息块，
+ * 底部一行常驻的操作按钮（控制台 / 启动停止 / 重启）。
+ */
 function InstanceCard({
   instance,
+  now,
+  busy,
   onAction,
-  onClick,
+  onEdit,
 }: {
   instance: Instance;
-  onAction: (id: string, action: "start" | "stop") => void;
-  onClick: () => void;
+  now: number;
+  busy: boolean;
+  onAction: (id: string, action: "start" | "stop" | "restart") => void;
+  onEdit: (instance: Instance) => void;
 }) {
+  const meta = statusMeta(instance.status);
   const isRunning = instance.status === "running";
-  const uptime =
-    isRunning && instance.startedAt ? Date.now() - instance.startedAt : 0;
 
   return (
-    <Card
-      className="cursor-pointer transition-all hover:ring-2 hover:ring-primary/30 hover:shadow-md group"
-      onClick={onClick}
-    >
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div className="space-y-1 min-w-0 flex-1">
-            <CardTitle className="text-base truncate">{instance.name}</CardTitle>
-            <StatusBadge status={instance.status} />
-          </div>
-          <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-            {!isRunning ? (
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAction(instance.id, "start");
-                }}
-                title="启动"
+    <Card className="flex flex-col transition-shadow hover:shadow-elev-4">
+      <CardHeader className="border-b pb-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 space-y-0.5">
+            <CardTitle className="truncate">
+              <Link
+                href={`/dashboard/instances/${instance.id}`}
+                className="rounded-sm hover:underline focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
               >
-                <Play className="h-3.5 w-3.5" />
-              </Button>
-            ) : (
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAction(instance.id, "stop");
-                }}
-                title="停止"
-              >
-                <Square className="h-3.5 w-3.5" />
-              </Button>
-            )}
+                {instance.name}
+              </Link>
+            </CardTitle>
+            <p className="truncate font-mono text-[11px] text-mute" title={instance.id}>
+              {instance.id.slice(0, 12)}
+            </p>
           </div>
+          {/* 状态标签里带圆点，色觉障碍下也能靠文字读出来 */}
+          <Badge variant={meta.badge} className="shrink-0 gap-1.5">
+            <span aria-hidden className={`size-1.5 rounded-full ${meta.dot}`} />
+            {meta.label}
+          </Badge>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3 text-sm">
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <Terminal className="h-3.5 w-3.5 shrink-0" />
-          <code className="font-mono truncate text-xs">{instance.command}</code>
-        </div>
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate text-xs font-mono">{instance.cwd}</span>
-        </div>
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <Server className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate text-xs">{instance.nodeName ?? "主节点"}</span>
-        </div>
-        {isRunning && (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Clock className="h-3.5 w-3.5 shrink-0" />
-            <span className="text-xs">已运行 {formatDuration(uptime)}</span>
-          </div>
-        )}
-        {!isRunning && instance.exitCode !== null && instance.exitCode !== undefined && (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Settings className="h-3.5 w-3.5 shrink-0" />
-            <span className="text-xs">退出码: {instance.exitCode}</span>
-          </div>
-        )}
+
+      <CardContent className="flex-1">
+        <dl className="divide-y divide-border">
+          <SpecRow label="启动命令" value={instance.command} mono />
+          <SpecRow label="工作目录" value={instance.cwd} mono />
+          <SpecRow label="节点" value={instance.nodeName ?? "主节点"} />
+          <SpecRow label={isRunning ? "运行时长" : "状态"} value={runtimeSummary(instance, now)} mono />
+        </dl>
       </CardContent>
+
+      <CardFooter className="gap-1.5">
+        <Button variant="outline" size="sm" asChild>
+          <Link href={`/dashboard/instances/${instance.id}`}>
+            <SquareTerminal className="size-3.5" />
+            控制台
+          </Link>
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onEdit(instance)}
+          aria-label={`编辑 ${instance.name}`}
+        >
+          <Pencil className="size-3.5" />
+          编辑
+        </Button>
+        <div className="flex-1" />
+        {isRunning ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => onAction(instance.id, "stop")}
+          >
+            {busy ? (
+              <RefreshCw className="size-3.5 animate-spin" />
+            ) : (
+              <Square className="size-3.5 text-destructive" />
+            )}
+            停止
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => onAction(instance.id, "start")}
+          >
+            {busy ? (
+              <RefreshCw className="size-3.5 animate-spin" />
+            ) : (
+              <Play className="size-3.5 text-success-fg" />
+            )}
+            启动
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          size="icon-sm"
+          disabled={!isRunning || busy}
+          onClick={() => onAction(instance.id, "restart")}
+          aria-label={`重启 ${instance.name}`}
+          title="重启"
+        >
+          <RotateCcw className="size-3.5" />
+        </Button>
+      </CardFooter>
     </Card>
   );
 }
@@ -622,11 +488,15 @@ function InstanceCard({
 // ── 主页面 ───────────────────────────────────────────────────────────────
 
 export default function InstancesPage() {
-  const router = useRouter();
   const [instances, setInstances] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("__all__");
+  const [editing, setEditing] = useState<Instance | null>(null);
+  const now = useNow();
 
   const fetchInstances = useCallback(async () => {
     try {
@@ -637,6 +507,7 @@ export default function InstancesPage() {
       }>("/api/instances");
       if (data.success) {
         setInstances(data.instances);
+        setError("");
       } else {
         setError(data.message || "获取实例列表失败");
       }
@@ -661,79 +532,174 @@ export default function InstancesPage() {
     return () => clearInterval(timer);
   }, [instances, fetchInstances]);
 
-  const handleAction = async (id: string, action: "start" | "stop") => {
-    await apiPost(`/api/instances/${id}/${action}`);
-    setTimeout(fetchInstances, 300);
+  const handleAction = async (
+    id: string,
+    action: "start" | "stop" | "restart"
+  ) => {
+    setPendingId(id);
+    try {
+      await apiPost(`/api/instances/${id}/${action}`);
+      // 进程状态不是立刻落库的，稍等一拍再拉
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await fetchInstances();
+    } finally {
+      setPendingId(null);
+    }
   };
+
+  const counts = useMemo(
+    () => ({
+      running: instances.filter((i) => i.status === "running").length,
+      stopped: instances.filter((i) => i.status === "stopped").length,
+      error: instances.filter((i) => i.status === "error").length,
+    }),
+    [instances]
+  );
+
+  const filtered = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    return instances.filter((inst) => {
+      if (statusFilter !== "__all__" && inst.status !== statusFilter) return false;
+      if (!keyword) return true;
+      return (
+        inst.name.toLowerCase().includes(keyword) ||
+        inst.command.toLowerCase().includes(keyword) ||
+        inst.cwd.toLowerCase().includes(keyword) ||
+        (inst.nodeName ?? "").toLowerCase().includes(keyword)
+      );
+    });
+  }, [instances, query, statusFilter]);
 
   if (loading) {
     return (
-      <div className="space-y-6 max-w-6xl mx-auto w-full">
+      <div className="mx-auto w-full max-w-[1400px] space-y-6">
         <div className="flex items-center justify-between">
-          <Skeleton className="h-9 w-48" />
-          <Skeleton className="h-9 w-28" />
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-32" />
+            <Skeleton className="h-4 w-56" />
+          </div>
+          <Skeleton className="h-8 w-28" />
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-44 w-full rounded-lg" />
-          ))}
-        </div>
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-72 w-full" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6 max-w-6xl mx-auto w-full">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold tracking-tight">实例管理</h1>
+    <div className="mx-auto w-full max-w-[1400px] space-y-6">
+      {/* 页头 */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl leading-8 font-semibold tracking-display">实例管理</h1>
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+            <span>共 {instances.length} 个实例</span>
+            <StatusDot dot="bg-success">运行中 {counts.running}</StatusDot>
+            <StatusDot dot="bg-mute">已停止 {counts.stopped}</StatusDot>
+            {counts.error > 0 && (
+              <StatusDot dot="bg-destructive">异常 {counts.error}</StatusDot>
+            )}
+          </p>
+        </div>
         <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="h-4 w-4" />
+          <Plus className="size-4" />
           新建实例
         </Button>
       </div>
 
-      {error && (
+      {error ? (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-            <AlertCircle className="h-10 w-10 text-red-500/50 mb-3" />
-            <p className="text-sm text-red-500">{error}</p>
+          <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <AlertCircle className="size-8 text-destructive/60" />
+            <p className="text-sm text-destructive">{error}</p>
+            <Button variant="outline" size="sm" onClick={fetchInstances}>
+              <RefreshCw className="size-3.5" />
+              重试
+            </Button>
           </CardContent>
         </Card>
-      )}
-
-      {!error && instances.length === 0 && (
+      ) : instances.length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-            <Box className="h-12 w-12 text-muted-foreground/30 mb-4" />
-            <h3 className="text-lg font-semibold">暂无实例</h3>
-            <p className="text-sm text-muted-foreground mt-1 mb-4">
+          <CardContent className="flex flex-col items-center justify-center gap-1 py-16 text-center">
+            <Box className="mb-3 size-10 text-mute/50" />
+            <h3 className="text-base font-semibold tracking-display">暂无实例</h3>
+            <p className="mb-4 text-sm text-muted-foreground">
               点击「新建实例」创建你的第一个进程实例
             </p>
             <Button onClick={() => setCreateOpen(true)}>
-              <Plus className="h-4 w-4" />
+              <Plus className="size-4" />
               新建实例
             </Button>
           </CardContent>
         </Card>
-      )}
+      ) : (
+        <>
+          {/* 筛选条：统一放在它所作用的表格上方一行 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-56 flex-1">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-mute" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="搜索名称、命令、目录或节点"
+                className="h-8 pl-8"
+              />
+            </div>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">全部状态</SelectItem>
+                <SelectItem value="running">运行中</SelectItem>
+                <SelectItem value="stopped">已停止</SelectItem>
+                <SelectItem value="error">错误</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={fetchInstances}
+              aria-label="刷新实例列表"
+            >
+              <RefreshCw className="size-3.5" />
+            </Button>
+          </div>
 
-      {instances.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {instances.map((inst) => (
-            <InstanceCard
-              key={inst.id}
-              instance={inst}
-              onAction={handleAction}
-              onClick={() => router.push(`/dashboard/instances/${inst.id}`)}
-            />
-          ))}
-        </div>
+          {filtered.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center text-sm text-mute">
+                没有匹配的实例
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {filtered.map((inst) => (
+                <InstanceCard
+                  key={inst.id}
+                  instance={inst}
+                  now={now}
+                  busy={pendingId === inst.id}
+                  onAction={handleAction}
+                  onEdit={setEditing}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       <CreateInstanceDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={fetchInstances}
+      />
+
+      <InstanceEditDialog
+        instance={editing}
+        open={editing !== null}
+        onOpenChange={(open) => !open && setEditing(null)}
+        onSaved={fetchInstances}
       />
     </div>
   );

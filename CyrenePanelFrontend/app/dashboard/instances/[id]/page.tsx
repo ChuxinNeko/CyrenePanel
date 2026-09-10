@@ -1,57 +1,38 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatusDot } from "@/components/status-dot";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import XtermTerminal from "@/components/xterm-terminal";
+import { InstanceEditDialog } from "@/components/instance-edit-dialog";
 import {
   ArrowLeft,
   Play,
   Square,
   RotateCcw,
   Trash2,
-  Terminal,
-  Info,
-  Clock,
-  FolderOpen,
   AlertCircle,
-  Hash,
-  Calendar,
-  Cpu,
-  Monitor,
-  Server,
+  Pencil,
 } from "lucide-react";
 import { API_BASE } from "@/lib/api-base";
-
-// ── 类型 ─────────────────────────────────────────────────────────────────
-
-interface InstanceDetail {
-  id: string;
-  name: string;
-  command: string;
-  cwd: string;
-  autoRestart: boolean;
-  env: Record<string, string>;
-  status: "running" | "stopped" | "error";
-  pid?: number;
-  startedAt?: number;
-  exitCode: number | null;
-  createdAt: number;
-  logs: string[];
-  nodeId: string;
-  nodeName: string;
-}
+import {
+  formatDuration,
+  formatTime,
+  statusMeta,
+  type Instance,
+} from "@/lib/instances";
+import { useNow } from "@/hooks/use-now";
 
 // ── API 辅助 ─────────────────────────────────────────────────────────────
 
@@ -87,173 +68,96 @@ async function apiDelete<T>(path: string): Promise<T> {
   return res.json();
 }
 
-// ── 工具函数 ─────────────────────────────────────────────────────────────
+// ── 侧栏 ─────────────────────────────────────────────────────────────────
 
-function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}天 ${h}时 ${m}分`;
-  if (h > 0) return `${h}时 ${m}分`;
-  return `${m}分`;
-}
-
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, { label: string; color: string }> = {
-    running: { label: "运行中", color: "bg-emerald-500" },
-    stopped: { label: "已停止", color: "bg-zinc-400" },
-    error: { label: "错误", color: "bg-red-500" },
-  };
-  const info = map[status] ?? { label: status, color: "bg-zinc-400" };
+/** 定义列表行，和仪表盘系统信息卡同一套排版 */
+function SpecRow({
+  label,
+  children,
+  title,
+}: {
+  label: string;
+  children: React.ReactNode;
+  title?: string;
+}) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-      <span className={`h-2 w-2 rounded-full ${info.color}`} />
-      {info.label}
-    </span>
+    <div className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+      <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 truncate text-right text-xs font-medium" title={title}>
+        {children}
+      </dd>
+    </div>
   );
 }
 
-// ── 右侧信息面板 ────────────────────────────────────────────────────
-
-function InfoPanel({ instance }: { instance: InstanceDetail }) {
-  const isRunning = instance.status === "running";
-  const uptime =
-    isRunning && instance.startedAt ? Date.now() - instance.startedAt : 0;
-
-  const statusMap: Record<string, { label: string; color: string; bg: string; ring: string }> = {
-    running: { label: "运行中", color: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-950", ring: "ring-emerald-500/20" },
-    stopped: { label: "已停止", color: "text-zinc-500", bg: "bg-zinc-50 dark:bg-zinc-900", ring: "ring-zinc-500/20" },
-    error: { label: "错误", color: "text-red-600 dark:text-red-400", bg: "bg-red-50 dark:bg-red-950", ring: "ring-red-500/20" },
-  };
-  const s = statusMap[instance.status] ?? statusMap.stopped;
+function ConfigPanel({ instance }: { instance: Instance }) {
+  const envEntries = Object.entries(instance.env);
 
   return (
     <div className="space-y-4">
-      {/* 状态大卡片 */}
-      <Card className={`${s.bg} ring-1 ${s.ring} border-0`}>
-        <CardContent className="p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-muted-foreground">当前状态</span>
-            <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${s.color}`}>
-              <span className={`h-2.5 w-2.5 rounded-full ${s.color.replace("text-", "bg-")}`} />
-              {s.label}
-            </span>
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">节点</span>
-            <span className="text-sm flex items-center gap-1">
-              <Server className="h-3 w-3 text-muted-foreground" />
-              {instance.nodeName ?? "主节点"}
-            </span>
-          </div>
-          {isRunning && instance.pid && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">PID</span>
-              <span className="font-mono font-medium tabular-nums">{instance.pid}</span>
-            </div>
-          )}
-          {isRunning && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">运行时长</span>
-              <span className="font-medium tabular-nums">{formatDuration(uptime)}</span>
-            </div>
-          )}
-          {!isRunning && instance.exitCode !== null && instance.exitCode !== undefined && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">退出码</span>
-              <span className="font-mono font-medium tabular-nums">{instance.exitCode}</span>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* 执行配置 */}
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-            执行配置
-          </CardTitle>
+        <CardHeader className="border-b pb-3">
+          <CardTitle className="text-sm">配置</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div>
-            <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">命令</Label>
-            <code className="block mt-1 text-xs font-mono bg-muted px-2.5 py-1.5 rounded-md break-all leading-relaxed">
+          <div className="space-y-1.5">
+            <p className="eyebrow">启动命令</p>
+            <code className="block rounded-md bg-surface-inset px-2.5 py-1.5 font-mono text-xs leading-relaxed break-all">
               {instance.command}
             </code>
           </div>
-          <div>
-            <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">工作目录</Label>
-            <p className="mt-1 text-xs font-mono text-muted-foreground flex items-center gap-1.5">
-              <FolderOpen className="h-3 w-3 shrink-0" />
+          <div className="space-y-1.5">
+            <p className="eyebrow">工作目录</p>
+            <code className="block rounded-md bg-surface-inset px-2.5 py-1.5 font-mono text-xs leading-relaxed break-all">
               {instance.cwd}
-            </p>
+            </code>
           </div>
+          <dl className="divide-y divide-border">
+            <SpecRow label="节点">{instance.nodeName ?? "主节点"}</SpecRow>
+            <SpecRow label="自动重启">
+              {instance.autoRestart ? (
+                <StatusDot dot="bg-success" className="justify-end">
+                  已启用
+                </StatusDot>
+              ) : (
+                <span className="text-muted-foreground">未启用</span>
+              )}
+            </SpecRow>
+            <SpecRow label="实例 ID" title={instance.id}>
+              <span className="font-mono text-mute">{instance.id.slice(0, 12)}</span>
+            </SpecRow>
+            <SpecRow label="创建时间">
+              <span className="font-mono text-muted-foreground">
+                {formatTime(instance.createdAt)}
+              </span>
+            </SpecRow>
+          </dl>
         </CardContent>
       </Card>
 
-      {/* 基本信息 */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Info className="h-3.5 w-3.5 text-muted-foreground" />
-            基本信息
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2.5">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground flex items-center gap-1.5">
-              <Hash className="h-3 w-3" />
-              ID
-            </span>
-            <span className="font-mono text-muted-foreground">{instance.id.slice(0, 12)}</span>
-          </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground flex items-center gap-1.5">
-              <RotateCcw className="h-3 w-3" />
-              自动重启
-            </span>
-            <span className={instance.autoRestart ? "text-emerald-500 font-medium" : "text-muted-foreground"}>
-              {instance.autoRestart ? "已启用" : "未启用"}
-            </span>
-          </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground flex items-center gap-1.5">
-              <Calendar className="h-3 w-3" />
-              创建时间
-            </span>
-            <span className="text-muted-foreground">{formatTime(instance.createdAt)}</span>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* 环境变量 */}
-      {Object.keys(instance.env).length > 0 && (
+      {envEntries.length > 0 && (
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
+          <CardHeader className="border-b pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
               环境变量
+              <span className="font-mono text-xs font-normal text-mute">
+                {envEntries.length}
+              </span>
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="rounded-md border divide-y overflow-hidden">
-              {Object.entries(instance.env).map(([key, value]) => (
-                <div key={key} className="flex items-center px-2.5 py-2 text-xs">
-                  <code className="font-mono font-medium w-1/3 shrink-0 truncate">{key}</code>
-                  <code className="font-mono text-muted-foreground truncate">{value}</code>
+          <CardContent className="px-0">
+            <div className="divide-y divide-border">
+              {envEntries.map(([key, value]) => (
+                <div key={key} className="flex gap-2 px-4 py-2 text-xs">
+                  <code className="w-2/5 shrink-0 truncate font-mono font-medium" title={key}>
+                    {key}
+                  </code>
+                  <code
+                    className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
+                    title={value}
+                  >
+                    {value}
+                  </code>
                 </div>
               ))}
             </div>
@@ -271,20 +175,24 @@ export default function InstanceDetailPage() {
   const router = useRouter();
   const id = params.id as string;
 
-  const [instance, setInstance] = useState<InstanceDetail | null>(null);
+  const [instance, setInstance] = useState<Instance | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const now = useNow();
 
   const fetchDetail = useCallback(async () => {
     try {
       const data = await apiGet<{
         success: boolean;
-        instance: InstanceDetail;
+        instance: Instance;
         message?: string;
       }>(`/api/instances/${id}`);
       if (data.success) {
         setInstance(data.instance);
+        setError("");
       } else {
         setError(data.message || "获取实例详情失败");
       }
@@ -309,8 +217,14 @@ export default function InstanceDetailPage() {
   }, [instance, fetchDetail]);
 
   const handleAction = async (action: "start" | "stop" | "restart") => {
-    await apiPost(`/api/instances/${id}/${action}`);
-    setTimeout(fetchDetail, 500);
+    setPending(true);
+    try {
+      await apiPost(`/api/instances/${id}/${action}`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchDetail();
+    } finally {
+      setPending(false);
+    }
   };
 
   const handleDelete = async () => {
@@ -320,36 +234,36 @@ export default function InstanceDetailPage() {
 
   if (loading) {
     return (
-      <div className="space-y-6 max-w-5xl mx-auto w-full">
+      <div className="mx-auto w-full max-w-[1600px] space-y-4">
         <div className="flex items-center gap-3">
-          <Skeleton className="h-8 w-8" />
-          <Skeleton className="h-7 w-48" />
+          <Skeleton className="size-8" />
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-3 w-64" />
+          </div>
         </div>
-        <Skeleton className="h-9 w-64" />
-        <Skeleton className="h-[400px] w-full" />
+        <Skeleton className="h-[60vh] w-full" />
       </div>
     );
   }
 
   if (error || !instance) {
     return (
-      <div className="max-w-5xl mx-auto w-full">
+      <div className="mx-auto w-full max-w-[1600px]">
         <Button
           variant="ghost"
           size="sm"
           onClick={() => router.push("/dashboard/instances")}
           className="mb-4"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="size-4" />
           返回实例列表
         </Button>
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-            <AlertCircle className="h-12 w-12 text-red-500/50 mb-4" />
-            <h3 className="text-lg font-semibold">加载失败</h3>
-            <p className="text-sm text-muted-foreground mt-1">
-              {error || "实例不存在"}
-            </p>
+          <CardContent className="flex flex-col items-center justify-center gap-1 py-16 text-center">
+            <AlertCircle className="mb-3 size-10 text-destructive/60" />
+            <h3 className="text-base font-semibold tracking-display">加载失败</h3>
+            <p className="text-sm text-muted-foreground">{error || "实例不存在"}</p>
           </CardContent>
         </Card>
       </div>
@@ -357,97 +271,142 @@ export default function InstanceDetailPage() {
   }
 
   const isRunning = instance.status === "running";
+  const meta = statusMeta(instance.status);
+  const uptime = isRunning && instance.startedAt ? now - instance.startedAt : 0;
 
   return (
-    <div className="max-w-[90rem] mx-auto w-full h-[calc(100vh-5rem)] flex flex-col gap-3 p-3 lg:gap-4 lg:p-4">
-      {/* 顶部导航 */}
-      <div className="flex items-start justify-between gap-2 shrink-0 flex-wrap">
-        <div className="flex items-center gap-2 min-w-0">
+    // 外壳已经有 p-6，这里只负责在剩余高度里铺满：顶栏 4rem + 主区上下 padding 3rem
+    <div className="mx-auto flex h-[calc(100vh-7rem)] w-full max-w-[1600px] flex-col gap-4">
+      {/* 页头 */}
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
           <Button
             variant="ghost"
             size="icon-sm"
+            className="mt-0.5 shrink-0"
             onClick={() => router.push("/dashboard/instances")}
-            title="返回实例列表"
+            aria-label="返回实例列表"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft className="size-4" />
           </Button>
-          <div className="min-w-0">
-            <h1 className="text-lg lg:text-xl font-bold tracking-tight truncate">
-              {instance.name}
-            </h1>
-            <p className="text-xs text-muted-foreground font-mono">
-              {instance.id.slice(0, 12)}
-            </p>
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h1 className="truncate text-xl leading-7 font-semibold tracking-display">
+                {instance.name}
+              </h1>
+              <StatusDot dot={meta.dot} className={meta.text}>
+                {meta.label}
+              </StatusDot>
+            </div>
+            {/* 实时指标直接排在标题下，不再单独占一张卡 */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-mute">
+              <span title={instance.id}>{instance.id.slice(0, 12)}</span>
+              <span>·</span>
+              <span>{instance.nodeName ?? "主节点"}</span>
+              {isRunning && instance.pid && (
+                <>
+                  <span>·</span>
+                  <span>PID {instance.pid}</span>
+                </>
+              )}
+              {isRunning ? (
+                <>
+                  <span>·</span>
+                  <span>已运行 {formatDuration(uptime)}</span>
+                </>
+              ) : (
+                instance.exitCode !== null &&
+                instance.exitCode !== undefined && (
+                  <>
+                    <span>·</span>
+                    <span className={instance.exitCode === 0 ? "" : "text-destructive"}>
+                      退出码 {instance.exitCode}
+                    </span>
+                  </>
+                )
+              )}
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {!isRunning ? (
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isRunning ? (
             <Button
               size="sm"
-              className="bg-emerald-600 hover:bg-emerald-700"
-              onClick={() => handleAction("start")}
-            >
-              <Play className="h-3.5 w-3.5 lg:mr-1" />
-              <span className="hidden lg:inline">启动</span>
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              variant="destructive"
+              variant="outline"
+              disabled={pending}
               onClick={() => handleAction("stop")}
             >
-              <Square className="h-3.5 w-3.5 lg:mr-1" />
-              <span className="hidden lg:inline">停止</span>
+              <Square className="size-3.5" />
+              停止
+            </Button>
+          ) : (
+            <Button size="sm" disabled={pending} onClick={() => handleAction("start")}>
+              <Play className="size-3.5" />
+              启动
             </Button>
           )}
           <Button
             size="sm"
             variant="outline"
             onClick={() => handleAction("restart")}
-            disabled={!isRunning}
+            disabled={!isRunning || pending}
           >
-            <RotateCcw className="h-3.5 w-3.5 lg:mr-1" />
-            <span className="hidden lg:inline">重启</span>
+            <RotateCcw className="size-3.5" />
+            重启
           </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => setDeleteConfirm(true)}
-          >
-            <Trash2 className="h-3.5 w-3.5 lg:mr-1" />
-            <span className="hidden lg:inline">删除</span>
+          <Button size="sm" variant="outline" onClick={() => setEditOpen(true)}>
+            <Pencil className="size-3.5" />
+            编辑
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setDeleteConfirm(true)}>
+            <Trash2 className="size-3.5 text-destructive" />
+            删除
           </Button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3 lg:gap-4">
-        {/* 左侧：终端 */}
-        <div className="flex-1 min-w-0 flex flex-col min-h-[50vh] lg:min-h-0">
-          <div className="flex-1 min-h-0 rounded-lg border overflow-hidden bg-black">
+      {/* 主区：终端铺满剩余空间，配置收在右侧 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+        <Card className="flex min-h-[45vh] min-w-0 flex-1 flex-col gap-0 overflow-hidden py-0 lg:min-h-0">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
+            <span className="eyebrow">终端输出</span>
+            <StatusDot dot={meta.dot} className="text-mute">
+              {meta.label}
+            </StatusDot>
+          </div>
+          <div className="min-h-0 flex-1 bg-[#0a0a0a]">
             <XtermTerminal instanceId={instance.id} status={instance.status} />
           </div>
-        </div>
+        </Card>
 
-        {/* 右侧：信息面板 */}
-        <div className="w-full lg:w-80 lg:shrink-0 overflow-auto">
-          <InfoPanel instance={instance} />
+        <div className="w-full shrink-0 overflow-auto lg:w-80">
+          <ConfigPanel instance={instance} />
         </div>
       </div>
 
-      {/* 删除确认对话框 */}
+      <InstanceEditDialog
+        instance={instance}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={fetchDetail}
+      />
+
+      {/* 删除确认 */}
       <Dialog open={deleteConfirm} onOpenChange={setDeleteConfirm}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>确认删除</DialogTitle>
+            <DialogDescription>
+              确定要删除实例「{instance.name}」吗？此操作不可撤销。
+            </DialogDescription>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            确定要删除实例「{instance.name}」吗？此操作不可撤销。
-            {instance.status === "running" && (
-              <span className="block mt-1 text-red-500">
-                该实例正在运行，删除前将自动停止。
-              </span>
-            )}
-          </p>
+          {isRunning && (
+            <p className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="size-3.5 shrink-0" />
+              该实例正在运行，删除前将自动停止。
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteConfirm(false)}>
               取消
