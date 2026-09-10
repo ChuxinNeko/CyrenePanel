@@ -5,6 +5,7 @@ import { join } from "path";
 import { spawn, execSync } from "child_process";
 import { getOnlineNodesCount, getLocalMetrics, getLocalNetworkUsage, getLocalDiskIoUsage } from "../nodes/index";
 import { parseLinuxMounts, type MountEntry } from "./mounts";
+import { sampleLinuxProcesses, type ProcessInfo } from "./processes";
 import {
   getCpuDetail,
   getCpuTopology,
@@ -333,50 +334,12 @@ function formatBytes(bytes: number): string {
 
 // ── 进程列表采集 ─────────────────────────────────────────────────
 
-export interface ProcessInfo {
-  pid: number;
-  name: string;
-  cpu: number;
-  memory: number;
-  memoryBytes: number;
-  user: string;
-  command: string;
-}
-
-function getProcessList(): ProcessInfo[] {
+async function getProcessList(): Promise<ProcessInfo[]> {
   if (platform() === "win32") {
     return getWindowsProcessList();
   }
-  return getLinuxProcessList();
-}
-
-function getLinuxProcessList(): ProcessInfo[] {
-  try {
-    const numCores = cpus().length || 1;
-    const output = execSync(
-      "ps aux --sort=-%cpu | head -n 51",
-      { encoding: "utf-8", timeout: 5000 }
-    );
-    const lines = output.trim().split("\n").slice(1);
-    const processes: ProcessInfo[] = [];
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 11) continue;
-      const user = parts[0];
-      const pid = parseInt(parts[1], 10);
-      const rawCpu = parseFloat(parts[2]) || 0;
-      // ps aux reports CPU% per-core (can exceed 100% on multi-core), normalize to 0-100
-      const cpu = Math.round(Math.min(rawCpu / numCores, 100) * 10) / 10;
-      const mem = parseFloat(parts[3]) || 0;
-      const rss = parseInt(parts[5], 10) * 1024;
-      const command = parts.slice(10).join(" ");
-      const name = command;
-      processes.push({ pid, name, cpu, memory: mem, memoryBytes: rss, user, command });
-    }
-    return processes;
-  } catch {
-    return [];
-  }
+  // Linux 走 /proc 两次采样，得到瞬时占用；ps 给的是生命周期均值
+  return sampleLinuxProcesses(cpus().length);
 }
 
 function getWindowsProcessList(): ProcessInfo[] {
@@ -832,7 +795,7 @@ export const systemRoutes = new Elysia()
     const profile = await resolveRequestProfile(jwt, request);
     if (!profile) return { success: false, message: "未授权" };
     try {
-      const all = getProcessList();
+      const all = await getProcessList();
       return {
         success: true,
         // getProcessList 已按 CPU 降序，内存榜要另排一次
@@ -849,7 +812,7 @@ export const systemRoutes = new Elysia()
     if (!profile) return { success: false, message: "未授权" };
 
     try {
-      const processes = getProcessList();
+      const processes = await getProcessList();
       return { success: true, processes };
     } catch (e: any) {
       return { success: false, message: `获取进程列表失败: ${e.message}` };
