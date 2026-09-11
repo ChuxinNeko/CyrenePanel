@@ -17,7 +17,19 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { logger } from "../logger/index";
 import { detectDeps, has } from "./deps";
 
-/** 可启动的 GUI 应用白名单。command 是无参二进制名，highMemory 用于前端二次确认 */
+/**
+ * 可启动的 GUI 应用白名单。
+ * commands 是候选二进制名，取第一个在本机存在的——同一个应用在不同发行版上
+ * 名字不一样（浏览器在 Debian 是 firefox-esr、Ubuntu 是 firefox，或 chromium），
+ * 写死单名会导致「明明装了却点不亮」。highMemory 用于前端二次确认。
+ */
+interface DesktopAppDef {
+  id: string;
+  label: string;
+  commands: string[];
+  highMemory: boolean;
+}
+
 export interface DesktopApp {
   id: string;
   label: string;
@@ -25,21 +37,35 @@ export interface DesktopApp {
   highMemory: boolean;
 }
 
-const APP_DEFS: DesktopApp[] = [
-  { id: "xterm", label: "终端 (xterm)", command: "xterm", highMemory: false },
-  { id: "pcmanfm", label: "文件管理器", command: "pcmanfm", highMemory: false },
-  { id: "xcalc", label: "计算器", command: "xcalc", highMemory: false },
-  { id: "xeyes", label: "xeyes（演示）", command: "xeyes", highMemory: false },
-  { id: "mousepad", label: "文本编辑器", command: "mousepad", highMemory: false },
-  { id: "firefox", label: "Firefox 浏览器", command: "firefox-esr", highMemory: true },
+const APP_DEFS: DesktopAppDef[] = [
+  { id: "xterm", label: "终端 (xterm)", commands: ["xterm"], highMemory: false },
+  { id: "pcmanfm", label: "文件管理器", commands: ["pcmanfm"], highMemory: false },
+  { id: "xcalc", label: "计算器", commands: ["xcalc"], highMemory: false },
+  { id: "xeyes", label: "xeyes（演示）", commands: ["xeyes"], highMemory: false },
+  { id: "mousepad", label: "文本编辑器", commands: ["mousepad", "leafpad", "gedit"], highMemory: false },
+  { id: "browser", label: "浏览器", commands: ["firefox", "firefox-esr", "chromium", "chromium-browser"], highMemory: true },
 ];
 
-/** 返回应用清单，附带该二进制在本机是否可用（前端据此禁用未安装项） */
-export function listApps(): (DesktopApp & { available: boolean })[] {
-  return APP_DEFS.map((a) => ({ ...a, available: has(a.command) }));
+/** 取第一个存在的候选命令，全不在则 null */
+function resolveCommand(def: DesktopAppDef): string | null {
+  return def.commands.find((c) => has(c)) ?? null;
 }
 
-function findApp(id: string): DesktopApp | undefined {
+/** 返回应用清单，附带该应用在本机是否可用（前端据此禁用未安装项） */
+export function listApps(): (DesktopApp & { available: boolean })[] {
+  return APP_DEFS.map((def) => {
+    const command = resolveCommand(def);
+    return {
+      id: def.id,
+      label: def.label,
+      command: command ?? def.commands[0],
+      highMemory: def.highMemory,
+      available: command !== null,
+    };
+  });
+}
+
+function findApp(id: string): DesktopAppDef | undefined {
   return APP_DEFS.find((a) => a.id === id);
 }
 
@@ -183,13 +209,16 @@ export async function startSession(
   }
 
   const geometry = GEOMETRIES.find((g) => g.id === opts.geometryId) ?? DEFAULT_GEOMETRY;
-  let app: DesktopApp | undefined;
+  let appId: string | null = null;
+  let appCommand: string | null = null;
   let label: string;
   if (opts.mode === "app") {
-    app = findApp(opts.appId || "");
-    if (!app) return { ok: false, message: "未知的应用" };
-    if (!has(app.command)) return { ok: false, message: `${app.label} 未安装` };
-    label = app.label;
+    const def = findApp(opts.appId || "");
+    if (!def) return { ok: false, message: "未知的应用" };
+    appCommand = resolveCommand(def);
+    if (!appCommand) return { ok: false, message: `${def.label} 未安装` };
+    appId = def.id;
+    label = def.label;
   } else {
     label = "桌面";
   }
@@ -224,9 +253,9 @@ export async function startSession(
     // 2) 窗口管理器。桌面模式下它的 autostart 会拉起 tint2 + pcmanfm
     procs.push(spawnProc(["openbox"], display, home));
 
-    if (opts.mode === "app" && app) {
+    if (opts.mode === "app" && appCommand) {
       // 3-app) 单应用：退出即拆会话
-      const appProc = spawnProc([app.command], display, home);
+      const appProc = spawnProc([appCommand], display, home);
       procs.push(appProc);
       appProc.exited.then(() => teardown());
     }
@@ -247,7 +276,7 @@ export async function startSession(
 
     const now = Date.now();
     sessions.set(id, {
-      id, mode: opts.mode, appId: app?.id ?? null, label,
+      id, mode: opts.mode, appId, label,
       display, port, width: geometry.width, height: geometry.height, home,
       procs, startedAt: now, lastActiveAt: now, clients: 0,
     });
