@@ -20,13 +20,21 @@ export const terminalRoutes = new Elysia()
 
   .ws("/api/terminal", {
     async beforeHandle({ jwt, request }: any) {
+      // 节点间签名调用（主节点代理到子节点），能力校验已在 nodeCan 内完成
       const principal = await resolveNodePrincipal(request);
       if (principal && nodeCan(principal, "system:update")) return;
 
       const url = new URL(request.url);
       const token = url.searchParams.get("token") || request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token || !await jwt.verify(token)) {
+      const payload = token ? await jwt.verify(token) : false;
+      if (!payload) {
         return new Response("Unauthorized", { status: 401 });
+      }
+      // 系统终端 = 服务器 root shell（后端以 root 运行）。只验 token 会让任意角色的
+      // 登录用户都拿到 root，必须限定管理员——与 users 路由 role==="admin" 的口径一致。
+      if (payload.role !== "admin") {
+        logger.warn(`[安全] 用户 ${payload.username || "?"}(role=${payload.role || "?"}) 尝试打开系统终端，已拒绝`);
+        return new Response("Forbidden", { status: 403 });
       }
     },
 
