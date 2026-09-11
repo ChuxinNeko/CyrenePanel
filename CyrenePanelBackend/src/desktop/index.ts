@@ -10,27 +10,37 @@ import { Elysia } from "elysia";
 import { logger } from "../logger/index";
 import { resolveRequestProfile } from "../node-auth/request-profile";
 import { consumeTicket } from "../terminal/ticket";
-import { buildInstallCommand, detectDeps } from "./deps";
+import { buildInstallCommand, buildUninstallCommand, detectDeps } from "./deps";
 import {
-  DESKTOP_APPS,
   attachClient,
   desktopLimits,
   detachClient,
+  listApps,
   listSessions,
   startSession,
+  stopAllSessions,
   stopSession,
 } from "./session";
 
-/** 装依赖时把命令输出按行推给前端（SSE），照 environments 模块的做法 */
-function installStream(): Response {
+/** 把一条命令的输出按行推给前端（SSE），装/卸依赖共用，照 environments 模块的做法 */
+function commandStream(
+  action: "install" | "uninstall",
+): Response {
   const deps = detectDeps();
   if (!deps.installable || !deps.packageManager) {
     return new Response(
-      JSON.stringify({ success: false, message: "当前系统无受支持的包管理器，无法自动安装" }),
+      JSON.stringify({ success: false, message: "当前系统无受支持的包管理器" }),
       { status: 400, headers: { "Content-Type": "application/json" } },
     );
   }
-  const command = buildInstallCommand(deps.packageManager);
+  const command =
+    action === "install"
+      ? buildInstallCommand(deps.packageManager)
+      : buildUninstallCommand(deps.packageManager);
+  const startMsg =
+    action === "install"
+      ? "开始安装桌面依赖（Xvfb / x11vnc / openbox / tint2 / pcmanfm / 字体）..."
+      : "开始卸载桌面依赖，恢复到未启用状态...";
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -44,7 +54,7 @@ function installStream(): Response {
           closed = true;
         }
       };
-      send({ type: "stage", message: "开始安装桌面依赖（Xvfb / x11vnc / openbox / 字体）..." });
+      send({ type: "stage", message: startMsg });
 
       const proc = Bun.spawn(["bash", "-lc", command], { stdout: "pipe", stderr: "pipe" });
       const pump = async (rs: ReadableStream<Uint8Array>) => {
@@ -65,12 +75,14 @@ function installStream(): Response {
       const code = await proc.exited;
 
       const after = detectDeps();
+      const ok = action === "install" ? code === 0 && after.installed : code === 0 && !after.installed;
       send({
         type: "done",
-        success: code === 0 && after.installed,
+        success: ok,
         installed: after.installed,
-        missing: after.missing,
-        message: code === 0 && after.installed ? "桌面依赖安装完成" : `安装未完成（退出码 ${code}）`,
+        message: ok
+          ? action === "install" ? "桌面依赖安装完成" : "桌面依赖已卸载"
+          : `${action === "install" ? "安装" : "卸载"}未完成（退出码 ${code}）`,
       });
       if (!closed) {
         closed = true;
@@ -97,9 +109,14 @@ export const desktopRoutes = new Elysia()
       success: true,
       enabled: deps.installed,
       deps,
-      apps: DESKTOP_APPS,
+      apps: listApps(),
       sessions: listSessions(),
-      limits: { maxSessions: desktopLimits.maxSessions, idleMinutes: desktopLimits.idleMs / 60000 },
+      limits: {
+        maxSessions: desktopLimits.maxSessions,
+        idleMinutes: desktopLimits.idleMs / 60000,
+        geometries: desktopLimits.geometries,
+        privileged: desktopLimits.privileged,
+      },
       isAdmin: profile.role === "admin",
     };
   })
@@ -116,13 +133,35 @@ export const desktopRoutes = new Elysia()
         status: 403, headers: { "Content-Type": "application/json" },
       });
     }
-    return installStream();
+    return commandStream("install");
+  })
+
+  // 停用：拆掉所有会话并卸载依赖，回到零占用状态。管理员专属
+  .post("/api/desktop/uninstall/stream", ({ profile }: any) => {
+    if (!profile) {
+      return new Response(JSON.stringify({ success: false, message: "未授权" }), {
+        status: 401, headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (profile.role !== "admin") {
+      return new Response(JSON.stringify({ success: false, message: "需要管理员权限" }), {
+        status: 403, headers: { "Content-Type": "application/json" },
+      });
+    }
+    const killed = stopAllSessions();
+    if (killed > 0) logger.info(`[desktop] 停用前先关闭 ${killed} 个会话`);
+    return commandStream("uninstall");
   })
 
   .post("/api/desktop/sessions", async ({ profile, body }: any) => {
     if (!profile) return { success: false, message: "未授权" };
     if (profile.role !== "admin") return { success: false, message: "需要管理员权限" };
-    const result = await startSession(String(body?.appId || ""));
+    const mode = body?.mode === "desktop" ? "desktop" : "app";
+    const result = await startSession({
+      mode,
+      appId: body?.appId ? String(body.appId) : undefined,
+      geometryId: body?.geometryId ? String(body.geometryId) : undefined,
+    });
     return result.ok
       ? { success: true, session: result.session }
       : { success: false, message: result.message };

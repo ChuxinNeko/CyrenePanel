@@ -15,20 +15,39 @@ export type PackageManager = "apt" | "dnf" | "yum";
 /** 检测这些二进制在不在，用来判断功能是否「已启用」 */
 export const REQUIRED_BINARIES = ["Xvfb", "x11vnc", "openbox"] as const;
 
-/** 各发行版的包名。演示程序 xterm/xeyes 分属不同包，一并装上 */
+/**
+ * 各发行版的包名。
+ * 除三个核心件外一并装上：任务栏 tint2、文件管理器 pcmanfm（P2 桌面外壳用，都很轻），
+ * 以及演示小程序 xterm/xeyes 和中文字体。浏览器这类内存大户不预装。
+ */
 const PACKAGES: Record<PackageManager, string[]> = {
-  apt: ["xvfb", "x11vnc", "openbox", "xterm", "x11-apps", "fonts-wqy-zenhei"],
-  dnf: ["xorg-x11-server-Xvfb", "x11vnc", "openbox", "xterm", "xorg-x11-apps", "wqy-zenhei-fonts"],
-  yum: ["xorg-x11-server-Xvfb", "x11vnc", "openbox", "xterm", "xorg-x11-apps", "wqy-zenhei-fonts"],
+  apt: ["xvfb", "x11vnc", "openbox", "tint2", "pcmanfm", "xterm", "x11-apps", "fonts-wqy-zenhei"],
+  dnf: ["xorg-x11-server-Xvfb", "x11vnc", "openbox", "tint2", "pcmanfm", "xterm", "xorg-x11-apps", "wqy-zenhei-fonts"],
+  yum: ["xorg-x11-server-Xvfb", "x11vnc", "openbox", "tint2", "pcmanfm", "xterm", "xorg-x11-apps", "wqy-zenhei-fonts"],
 };
 
-function has(cmd: string): boolean {
+export function has(cmd: string): boolean {
   try {
     execSync(`command -v ${cmd}`, { stdio: "ignore", timeout: 5000 });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * 卸载命令。停用桌面时把「启用」装的那批包移除，恢复到零占用状态。
+ * 只移除应用/外壳层，不动可能被系统其它部分依赖的基础库。
+ */
+export function buildUninstallCommand(pm: PackageManager): string {
+  const pkgs =
+    pm === "apt"
+      ? "xvfb x11vnc openbox tint2 pcmanfm xterm x11-apps"
+      : pm === "dnf" || pm === "yum"
+        ? "xorg-x11-server-Xvfb x11vnc openbox tint2 pcmanfm xterm xorg-x11-apps"
+        : "";
+  const remove = pm === "apt" ? `apt-get remove -y ${pkgs}` : `${pm} remove -y ${pkgs}`;
+  return `if [ "$(id -u)" -eq 0 ]; then ${remove}; elif sudo -n true >/dev/null 2>&1; then sudo bash -c '${remove}'; else echo "面板进程非 root 且 sudo 不可用，请在宿主机 shell 中手动卸载" >&2; exit 1; fi`;
 }
 
 export function detectPackageManager(): PackageManager | null {

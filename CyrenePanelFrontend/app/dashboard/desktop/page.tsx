@@ -5,6 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { VncViewer } from "@/components/desktop/vnc-viewer";
 import { useBackendPort } from "@/hooks/use-backend-port";
 import { API_BASE } from "@/lib/api-base";
@@ -17,6 +24,8 @@ import {
   MonitorPlay,
   Power,
   RefreshCw,
+  ShieldAlert,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -25,13 +34,21 @@ interface DesktopApp {
   label: string;
   command: string;
   highMemory: boolean;
+  available: boolean;
+}
+
+interface Geometry {
+  id: string;
+  width: number;
+  height: number;
 }
 
 interface SessionInfo {
   id: string;
-  appId: string;
-  appLabel: string;
-  geometry: { width: number; height: number };
+  mode: "app" | "desktop";
+  appId: string | null;
+  label: string;
+  geometry: Geometry;
   startedAt: number;
 }
 
@@ -47,7 +64,12 @@ interface DesktopStatus {
   };
   apps?: DesktopApp[];
   sessions?: SessionInfo[];
-  limits?: { maxSessions: number; idleMinutes: number };
+  limits?: {
+    maxSessions: number;
+    idleMinutes: number;
+    geometries: Geometry[];
+    privileged: boolean;
+  };
   isAdmin?: boolean;
 }
 
@@ -63,17 +85,17 @@ export default function DesktopPage() {
   const backendPort = useBackendPort();
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [installing, setInstalling] = useState(false);
-  const [installLog, setInstallLog] = useState<string[]>([]);
-  const [starting, setStarting] = useState<string | null>(null);
+  const [busy, setBusy] = useState<null | "install" | "uninstall">(null);
+  const [log, setLog] = useState<string[]>([]);
+  const [starting, setStarting] = useState(false);
   const [active, setActive] = useState<SessionInfo | null>(null);
+  const [geometryId, setGeometryId] = useState("1280x720");
   const logRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     const res = await fetch(`${API_BASE}/api/desktop/status`, { headers: authHeaders() });
     const data: DesktopStatus = await res.json();
     setStatus(data);
-    // 已有会话就直接接上（比如刷新页面后）
     setActive((prev) => {
       if (prev && data.sessions?.some((s) => s.id === prev.id)) return prev;
       return data.sessions?.[0] ?? null;
@@ -93,19 +115,20 @@ export default function DesktopPage() {
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [installLog]);
+  }, [log]);
 
-  const handleInstall = async () => {
-    setInstalling(true);
-    setInstallLog([]);
+  // 装 / 卸依赖，两者都是 SSE 流式输出，共用一套
+  const runStream = async (action: "install" | "uninstall") => {
+    setBusy(action);
+    setLog([]);
     try {
-      const res = await fetch(`${API_BASE}/api/desktop/install/stream`, {
+      const res = await fetch(`${API_BASE}/api/desktop/${action}/stream`, {
         method: "POST",
         headers: authHeaders(),
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => null);
-        toast.error(data?.message || "安装启动失败");
+        toast.error(data?.message || "操作启动失败");
         return;
       }
       const reader = res.body.getReader();
@@ -123,10 +146,10 @@ export default function DesktopPage() {
           try {
             const evt = JSON.parse(line);
             if (evt.type === "log" || evt.type === "stage") {
-              setInstallLog((prev) => [...prev, evt.line || evt.message]);
+              setLog((prev) => [...prev, evt.line || evt.message]);
             } else if (evt.type === "done") {
-              if (evt.success) toast.success("桌面依赖安装完成");
-              else toast.error(evt.message || "安装未完成");
+              if (evt.success) toast.success(evt.message);
+              else toast.error(evt.message || "操作未完成");
             }
           } catch {
             // 非 JSON 行忽略
@@ -135,22 +158,19 @@ export default function DesktopPage() {
       }
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "安装失败");
+      toast.error(e instanceof Error ? e.message : "操作失败");
     } finally {
-      setInstalling(false);
+      setBusy(null);
     }
   };
 
-  const handleStart = async (app: DesktopApp) => {
-    if (app.highMemory && !confirm(`${app.label} 属于高内存应用，可能占用数百 MB 到 1GB+，确定启动？`)) {
-      return;
-    }
-    setStarting(app.id);
+  const startSession = async (payload: { mode: "app" | "desktop"; appId?: string }) => {
+    setStarting(true);
     try {
       const res = await fetch(`${API_BASE}/api/desktop/sessions`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ appId: app.id }),
+        body: JSON.stringify({ ...payload, geometryId }),
       });
       const data = await res.json();
       if (data.success && data.session) {
@@ -160,8 +180,15 @@ export default function DesktopPage() {
         toast.error(data.message || "启动失败");
       }
     } finally {
-      setStarting(null);
+      setStarting(false);
     }
+  };
+
+  const handleStartApp = (app: DesktopApp) => {
+    if (app.highMemory && !confirm(`${app.label} 属于高内存应用，可能占用数百 MB 到 1GB+，确定启动？`)) {
+      return;
+    }
+    startSession({ mode: "app", appId: app.id });
   };
 
   const handleStop = async (id: string) => {
@@ -178,6 +205,13 @@ export default function DesktopPage() {
     }
   };
 
+  const handleUninstall = () => {
+    if (!confirm("停用将关闭所有桌面会话并卸载相关依赖（Xvfb / x11vnc / openbox 等），确定继续？")) {
+      return;
+    }
+    runStream("uninstall");
+  };
+
   if (loading) {
     return (
       <div className="mx-auto w-full max-w-6xl space-y-6">
@@ -189,6 +223,7 @@ export default function DesktopPage() {
 
   const deps = status?.deps;
   const isAdmin = status?.isAdmin ?? false;
+  const geometries = status?.limits?.geometries ?? [];
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
@@ -216,7 +251,7 @@ export default function DesktopPage() {
           </CardContent>
         </Card>
       ) : !deps.installed ? (
-        // ── 未启用：可选功能的入口，点了才装依赖 ──
+        // ── 未启用：可选功能入口，点了才装依赖 ──
         <Card>
           <CardContent className="space-y-4 py-8">
             <div className="flex items-start gap-3">
@@ -224,8 +259,8 @@ export default function DesktopPage() {
               <div className="space-y-1">
                 <h2 className="font-medium">桌面模拟尚未启用</h2>
                 <p className="text-sm text-muted-foreground">
-                  启用会安装 Xvfb、x11vnc、openbox 与字体等依赖（约 150–250 MB 磁盘）。
-                  桌面框架本身内存占用很小（几十 MB），只有真正启动应用时才产生占用。
+                  启用会安装 Xvfb、x11vnc、openbox、任务栏与文件管理器等依赖（约 200–300 MB 磁盘）。
+                  桌面框架本身内存占用很小，只有真正启动会话时才产生占用。
                 </p>
                 <p className="text-xs text-mute">
                   包管理器：{deps.packageManager} · 缺失组件：{deps.missing.join("、")}
@@ -233,47 +268,72 @@ export default function DesktopPage() {
               </div>
             </div>
 
-            <Button onClick={handleInstall} disabled={installing}>
-              {installing ? (
+            <Button onClick={() => runStream("install")} disabled={busy !== null}>
+              {busy === "install" ? (
                 <RefreshCw className="size-4 animate-spin" />
               ) : (
                 <Download className="size-4" />
               )}
-              {installing ? "正在安装依赖..." : "启用桌面模拟（安装依赖）"}
+              {busy === "install" ? "正在安装依赖..." : "启用桌面模拟（安装依赖）"}
             </Button>
 
-            {installLog.length > 0 && (
-              <div
-                ref={logRef}
-                className="max-h-64 overflow-y-auto rounded-md bg-surface-inset p-3 font-mono text-[11px] leading-relaxed text-muted-foreground"
-              >
-                {installLog.map((line, i) => (
-                  <div key={i} className="whitespace-pre-wrap break-all">
-                    {line}
-                  </div>
-                ))}
-              </div>
-            )}
+            {log.length > 0 && <StreamLog logRef={logRef} lines={log} />}
           </CardContent>
         </Card>
       ) : (
-        // ── 已启用：应用启动器 + 画布 ──
+        // ── 已启用：启动器 + 画布 ──
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="eyebrow">启动应用</span>
+            <Select value={geometryId} onValueChange={setGeometryId}>
+              <SelectTrigger size="sm" className="w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {geometries.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>
+                    {g.width}×{g.height}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button size="sm" onClick={() => startSession({ mode: "desktop" })} disabled={starting}>
+              {starting ? <RefreshCw className="size-3.5 animate-spin" /> : <Monitor className="size-3.5" />}
+              启动完整桌面
+            </Button>
+            {!status?.limits?.privileged && (
+              <Badge variant="outline" className="gap-1">
+                <ShieldAlert className="size-3" />
+                降权运行
+              </Badge>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto text-muted-foreground hover:text-destructive"
+              onClick={handleUninstall}
+              disabled={busy !== null}
+            >
+              {busy === "uninstall" ? (
+                <RefreshCw className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="size-3.5" />
+              )}
+              停用（卸载依赖）
+            </Button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="eyebrow">单应用</span>
             {(status?.apps ?? []).map((app) => (
               <Button
                 key={app.id}
                 variant="outline"
                 size="sm"
-                onClick={() => handleStart(app)}
-                disabled={starting !== null}
+                onClick={() => handleStartApp(app)}
+                disabled={starting || !app.available}
+                title={app.available ? undefined : `${app.command} 未安装`}
               >
-                {starting === app.id ? (
-                  <RefreshCw className="size-3.5 animate-spin" />
-                ) : (
-                  <Monitor className="size-3.5" />
-                )}
+                <Monitor className="size-3.5" />
                 {app.label}
                 {app.highMemory && (
                   <Badge variant="outline" className="ml-1 gap-1">
@@ -281,12 +341,15 @@ export default function DesktopPage() {
                     高内存
                   </Badge>
                 )}
+                {!app.available && <span className="ml-1 text-mute">未安装</span>}
               </Button>
             ))}
             <span className="ml-auto font-mono text-[11px] text-mute">
               并发上限 {status?.limits?.maxSessions} · 空闲 {status?.limits?.idleMinutes} 分钟自动回收
             </span>
           </div>
+
+          {busy === "uninstall" && log.length > 0 && <StreamLog logRef={logRef} lines={log} />}
 
           {(status?.sessions?.length ?? 0) > 0 && (
             <div className="flex flex-wrap items-center gap-2">
@@ -303,7 +366,8 @@ export default function DesktopPage() {
                     onClick={() => setActive(s)}
                     className="font-medium focus-visible:outline-none"
                   >
-                    {s.appLabel}
+                    {s.label}
+                    <span className="ml-1 text-mute">{s.geometry.id}</span>
                   </button>
                   <button
                     type="button"
@@ -321,7 +385,10 @@ export default function DesktopPage() {
           {active && backendPort !== null ? (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">{active.appLabel}</span>
+                <span className="text-sm font-medium">
+                  {active.label}
+                  <span className="ml-1.5 font-mono text-xs text-mute">{active.geometry.id}</span>
+                </span>
                 <Button variant="outline" size="sm" onClick={() => handleStop(active.id)}>
                   <Power className="size-3.5" />
                   关闭桌面
@@ -338,12 +405,35 @@ export default function DesktopPage() {
             <Card>
               <CardContent className="flex flex-col items-center justify-center gap-2 py-16 text-center">
                 <MonitorPlay className="size-8 text-mute" />
-                <p className="text-sm text-muted-foreground">选择上方一个应用启动桌面</p>
+                <p className="text-sm text-muted-foreground">
+                  选择上方一个应用，或启动完整桌面
+                </p>
               </CardContent>
             </Card>
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function StreamLog({
+  logRef,
+  lines,
+}: {
+  logRef: React.RefObject<HTMLDivElement | null>;
+  lines: string[];
+}) {
+  return (
+    <div
+      ref={logRef}
+      className="max-h-64 overflow-y-auto rounded-md bg-surface-inset p-3 font-mono text-[11px] leading-relaxed text-muted-foreground"
+    >
+      {lines.map((line, i) => (
+        <div key={i} className="whitespace-pre-wrap break-all">
+          {line}
+        </div>
+      ))}
     </div>
   );
 }
