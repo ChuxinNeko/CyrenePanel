@@ -11,7 +11,7 @@
 
 import { randomBytes } from "crypto";
 
-export type TicketPurpose = "system" | "docker-exec" | "instance";
+export type TicketPurpose = "system" | "docker-exec" | "instance" | "desktop";
 
 interface Ticket {
   username: string;

@@ -58,7 +58,7 @@ export function getBackendWebSocketUrl(path: string, backendPort: number): strin
   return normalizedPath;
 }
 
-export type TerminalTicketPurpose = "system" | "docker-exec" | "instance";
+export type TerminalTicketPurpose = "system" | "docker-exec" | "instance" | "desktop";
 
 /**
  * 构建带一次性票据的终端 WS URL。

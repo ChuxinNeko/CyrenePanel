@@ -22,6 +22,7 @@ import { dockerSystemRoutes } from "./docker/system";
 import { dockerComposeRoutes } from "./docker/compose";
 import { dockerExecRoutes } from "./docker/exec-ws";
 import { terminalRoutes } from "./terminal/index";
+import { desktopRoutes } from "./desktop/index";
 import { settingsRoutes } from "./settings/index";
 import { serviceRoutes } from "./services/index";
 import { environmentRoutes } from "./environments/index";
@@ -169,6 +170,7 @@ export const app = new Elysia()
   .use(dockerComposeRoutes)
   .use(dockerExecRoutes)
   .use(terminalRoutes)
+  .use(desktopRoutes)
   .use(settingsRoutes)
   .use(serviceRoutes)
   .use(environmentRoutes)

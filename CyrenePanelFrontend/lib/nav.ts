@@ -6,6 +6,7 @@ import {
   Globe2,
   Layers,
   LayoutDashboard,
+  Monitor,
   ScrollText,
   Server,
   Settings,
@@ -45,6 +46,7 @@ export const navGroups: NavGroup[] = [
       { title: "网站管理", url: "/dashboard/sites", icon: Globe2 },
       { title: "环境管理", url: "/dashboard/environments", icon: Layers },
       { title: "终端", url: "/dashboard/terminal", icon: Terminal },
+      { title: "桌面模拟", url: "/dashboard/desktop", icon: Monitor },
     ],
   },
   {

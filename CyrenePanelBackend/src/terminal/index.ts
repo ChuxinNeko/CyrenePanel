@@ -32,9 +32,9 @@ export const terminalRoutes = new Elysia()
     if (!TICKET_PURPOSES.includes(purpose)) {
       return { success: false, message: "无效的票据用途" };
     }
-    // 系统终端 = root shell，签发时就要求管理员，不给非管理员留任何路径
-    if (purpose === "system" && profile.role !== "admin") {
-      logger.warn(`[安全] 用户 ${profile.username || "?"}(role=${profile.role || "?"}) 申请系统终端票据，已拒绝`);
+    // 系统终端 = root shell、桌面 = 以 root 跑任意 GUI，都签发时就要求管理员
+    if ((purpose === "system" || purpose === "desktop") && profile.role !== "admin") {
+      logger.warn(`[安全] 用户 ${profile.username || "?"}(role=${profile.role || "?"}) 申请 ${purpose} 票据，已拒绝`);
       return { success: false, message: "需要管理员权限" };
     }
     const { ticket, expiresIn } = issueTicket({

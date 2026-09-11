@@ -17,6 +17,7 @@
     "@elysiajs/eden": "^1.4.9",
     "@iconify/react": "^6.0.2",
     "@monaco-editor/react": "^4.7.0",
+    "@novnc/novnc": "^1.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",

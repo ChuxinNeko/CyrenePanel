@@ -9,3 +9,25 @@ declare module "@xterm/xterm/css/xterm.css" {
 }
 
 declare module "js-yaml";
+
+// noVNC 不带类型声明，这里按用到的接口给一份最小声明
+declare module "@novnc/novnc/core/rfb.js" {
+  interface RFBOptions {
+    credentials?: { username?: string; password?: string; target?: string };
+    shared?: boolean;
+    repeaterID?: string;
+    wsProtocols?: string[];
+  }
+  export default class RFB extends EventTarget {
+    constructor(target: HTMLElement, urlOrDataChannel: string, options?: RFBOptions);
+    viewOnly: boolean;
+    scaleViewport: boolean;
+    resizeSession: boolean;
+    background: string;
+    clipViewport: boolean;
+    focusOnClick: boolean;
+    disconnect(): void;
+    focus(): void;
+    sendCtrlAltDel(): void;
+  }
+}
