@@ -10,17 +10,17 @@ import {
 import { writeToInstance, isRunning } from "./manager";
 import { dbGetAllNodes } from "../db";
 import { nodeFetch as fetchNode, nodeRequestHeaders } from "../node-auth/client";
+import { consumeTicket } from "../terminal/ticket";
 
 export const instanceWsRoutes = new Elysia()
   .ws("/api/instances/:id/terminal", {
-    // 从 URL query 参数验证 JWT
-    async beforeHandle({ jwt, request }: any) {
+    // 浏览器→主节点：一次性票据；主节点→子节点：节点签名（resolveNodePrincipal）
+    async beforeHandle({ request }: any) {
       const principal = await resolveNodePrincipal(request);
       if (principal) return;
 
       const url = new URL(request.url);
-      const token = url.searchParams.get("token") || request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token || !await jwt.verify(token)) {
+      if (!consumeTicket(url.searchParams.get("ticket"), "instance")) {
         return new Response("Unauthorized", { status: 401 });
       }
     },

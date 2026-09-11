@@ -57,3 +57,36 @@ export function getBackendWebSocketUrl(path: string, backendPort: number): strin
 
   return normalizedPath;
 }
+
+export type TerminalTicketPurpose = "system" | "docker-exec" | "instance";
+
+/**
+ * 构建带一次性票据的终端 WS URL。
+ *
+ * 先用带 Bearer 头的普通 HTTP（经前端代理）换一张短时效票据，再把票据拼进 WS URL。
+ * JWT 因此不再出现在 URL 里，也就不会进浏览器历史或前置反代的 access 日志。
+ */
+export async function buildBackendWsUrl(
+  path: string,
+  purpose: TerminalTicketPurpose,
+  backendPort: number,
+): Promise<string> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const res = await fetch(`${API_BASE}/api/terminal/ticket`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ purpose }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!data?.success || !data.ticket) {
+    throw new Error(data?.message || "获取终端票据失败");
+  }
+  const sep = path.includes("?") ? "&" : "?";
+  return getBackendWebSocketUrl(
+    `${path}${sep}ticket=${encodeURIComponent(data.ticket)}`,
+    backendPort,
+  );
+}

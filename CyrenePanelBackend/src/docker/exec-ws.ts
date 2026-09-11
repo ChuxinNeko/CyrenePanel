@@ -14,6 +14,7 @@ import type { IPty } from "bun-pty";
 import { logger } from "../logger/index";
 import { nodeCan } from "../node-auth/verifier";
 import { resolveNodePrincipal } from "../node-auth/principal";
+import { consumeTicket } from "../terminal/ticket";
 
 /** 容器 ID/名称白名单，防止参数被注入到 docker 命令 */
 const CONTAINER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
@@ -23,15 +24,12 @@ const ALLOWED_SHELLS = new Set(["sh", "bash", "ash", "zsh", "/bin/sh", "/bin/bas
 
 export const dockerExecRoutes = new Elysia()
   .ws("/api/docker/exec", {
-    async beforeHandle({ jwt, request }: any) {
+    async beforeHandle({ request }: any) {
       const principal = await resolveNodePrincipal(request);
       if (principal && nodeCan(principal, "system:update")) return;
 
       const url = new URL(request.url);
-      const token =
-        url.searchParams.get("token") ||
-        request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token || !(await jwt.verify(token))) {
+      if (!consumeTicket(url.searchParams.get("ticket"), "docker-exec")) {
         return new Response("Unauthorized", { status: 401 });
       }
     },

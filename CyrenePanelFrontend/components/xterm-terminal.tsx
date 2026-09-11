@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import { useBackendPort, getBackendWebSocketUrl } from "@/hooks/use-backend-port";
+import { useBackendPort, buildBackendWsUrl } from "@/hooks/use-backend-port";
 import "@xterm/xterm/css/xterm.css";
 
 // ── 类型 ─────────────────────────────────────────────────────────────────
@@ -86,9 +86,18 @@ export default function XtermTerminal({ instanceId, status, className }: XtermTe
     observer.observe(containerRef.current);
     observerRef.current = observer;
 
-    // WebSocket 连接
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : "";
-    const wsUrl = getBackendWebSocketUrl(`/api/instances/${instanceId}/terminal?token=${encodeURIComponent(token || "")}`, backendPort!);
+    // WebSocket 连接：先换一次性票据，JWT 不进 URL
+    let wsUrl: string;
+    try {
+      wsUrl = await buildBackendWsUrl(
+        `/api/instances/${instanceId}/terminal`,
+        "instance",
+        backendPort!,
+      );
+    } catch (e: any) {
+      terminal.write(`\r\n\x1b[31m[${e?.message || "获取终端票据失败"}]\x1b[0m\r\n`);
+      return;
+    }
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {

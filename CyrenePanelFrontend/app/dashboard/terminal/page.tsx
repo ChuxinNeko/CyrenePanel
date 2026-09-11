@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { API_BASE } from "@/lib/api-base";
-import { useBackendPort, getBackendWebSocketUrl } from "@/hooks/use-backend-port";
+import { useBackendPort, buildBackendWsUrl } from "@/hooks/use-backend-port";
 import { Button } from "@/components/ui/button";
 import {
   RefreshCw,
@@ -259,7 +259,7 @@ function TerminalPageContent() {
 
   // ── WebSocket 连接 ─────────────────────────────────────────────
 
-  const connectMainTerminal = useCallback(() => {
+  const connectMainTerminal = useCallback(async () => {
     const token = getToken();
     if (!token || backendPort === null) {
       router.push("/login");
@@ -274,8 +274,14 @@ function TerminalPageContent() {
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    const wsUrl = getBackendWebSocketUrl(`/api/terminal?token=${token}`, backendPort!);
-    const ws = new WebSocket(wsUrl);
+    let ws: WebSocket;
+    try {
+      const wsUrl = await buildBackendWsUrl("/api/terminal", "system", backendPort);
+      ws = new WebSocket(wsUrl);
+    } catch (e: any) {
+      terminal.writeln(`\x1b[31m[${e?.message || "获取终端票据失败"}]\x1b[0m`);
+      return;
+    }
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -405,7 +411,7 @@ function TerminalPageContent() {
   // ── 子节点终端连接 ─────────────────────────────────────────────
 
   const connectSubTerminal = useCallback(
-    (nodeId: string) => {
+    async (nodeId: string) => {
       const token = getToken();
       if (!token || backendPort === null) {
         router.push("/login");
@@ -421,8 +427,18 @@ function TerminalPageContent() {
         return;
       }
 
-      const wsUrl = getBackendWebSocketUrl(`/api/nodes/${nodeId}/terminal?token=${token}`, backendPort!);
-      const ws = new WebSocket(wsUrl);
+      let ws: WebSocket;
+      try {
+        const wsUrl = await buildBackendWsUrl(
+          `/api/nodes/${nodeId}/terminal`,
+          "system",
+          backendPort,
+        );
+        ws = new WebSocket(wsUrl);
+      } catch (e: any) {
+        terminal.writeln(`\x1b[31m[${e?.message || "获取终端票据失败"}]\x1b[0m`);
+        return;
+      }
       wsRef.current = ws;
 
       ws.onopen = () => {

@@ -15,7 +15,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getBackendWebSocketUrl, useBackendPort } from "@/hooks/use-backend-port";
+import { buildBackendWsUrl, useBackendPort } from "@/hooks/use-backend-port";
 import { dockerGet, type DockerContainerStat } from "@/lib/docker-api";
 
 import "@xterm/xterm/css/xterm.css";
@@ -337,11 +337,18 @@ function TerminalPane({ container }: { container: ContainerRef }) {
       term.open(hostRef.current);
       fit.fit();
 
-      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-      const url = getBackendWebSocketUrl(
-        `/api/docker/exec?container=${encodeURIComponent(container.name)}&shell=${shell}&token=${encodeURIComponent(token || "")}`,
-        backendPort,
-      );
+      let url: string;
+      try {
+        url = await buildBackendWsUrl(
+          `/api/docker/exec?container=${encodeURIComponent(container.name)}&shell=${shell}`,
+          "docker-exec",
+          backendPort,
+        );
+      } catch (e: any) {
+        term?.write(`\r\n\x1b[31m${e?.message || "获取终端票据失败"}\x1b[0m\r\n`);
+        setStatus("closed");
+        return;
+      }
 
       const ws = new WebSocket(url);
       wsRef.current = ws;
