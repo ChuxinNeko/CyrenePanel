@@ -71,7 +71,19 @@ export function RequestMap({
         role="img"
         aria-label="请求来源分布地图"
       >
-        <path d={LAND_PATH} className="fill-muted stroke-border" strokeWidth={0.15} />
+        {/*
+          陆地不能用 muted/border：它俩和 surface-inset 在两套主题下都是同一个色值
+          （亮 #f5f5f5、暗 #1f1f1f），画出来等于没画。改用 muted-foreground 压低透明度，
+          亮暗两边都能和海面拉开。
+          描边加 non-scaling-stroke：线宽按屏幕像素算，不随 viewBox 缩放被稀释成半像素。
+        */}
+        <path
+          d={LAND_PATH}
+          className="fill-muted-foreground/25 stroke-muted-foreground/55"
+          strokeWidth={0.8}
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
         {points.map((point) => {
           const { x, y } = project(point);
           // 裁掉的纬度带里若真有点，贴边画出来，总比凭空消失强
@@ -82,8 +94,10 @@ export function RequestMap({
               cx={x}
               cy={cy}
               r={radiusOf(point.requests)}
-              className="cursor-pointer fill-primary/60 stroke-primary transition-opacity hover:fill-primary/90"
-              strokeWidth={0.2}
+              // 底图压深之后，近黑/近白的 primary 点会糊进陆地，数据标记换成 chart-1
+              className="cursor-pointer fill-chart-1/70 stroke-chart-1 transition-opacity hover:fill-chart-1"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
               onMouseEnter={() =>
                 setHovered({
                   point,
