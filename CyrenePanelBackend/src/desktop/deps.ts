@@ -47,7 +47,7 @@ export function buildUninstallCommand(pm: PackageManager): string {
         ? "xorg-x11-server-Xvfb x11vnc openbox tint2 pcmanfm xterm xorg-x11-apps"
         : "";
   const remove = pm === "apt" ? `apt-get remove -y ${pkgs}` : `${pm} remove -y ${pkgs}`;
-  return `if [ "$(id -u)" -eq 0 ]; then ${remove}; elif sudo -n true >/dev/null 2>&1; then sudo bash -c '${remove}'; else echo "面板进程非 root 且 sudo 不可用，请在宿主机 shell 中手动卸载" >&2; exit 1; fi`;
+  return wrapPrivileged(remove);
 }
 
 export function detectPackageManager(): PackageManager | null {
@@ -80,15 +80,24 @@ export function detectDeps(): DepsStatus {
   };
 }
 
-/**
- * 生成安装命令。root 直接跑，否则尝试 sudo -n；都不行就报错让用户在宿主机装。
- * 与 environments 模块的降权判断保持一致。
- */
+/** root 直接跑，否则尝试 sudo -n；都不行就报错让用户在宿主机执行。与 environments 模块一致 */
+function wrapPrivileged(inner: string): string {
+  return `if [ "$(id -u)" -eq 0 ]; then ${inner}; elif sudo -n true >/dev/null 2>&1; then sudo bash -c '${inner}'; else echo "面板进程非 root 且 sudo 不可用，请在宿主机 shell 中手动执行" >&2; exit 1; fi`;
+}
+
+function installInner(pm: PackageManager, pkgs: string[]): string {
+  const p = pkgs.join(" ");
+  return pm === "apt"
+    ? `apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ${p}`
+    : `${pm} install -y ${p}`;
+}
+
+/** 启用桌面：安装核心依赖集 */
 export function buildInstallCommand(pm: PackageManager): string {
-  const pkgs = PACKAGES[pm].join(" ");
-  const install =
-    pm === "apt"
-      ? `apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ${pkgs}`
-      : `${pm} install -y ${pkgs}`;
-  return `if [ "$(id -u)" -eq 0 ]; then ${install}; elif sudo -n true >/dev/null 2>&1; then sudo bash -c '${install}'; else echo "面板进程非 root 且 sudo 不可用，请在宿主机 shell 中手动安装" >&2; exit 1; fi`;
+  return wrapPrivileged(installInner(pm, PACKAGES[pm]));
+}
+
+/** 按需安装单个应用的包（浏览器等未预装的） */
+export function buildAppInstallCommand(pm: PackageManager, pkgs: string[]): string {
+  return wrapPrivileged(installInner(pm, pkgs));
 }

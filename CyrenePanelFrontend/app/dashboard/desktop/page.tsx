@@ -35,6 +35,7 @@ interface DesktopApp {
   command: string;
   highMemory: boolean;
   available: boolean;
+  installable: boolean;
 }
 
 interface Geometry {
@@ -85,7 +86,8 @@ export default function DesktopPage() {
   const backendPort = useBackendPort();
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<null | "install" | "uninstall">(null);
+  // null | "install" | "uninstall" | `app:<id>`
+  const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
   const [active, setActive] = useState<SessionInfo | null>(null);
@@ -117,12 +119,12 @@ export default function DesktopPage() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [log]);
 
-  // 装 / 卸依赖，两者都是 SSE 流式输出，共用一套
-  const runStream = async (action: "install" | "uninstall") => {
-    setBusy(action);
+  // 装 / 卸依赖 / 装单个应用，都是 SSE 流式输出，共用一套
+  const runStream = async (url: string, busyKey: string) => {
+    setBusy(busyKey);
     setLog([]);
     try {
-      const res = await fetch(`${API_BASE}/api/desktop/${action}/stream`, {
+      const res = await fetch(`${API_BASE}${url}`, {
         method: "POST",
         headers: authHeaders(),
       });
@@ -209,7 +211,11 @@ export default function DesktopPage() {
     if (!confirm("停用将关闭所有桌面会话并卸载相关依赖（Xvfb / x11vnc / openbox 等），确定继续？")) {
       return;
     }
-    runStream("uninstall");
+    runStream("/api/desktop/uninstall/stream", "uninstall");
+  };
+
+  const handleInstallApp = (app: DesktopApp) => {
+    runStream(`/api/desktop/apps/${app.id}/install/stream`, `app:${app.id}`);
   };
 
   if (loading) {
@@ -268,7 +274,7 @@ export default function DesktopPage() {
               </div>
             </div>
 
-            <Button onClick={() => runStream("install")} disabled={busy !== null}>
+            <Button onClick={() => runStream("/api/desktop/install/stream", "install")} disabled={busy !== null}>
               {busy === "install" ? (
                 <RefreshCw className="size-4 animate-spin" />
               ) : (
@@ -324,32 +330,63 @@ export default function DesktopPage() {
 
           <div className="flex flex-wrap items-center gap-2">
             <span className="eyebrow">单应用</span>
-            {(status?.apps ?? []).map((app) => (
-              <Button
-                key={app.id}
-                variant="outline"
-                size="sm"
-                onClick={() => handleStartApp(app)}
-                disabled={starting || !app.available}
-                title={app.available ? undefined : `${app.command} 未安装`}
-              >
-                <Monitor className="size-3.5" />
-                {app.label}
-                {app.highMemory && (
-                  <Badge variant="outline" className="ml-1 gap-1">
-                    <Cpu className="size-3" />
-                    高内存
-                  </Badge>
-                )}
-                {!app.available && <span className="ml-1 text-mute">未安装</span>}
-              </Button>
-            ))}
+            {(status?.apps ?? []).map((app) => {
+              const installing = busy === `app:${app.id}`;
+              // 已装 → 启动；未装但可装 → 安装；未装且不可装 → 置灰
+              if (!app.available && (app.installable || installing)) {
+                return (
+                  <Button
+                    key={app.id}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleInstallApp(app)}
+                    disabled={busy !== null}
+                    title={`安装 ${app.label}`}
+                  >
+                    {installing ? (
+                      <RefreshCw className="size-3.5 animate-spin" />
+                    ) : (
+                      <Download className="size-3.5" />
+                    )}
+                    安装 {app.label}
+                    {app.highMemory && (
+                      <Badge variant="outline" className="ml-1 gap-1">
+                        <Cpu className="size-3" />
+                        高内存
+                      </Badge>
+                    )}
+                  </Button>
+                );
+              }
+              return (
+                <Button
+                  key={app.id}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleStartApp(app)}
+                  disabled={starting || busy !== null || !app.available}
+                  title={app.available ? undefined : `${app.command} 未安装`}
+                >
+                  <Monitor className="size-3.5" />
+                  {app.label}
+                  {app.highMemory && (
+                    <Badge variant="outline" className="ml-1 gap-1">
+                      <Cpu className="size-3" />
+                      高内存
+                    </Badge>
+                  )}
+                  {!app.available && <span className="ml-1 text-mute">未安装</span>}
+                </Button>
+              );
+            })}
             <span className="ml-auto font-mono text-[11px] text-mute">
               并发上限 {status?.limits?.maxSessions} · 空闲 {status?.limits?.idleMinutes} 分钟自动回收
             </span>
           </div>
 
-          {busy === "uninstall" && log.length > 0 && <StreamLog logRef={logRef} lines={log} />}
+          {(busy === "uninstall" || busy?.startsWith("app:")) && log.length > 0 && (
+            <StreamLog logRef={logRef} lines={log} />
+          )}
 
           {(status?.sessions?.length ?? 0) > 0 && (
             <div className="flex flex-wrap items-center gap-2">

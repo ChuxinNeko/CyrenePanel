@@ -15,7 +15,7 @@
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { logger } from "../logger/index";
-import { detectDeps, has } from "./deps";
+import { detectDeps, detectPackageManager, has, type PackageManager } from "./deps";
 
 /**
  * 可启动的 GUI 应用白名单。
@@ -28,6 +28,8 @@ interface DesktopAppDef {
   label: string;
   commands: string[];
   highMemory: boolean;
+  /** 未预装时可按需安装的包名（各发行版）。缺省表示不支持面板内安装 */
+  install?: Partial<Record<PackageManager, string[]>>;
 }
 
 export interface DesktopApp {
@@ -38,12 +40,14 @@ export interface DesktopApp {
 }
 
 const APP_DEFS: DesktopAppDef[] = [
-  { id: "xterm", label: "终端 (xterm)", commands: ["xterm"], highMemory: false },
-  { id: "pcmanfm", label: "文件管理器", commands: ["pcmanfm"], highMemory: false },
-  { id: "xcalc", label: "计算器", commands: ["xcalc"], highMemory: false },
-  { id: "xeyes", label: "xeyes（演示）", commands: ["xeyes"], highMemory: false },
-  { id: "mousepad", label: "文本编辑器", commands: ["mousepad", "leafpad", "gedit"], highMemory: false },
-  { id: "browser", label: "浏览器", commands: ["firefox", "firefox-esr", "chromium", "chromium-browser"], highMemory: true },
+  { id: "xterm", label: "终端 (xterm)", commands: ["xterm"], highMemory: false, install: { apt: ["xterm"], dnf: ["xterm"], yum: ["xterm"] } },
+  { id: "pcmanfm", label: "文件管理器", commands: ["pcmanfm"], highMemory: false, install: { apt: ["pcmanfm"], dnf: ["pcmanfm"], yum: ["pcmanfm"] } },
+  { id: "xcalc", label: "计算器", commands: ["xcalc"], highMemory: false, install: { apt: ["x11-apps"], dnf: ["xorg-x11-apps"], yum: ["xorg-x11-apps"] } },
+  { id: "xeyes", label: "xeyes（演示）", commands: ["xeyes"], highMemory: false, install: { apt: ["x11-apps"], dnf: ["xorg-x11-apps"], yum: ["xorg-x11-apps"] } },
+  { id: "mousepad", label: "文本编辑器", commands: ["mousepad", "leafpad", "gedit"], highMemory: false, install: { apt: ["mousepad"], dnf: ["mousepad"], yum: ["mousepad"] } },
+  // 浏览器优先装 falkon：apt/dnf/yum 都是真 deb/rpm，不走 snap，root 下用
+  // QTWEBENGINE_DISABLE_SANDBOX 即可跑；若系统本就装了 firefox/chromium 也识别
+  { id: "browser", label: "浏览器 (Falkon)", commands: ["falkon", "firefox", "firefox-esr", "chromium", "chromium-browser"], highMemory: true, install: { apt: ["falkon"], dnf: ["falkon"], yum: ["falkon"] } },
 ];
 
 /** 取第一个存在的候选命令，全不在则 null */
@@ -51,22 +55,34 @@ function resolveCommand(def: DesktopAppDef): string | null {
   return def.commands.find((c) => has(c)) ?? null;
 }
 
-/** 返回应用清单，附带该应用在本机是否可用（前端据此禁用未安装项） */
-export function listApps(): (DesktopApp & { available: boolean })[] {
+/** 返回应用清单，附带是否可用、以及未装时能否面板内安装 */
+export function listApps(): (DesktopApp & { available: boolean; installable: boolean })[] {
+  const pm = detectPackageManager();
   return APP_DEFS.map((def) => {
     const command = resolveCommand(def);
+    const available = command !== null;
+    const installable = !available && !!pm && !!def.install?.[pm];
     return {
       id: def.id,
       label: def.label,
       command: command ?? def.commands[0],
       highMemory: def.highMemory,
-      available: command !== null,
+      available,
+      installable,
     };
   });
 }
 
 function findApp(id: string): DesktopAppDef | undefined {
   return APP_DEFS.find((a) => a.id === id);
+}
+
+/** 某应用在当前发行版上要安装的包，用于按需安装路由 */
+export function getAppInstallPackages(id: string): string[] | null {
+  const pm = detectPackageManager();
+  const def = findApp(id);
+  if (!pm || !def?.install?.[pm]) return null;
+  return def.install[pm] ?? null;
 }
 
 /** 分辨率预设。不接受前端任意值，避免被塞进 Xvfb 命令 */
@@ -145,11 +161,28 @@ function privilegeWrap(cmd: string[]): string[] {
   return cmd;
 }
 
-function spawnProc(cmd: string[], display: number, home: string): Bun.Subprocess {
-  const env = { ...process.env, DISPLAY: `:${display}`, HOME: home };
+function spawnProc(
+  cmd: string[],
+  display: number,
+  home: string,
+  extraEnv?: Record<string, string>,
+): Bun.Subprocess {
+  const env = { ...process.env, DISPLAY: `:${display}`, HOME: home, ...extraEnv };
   // -ac 关掉了 X 访问控制，这里清掉 XAUTHORITY 避免鉴权文件不匹配
   delete (env as Record<string, string | undefined>).XAUTHORITY;
   return Bun.spawn(privilegeWrap(cmd), { env, stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+}
+
+/**
+ * 浏览器以 root 跑时的处理：Chromium 系（含 falkon 的 QtWebEngine）默认沙箱
+ * 在 root 下会拒绝启动。falkon 用环境变量关沙箱，chromium 用 --no-sandbox。
+ * 非降权（root）时才需要，降权到普通用户后不必。
+ */
+function browserLaunch(command: string): { cmd: string[]; env: Record<string, string> } {
+  if (DESKTOP_USER) return { cmd: [command], env: {} };
+  if (/chromium/.test(command)) return { cmd: [command, "--no-sandbox"], env: {} };
+  if (command === "falkon") return { cmd: [command], env: { QTWEBENGINE_DISABLE_SANDBOX: "1" } };
+  return { cmd: [command], env: {} };
 }
 
 async function waitForDisplay(display: number, timeoutMs = 4000): Promise<boolean> {
@@ -254,8 +287,9 @@ export async function startSession(
     procs.push(spawnProc(["openbox"], display, home));
 
     if (opts.mode === "app" && appCommand) {
-      // 3-app) 单应用：退出即拆会话
-      const appProc = spawnProc([appCommand], display, home);
+      // 3-app) 单应用：退出即拆会话。浏览器 root 下需关沙箱
+      const launch = appId === "browser" ? browserLaunch(appCommand) : { cmd: [appCommand], env: {} };
+      const appProc = spawnProc(launch.cmd, display, home, launch.env);
       procs.push(appProc);
       appProc.exited.then(() => teardown());
     }
