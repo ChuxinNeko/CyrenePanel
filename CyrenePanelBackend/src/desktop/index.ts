@@ -10,12 +10,12 @@ import { Elysia } from "elysia";
 import { logger } from "../logger/index";
 import { resolveRequestProfile } from "../node-auth/request-profile";
 import { consumeTicket } from "../terminal/ticket";
-import { buildAppInstallCommand, buildInstallCommand, buildUninstallCommand, detectDeps, detectPackageManager } from "./deps";
+import { buildAppInstallCommand, buildBrowserInstallCommand, buildInstallCommand, buildUninstallCommand, detectDeps, detectPackageManager } from "./deps";
 import {
   attachClient,
   desktopLimits,
   detachClient,
-  getAppInstallPackages,
+  getAppInstall,
   listApps,
   listSessions,
   startSession,
@@ -106,22 +106,24 @@ function depsStream(action: "install" | "uninstall"): Response {
 function appInstallStream(appId: string): Response {
   const pm = detectPackageManager();
   if (!pm) return noPmResponse();
-  const pkgs = getAppInstallPackages(appId);
-  if (!pkgs) {
+  const spec = getAppInstall(appId);
+  if (!spec) {
     return new Response(JSON.stringify({ success: false, message: "该应用不支持面板内安装" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
   }
-  return streamShell(
-    buildAppInstallCommand(pm, pkgs),
-    `开始安装 ${pkgs.join(" ")}...`,
-    (code) => {
-      const nowAvailable = listApps().find((a) => a.id === appId)?.available ?? false;
-      const ok = code === 0 && nowAvailable;
-      return { success: ok, message: ok ? "应用安装完成" : `安装未完成（退出码 ${code}）` };
-    },
-  );
+  const command =
+    spec.kind === "browser" ? buildBrowserInstallCommand(pm) : buildAppInstallCommand(pm, spec.packages);
+  const startMsg =
+    spec.kind === "browser"
+      ? "开始安装浏览器（Firefox，apt 走 Mozilla 官方源避开 snap）..."
+      : `开始安装 ${spec.packages.join(" ")}...`;
+  return streamShell(command, startMsg, (code) => {
+    const nowAvailable = listApps().find((a) => a.id === appId)?.available ?? false;
+    const ok = code === 0 && nowAvailable;
+    return { success: ok, message: ok ? "应用安装完成" : `安装未完成（退出码 ${code}）` };
+  });
 }
 
 export const desktopRoutes = new Elysia()

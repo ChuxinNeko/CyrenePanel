@@ -30,6 +30,8 @@ interface DesktopAppDef {
   highMemory: boolean;
   /** 未预装时可按需安装的包名（各发行版）。缺省表示不支持面板内安装 */
   install?: Partial<Record<PackageManager, string[]>>;
+  /** 浏览器走专门的安装命令（Mozilla 源等），而非简单包名 */
+  browserInstall?: boolean;
 }
 
 export interface DesktopApp {
@@ -45,9 +47,9 @@ const APP_DEFS: DesktopAppDef[] = [
   { id: "xcalc", label: "计算器", commands: ["xcalc"], highMemory: false, install: { apt: ["x11-apps"], dnf: ["xorg-x11-apps"], yum: ["xorg-x11-apps"] } },
   { id: "xeyes", label: "xeyes（演示）", commands: ["xeyes"], highMemory: false, install: { apt: ["x11-apps"], dnf: ["xorg-x11-apps"], yum: ["xorg-x11-apps"] } },
   { id: "mousepad", label: "文本编辑器", commands: ["mousepad", "leafpad", "gedit"], highMemory: false, install: { apt: ["mousepad"], dnf: ["mousepad"], yum: ["mousepad"] } },
-  // 浏览器优先装 falkon：apt/dnf/yum 都是真 deb/rpm，不走 snap，root 下用
-  // QTWEBENGINE_DISABLE_SANDBOX 即可跑；若系统本就装了 firefox/chromium 也识别
-  { id: "browser", label: "浏览器 (Falkon)", commands: ["falkon", "firefox", "firefox-esr", "chromium", "chromium-browser"], highMemory: true, install: { apt: ["falkon"], dnf: ["falkon"], yum: ["falkon"] } },
+  // 浏览器装 Firefox：apt 走 Mozilla 官方源的真 deb（绕开 Ubuntu 的 snap），
+  // dnf/yum 用发行版自带真 rpm。系统本就有 firefox/chromium 也识别并可直接启动。
+  { id: "browser", label: "浏览器 (Firefox)", commands: ["firefox", "firefox-esr", "chromium", "chromium-browser"], highMemory: true, browserInstall: true },
 ];
 
 /** 取第一个存在的候选命令，全不在则 null */
@@ -61,7 +63,7 @@ export function listApps(): (DesktopApp & { available: boolean; installable: boo
   return APP_DEFS.map((def) => {
     const command = resolveCommand(def);
     const available = command !== null;
-    const installable = !available && !!pm && !!def.install?.[pm];
+    const installable = !available && !!pm && (def.browserInstall === true || !!def.install?.[pm]);
     return {
       id: def.id,
       label: def.label,
@@ -77,12 +79,18 @@ function findApp(id: string): DesktopAppDef | undefined {
   return APP_DEFS.find((a) => a.id === id);
 }
 
-/** 某应用在当前发行版上要安装的包，用于按需安装路由 */
-export function getAppInstallPackages(id: string): string[] | null {
+export type AppInstallSpec =
+  | { kind: "browser" }
+  | { kind: "packages"; packages: string[] };
+
+/** 某应用在当前发行版上的安装方式，用于按需安装路由 */
+export function getAppInstall(id: string): AppInstallSpec | null {
   const pm = detectPackageManager();
   const def = findApp(id);
-  if (!pm || !def?.install?.[pm]) return null;
-  return def.install[pm] ?? null;
+  if (!pm || !def) return null;
+  if (def.browserInstall) return { kind: "browser" };
+  const packages = def.install?.[pm];
+  return packages ? { kind: "packages", packages } : null;
 }
 
 /** 分辨率预设。不接受前端任意值，避免被塞进 Xvfb 命令 */
@@ -174,14 +182,12 @@ function spawnProc(
 }
 
 /**
- * 浏览器以 root 跑时的处理：Chromium 系（含 falkon 的 QtWebEngine）默认沙箱
- * 在 root 下会拒绝启动。falkon 用环境变量关沙箱，chromium 用 --no-sandbox。
- * 非降权（root）时才需要，降权到普通用户后不必。
+ * 浏览器以 root 跑时的处理：Chromium 系默认沙箱在 root 下拒绝启动，需 --no-sandbox。
+ * Firefox 以 root 跑只是告警、能正常运行，无需特殊处理。降权到普通用户后都不必。
  */
 function browserLaunch(command: string): { cmd: string[]; env: Record<string, string> } {
   if (DESKTOP_USER) return { cmd: [command], env: {} };
   if (/chromium/.test(command)) return { cmd: [command, "--no-sandbox"], env: {} };
-  if (command === "falkon") return { cmd: [command], env: { QTWEBENGINE_DISABLE_SANDBOX: "1" } };
   return { cmd: [command], env: {} };
 }
 

@@ -97,7 +97,28 @@ export function buildInstallCommand(pm: PackageManager): string {
   return wrapPrivileged(installInner(pm, PACKAGES[pm]));
 }
 
-/** 按需安装单个应用的包（浏览器等未预装的） */
+/** 按需安装单个应用的包（未预装的） */
 export function buildAppInstallCommand(pm: PackageManager, pkgs: string[]): string {
   return wrapPrivileged(installInner(pm, pkgs));
+}
+
+/**
+ * 浏览器安装。Ubuntu/Debian 的 apt firefox 是 snap，root+无头下起不来，
+ * 所以走 Mozilla 官方 apt 源装真 deb，并用 apt pin 让它优先于发行版的 snap 转发包。
+ * dnf/yum 系发行版自带的 firefox 就是真 rpm，直接装。
+ * 命令里不出现单引号，以兼容非 root 时的 `sudo bash -c '...'` 包装。
+ */
+export function buildBrowserInstallCommand(pm: PackageManager): string {
+  if (pm === "apt") {
+    const inner = [
+      "install -d -m 0755 /etc/apt/keyrings",
+      "curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc",
+      'echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list',
+      'printf "Package: *\\nPin: origin packages.mozilla.org\\nPin-Priority: 1000\\n" > /etc/apt/preferences.d/mozilla',
+      "apt-get update",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y firefox",
+    ].join(" && ");
+    return wrapPrivileged(inner);
+  }
+  return wrapPrivileged(installInner(pm, ["firefox"]));
 }
