@@ -16,6 +16,7 @@ import { resolveRequestProfile } from "../node-auth/request-profile";
 import { parseSshLogLines, type SshLogEntry } from "../security/ssh-log";
 import { readSshLog, type SshLogSource } from "../security/ssh-log-source";
 import { formatLocation, lookupIpLocations } from "../security/ip-location";
+import { serverTimezone } from "../system/timezone";
 
 export type AuditCategory =
   | "auth"
@@ -211,28 +212,6 @@ function readSshEntries(): { source: SshLogSource; entries: SshLogEntry[] } {
   const source = readSshLog();
   sshLogCache = { at: now, source, entries: parseSshLogLines(source.content) };
   return sshLogCache;
-}
-
-/**
- * 服务器时区。日志里的时间是服务器记的，前端按浏览器时区渲染会整体平移几个小时，
- * 跨时区运维时和 journalctl 的输出对不上，所以把时区一并给出去。
- */
-function serverTimezone(): { name: string; offsetMinutes: number; label: string } {
-  // getTimezoneOffset 是「UTC 减本地」，取反才是习惯上的东八区为正
-  const offsetMinutes = -new Date().getTimezoneOffset();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const abs = Math.abs(offsetMinutes);
-  let name = "";
-  try {
-    name = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-  } catch {
-    // 运行时没有完整 ICU 时退回纯偏移，前端会用 offsetMinutes 兜底
-  }
-  return {
-    name,
-    offsetMinutes,
-    label: `UTC${offsetMinutes < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`,
-  };
 }
 
 export const auditRoutes = new Elysia()

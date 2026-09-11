@@ -18,6 +18,9 @@ export interface IpLocation {
   province: string;
   city: string;
   isp: string;
+  /** 画请求地图要用。接口给的是字符串，这里转成数字；取不到就是 null */
+  latitude: number | null;
+  longitude: number | null;
 }
 
 interface CacheEntry {
@@ -55,14 +58,24 @@ async function fetchLocation(ip: string): Promise<IpLocation | null> {
     if (!res.ok) return null;
     const data = (await res.json()) as {
       success?: boolean;
-      location?: Partial<IpLocation>;
+      location?: Record<string, unknown>;
     };
     if (!data?.success || !data.location) return null;
+    const text = (key: string) => {
+      const value = data.location?.[key];
+      return typeof value === "string" ? value : "";
+    };
+    const coord = (key: string) => {
+      const value = Number(data.location?.[key]);
+      return Number.isFinite(value) ? value : null;
+    };
     return {
-      country: data.location.country ?? "",
-      province: data.location.province ?? "",
-      city: data.location.city ?? "",
-      isp: data.location.isp ?? "",
+      country: text("country"),
+      province: text("province"),
+      city: text("city"),
+      isp: text("isp"),
+      latitude: coord("latitude"),
+      longitude: coord("longitude"),
     };
   } catch {
     return null;
@@ -107,7 +120,14 @@ export async function lookupIpLocations(
 
   for (const ip of unique) {
     if (isPrivateIp(ip)) {
-      result[ip] = { country: "局域网", province: "", city: "", isp: "" };
+      result[ip] = {
+        country: "局域网",
+        province: "",
+        city: "",
+        isp: "",
+        latitude: null,
+        longitude: null,
+      };
       continue;
     }
     const hit = readCache(ip);

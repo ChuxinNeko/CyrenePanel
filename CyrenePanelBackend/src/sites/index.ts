@@ -16,6 +16,8 @@ import { execSync } from "child_process";
 import { logger } from "../logger/index";
 import { resolveRequestProfile } from "../node-auth/request-profile";
 import { detectNginxLayout, NginxLayoutBase } from "./nginx-layout";
+import { buildOverview, buildSiteRequests, type SiteLogTarget } from "./stats";
+import { serverTimezone } from "../system/timezone";
 
 type SiteStatus = "running" | "stopped";
 type SiteType = "static" | "php" | "runtime" | "proxy";
@@ -1086,6 +1088,38 @@ async function authProfile(jwt: any, request: Request) {
   return resolveRequestProfile(jwt, request);
 }
 
+/**
+ * 站点配置里通常有好几条 access_log：静态资源那些 location 会写 `access_log off;`。
+ * 取第一条绝对路径，才是这个站真正在写的日志。
+ */
+function parseAccessLogPath(content: string): string | null {
+  for (const match of content.matchAll(/access_log\s+([^\s;]+)/gi)) {
+    if (match[1].startsWith("/")) return match[1];
+  }
+  return null;
+}
+
+/** 列出每个站点对应的访问日志，给统计模块用 */
+function collectLogTargets(): SiteLogTarget[] {
+  const { sites, nginx } = listSites();
+  return sites.map((site) => {
+    let logPath: string | null = null;
+    try {
+      logPath = parseAccessLogPath(readFileSync(site.configPath, "utf-8"));
+    } catch {
+      // 配置读不了就退到按域名猜
+    }
+    if (!logPath && nginx.logDir) {
+      // 面板建的站写 {域名}.access.log，宝塔建的写 {域名}.log
+      logPath =
+        [`${site.primaryDomain}.access.log`, `${site.primaryDomain}.log`]
+          .map((file) => join(nginx.logDir, file))
+          .find((candidate) => existsSync(candidate)) ?? null;
+    }
+    return { name: site.name, domain: site.primaryDomain, logPath };
+  });
+}
+
 export const siteRoutes = new Elysia()
   .get("/api/sites", async ({ jwt, request }: any) => {
     const profile = await authProfile(jwt, request);
@@ -1108,6 +1142,58 @@ export const siteRoutes = new Elysia()
     } catch (e: any) {
       logger.err(`网站创建失败: ${e.message}`);
       return { success: false, message: e.message || "网站创建失败" };
+    }
+  })
+
+  /**
+   * 访问统计总览：今日/昨日/前日的流量、请求数、IP、UV、PV，外加今日站点排行。
+   * 数据来自 nginx 访问日志，统计窗口只有三天，再往前日志多半已经被轮转走了。
+   */
+  .get("/api/sites/stats/overview", async ({ jwt, request }: any) => {
+    const profile = await authProfile(jwt, request);
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      return {
+        success: true,
+        generatedAt: Date.now(),
+        timezone: serverTimezone(),
+        ...buildOverview(collectLogTargets()),
+      };
+    } catch (e: any) {
+      logger.err(`访问统计读取失败: ${e.message}`);
+      return { success: false, message: e.message || "访问统计读取失败" };
+    }
+  })
+
+  /** 单站点的请求明细 + 归属地聚合（画地图用） */
+  .get("/api/sites/stats/requests", async ({ jwt, request, query }: any) => {
+    const profile = await authProfile(jwt, request);
+    if (!profile) return { success: false, message: "未授权" };
+    try {
+      const siteName = normalizeSiteParam(String(query?.site || ""));
+      const target = collectLogTargets().find((item) => item.name === siteName);
+      if (!target) return { success: false, message: "站点不存在" };
+      if (!target.logPath) {
+        return { success: false, message: "该站点没有配置访问日志" };
+      }
+
+      const statusClass = String(query?.statusClass || "");
+      const result = await buildSiteRequests(target, {
+        range: String(query?.range || "today"),
+        page: Math.max(Number(query?.page) || 1, 1),
+        pageSize: Math.min(Math.max(Number(query?.pageSize) || 20, 1), 200),
+        keyword: String(query?.keyword || ""),
+        statusClass: /^[2345]$/.test(statusClass) ? statusClass : "",
+      });
+      return {
+        success: true,
+        site: { name: target.name, domain: target.domain, logPath: target.logPath },
+        timezone: serverTimezone(),
+        ...result,
+      };
+    } catch (e: any) {
+      logger.err(`站点请求日志读取失败: ${e.message}`);
+      return { success: false, message: e.message || "站点请求日志读取失败" };
     }
   })
 

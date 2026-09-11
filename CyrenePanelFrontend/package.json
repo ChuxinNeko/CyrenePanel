@@ -10,7 +10,8 @@
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
-    "build:file-icons": "bun run scripts/build-file-icons.ts"
+    "build:file-icons": "bun run scripts/build-file-icons.ts",
+    "build:world-map": "bun run scripts/build-world-map.ts"
   },
   "dependencies": {
     "@elysiajs/eden": "^1.4.9",

@@ -63,6 +63,7 @@ const subRouteLabels: Record<string, string> = {
   "/dashboard/database/mysql": "MySQL",
   "/dashboard/database/mongodb": "MongoDB",
   "/dashboard/audit/ssh": "SSH 登录",
+  "/dashboard/sites/stats": "统计总览",
 };
 
 export function isNavItemActive(url: string, pathname: string): boolean {

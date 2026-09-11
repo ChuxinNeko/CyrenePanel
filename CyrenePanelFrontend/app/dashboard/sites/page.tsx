@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ import { API_BASE } from "@/lib/api-base";
 import { toast } from "sonner";
 import {
   ArrowRightLeft,
+  BarChart3,
   Code2,
   FileCode2,
   FolderOpen,
@@ -658,6 +660,14 @@ export default function SitesPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link
+              href={`/dashboard/sites/stats${selectedNodeId === "__main__" ? "" : `?node=${selectedNodeId}`}`}
+            >
+              <BarChart3 className="h-4 w-4" />
+              统计总览
+            </Link>
+          </Button>
           <Button variant="outline" onClick={() => nginxAction("test")} disabled={actingSite === "_nginx:test"}>
             <ShieldCheck className="h-4 w-4" />
             检查配置
