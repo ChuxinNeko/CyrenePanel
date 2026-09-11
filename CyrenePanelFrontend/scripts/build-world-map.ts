@@ -63,6 +63,33 @@ function ringFromArcs(indexes: number[], arcs: Point[][]): Point[] {
   return ring;
 }
 
+/**
+ * 把跨 180° 经线的环展开成连续经度。
+ *
+ * 俄罗斯（楚科奇）、斐济、南极洲的环里，经度会从 +179 直接跳到 -179。
+ * 等距圆柱下这一跳就是一条横穿整张图的线，填充后变成一条贯穿东西的色带；
+ * 抽稀算法遇到这种跳变也会当成真实特征保留下来。
+ *
+ * 展开后经度可能超出 [-180, 180]，越界的部分由调用方补一份平移 360° 的副本，
+ * 让被画布裁掉的那半从另一边接回来。
+ */
+function unwrapLongitudes(ring: Point[]): Point[] {
+  if (ring.length === 0) return ring;
+  const out: Point[] = [ring[0]];
+  let offset = 0;
+  for (let i = 1; i < ring.length; i++) {
+    const delta = ring[i][0] - ring[i - 1][0];
+    if (delta > 180) offset -= 360;
+    else if (delta < -180) offset += 360;
+    out.push([ring[i][0] + offset, ring[i][1]]);
+  }
+  return out;
+}
+
+function shiftRing(flat: number[], degrees: number): number[] {
+  return flat.map((value, index) => (index % 2 === 0 ? value + degrees : value));
+}
+
 /** 点到线段的垂距，道格拉斯-普克的取舍依据 */
 function perpendicularDistance(point: Point, start: Point, end: Point): number {
   const [px, py] = point;
@@ -116,7 +143,8 @@ function simplify(input: Point[]): number[] | null {
     maxY = Math.max(maxY, y);
   }
 
-  if (flat.length < 8) return null;
+  // 三个点就能围出一块能看的陆地，斐济这种小岛抽稀后正好剩三个
+  if (flat.length < 6) return null;
   if (maxX - minX < MIN_SPAN_DEGREES && maxY - minY < MIN_SPAN_DEGREES) return null;
   return flat;
 }
@@ -140,8 +168,14 @@ async function main(): Promise<void> {
         : (geometry.arcs as number[][][]);
     for (const polygon of polygons) {
       for (const ringIndexes of polygon) {
-        const simplified = simplify(ringFromArcs(ringIndexes, arcs));
-        if (simplified) rings.push(simplified);
+        const simplified = simplify(unwrapLongitudes(ringFromArcs(ringIndexes, arcs)));
+        if (simplified) {
+          rings.push(simplified);
+          // 展开后越界的环，另一半要从对面边缘接回来，否则楚科奇、斐济会缺一块
+          const lons = simplified.filter((_, index) => index % 2 === 0);
+          if (Math.max(...lons) > 180) rings.push(shiftRing(simplified, -360));
+          if (Math.min(...lons) < -180) rings.push(shiftRing(simplified, 360));
+        }
       }
     }
   }
