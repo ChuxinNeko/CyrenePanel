@@ -82,6 +82,70 @@ export function formatAbsoluteTime(timestamp: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/** 服务端给出的自身时区，用来把日志时间渲染成服务器看到的样子 */
+export interface ServerTimezone {
+  /** IANA 名，如 Asia/Shanghai。运行时缺 ICU 时为空串 */
+  name: string;
+  /** 东为正，与 label 同源 */
+  offsetMinutes: number;
+  /** 形如 UTC+08:00，直接给人看 */
+  label: string;
+}
+
+const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function zoneFormatter(timeZone: string): Intl.DateTimeFormat {
+  let formatter = zoneFormatters.get(timeZone);
+  if (!formatter) {
+    // 每行都 new 一个 DateTimeFormat 很贵，按时区缓存
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    zoneFormatters.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
+/**
+ * 按服务器时区渲染时间戳。
+ *
+ * 日志里的时间是服务器记的，用浏览器时区渲染会整体平移，跨时区运维时
+ * 和 journalctl 的输出对不上。有 IANA 名就交给 Intl（夏令时按当时的规则算），
+ * 拿不到再退回固定偏移，最后才退回浏览器本地时间。
+ */
+export function formatServerTime(
+  timestamp: number,
+  tz?: ServerTimezone | null
+): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "—";
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  if (tz?.name) {
+    try {
+      const parts = zoneFormatter(tz.name).formatToParts(new Date(timestamp));
+      const get = (type: Intl.DateTimeFormatPartTypes) =>
+        parts.find((p) => p.type === type)?.value ?? "";
+      return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+    } catch {
+      // 时区名不被浏览器认识，落到下面的偏移分支
+    }
+  }
+
+  if (tz && Number.isFinite(tz.offsetMinutes)) {
+    const d = new Date(timestamp + tz.offsetMinutes * 60_000);
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  }
+
+  return formatAbsoluteTime(timestamp);
+}
+
 export function formatRelativeTime(timestamp: number, now: number): string {
   const diff = Math.max(0, now - timestamp);
   if (diff < 60_000) return "刚刚";

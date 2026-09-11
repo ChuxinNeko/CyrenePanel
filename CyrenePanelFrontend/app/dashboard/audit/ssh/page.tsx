@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,6 +25,10 @@ import {
 } from "@/components/ui/table";
 import {
   AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   Globe2,
   RefreshCw,
@@ -35,9 +40,16 @@ import {
 } from "lucide-react";
 import { API_BASE } from "@/lib/api-base";
 import { useNow } from "@/hooks/use-now";
-import { formatAbsoluteTime, formatRelativeTime } from "@/lib/audit";
+import {
+  formatRelativeTime,
+  formatServerTime,
+  type ServerTimezone,
+} from "@/lib/audit";
 
 const ALL = "__all__";
+const PAGE_SIZES = [20, 50, 100];
+/** 导出一次最多取多少条。后端 pageSize 上限是 500，留出余量 */
+const EXPORT_LIMIT = 300;
 
 interface SshEntry {
   id: string;
@@ -57,6 +69,26 @@ interface SshStats {
   success: number;
   failed: number;
   uniqueIps: number;
+}
+
+/** 失败次数最多的来源，后端按全量算好，翻页时不跟着变 */
+interface SshOffender {
+  ip: string;
+  count: number;
+  locationText: string;
+}
+
+interface SshResponse {
+  success?: boolean;
+  message?: string;
+  source?: string;
+  stats?: SshStats | null;
+  entries?: SshEntry[];
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  topOffenders?: SshOffender[];
+  timezone?: ServerTimezone | null;
 }
 
 function authHeaders(): HeadersInit {
@@ -98,8 +130,8 @@ function StatTile({
   );
 }
 
-/** 导出当前已加载的结果。字段里可能含逗号，按 RFC4180 转义 */
-function toCsv(rows: SshEntry[]): string {
+/** 导出当前筛选下的记录。字段里可能含逗号，按 RFC4180 转义 */
+function toCsv(rows: SshEntry[], tz: ServerTimezone | null): string {
   const headers = ["时间", "用户", "IP 地址", "端口", "归属地", "运营商", "认证方式", "状态", "说明"];
   const escape = (v: string) => {
     const guarded = /^[=+\-@]/.test(v) ? `'${v}` : v;
@@ -107,7 +139,7 @@ function toCsv(rows: SshEntry[]): string {
   };
   const body = rows.map((r) =>
     [
-      formatAbsoluteTime(r.timestamp),
+      formatServerTime(r.timestamp, tz),
       r.user,
       r.ip,
       r.port === null ? "" : String(r.port),
@@ -128,38 +160,69 @@ export default function SshAuditPage() {
 
   const [entries, setEntries] = useState<SshEntry[]>([]);
   const [stats, setStats] = useState<SshStats | null>(null);
+  const [topOffenders, setTopOffenders] = useState<SshOffender[]>([]);
+  const [timezone, setTimezone] = useState<ServerTimezone | null>(null);
+  const [total, setTotal] = useState(0);
   const [source, setSource] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState(ALL);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZES[0]);
 
-  // 输入停顿 400ms 再查，避免每敲一个字打一次接口
+  // 输入停顿 400ms 再查，避免每敲一个字打一次接口。换了关键词就回第一页
   useEffect(() => {
-    const timer = setTimeout(() => setKeyword(keywordDraft), 400);
+    const timer = setTimeout(() => {
+      setKeyword(keywordDraft);
+      setPage(1);
+    }, 400);
     return () => clearTimeout(timer);
   }, [keywordDraft]);
 
+  const buildParams = useCallback(
+    (targetPage: number, size: number) => {
+      const params = new URLSearchParams({
+        page: String(targetPage),
+        pageSize: String(size),
+      });
+      if (status !== ALL) params.set("status", status);
+      if (keyword) params.set("keyword", keyword);
+      return params;
+    },
+    [status, keyword],
+  );
+
+  /** 翻页点得快时响应可能乱序到达，只认最后一次发出的请求 */
+  const reqRef = useRef(0);
+
   const load = useCallback(async () => {
-    const params = new URLSearchParams({ limit: "300" });
-    if (status !== ALL) params.set("status", status);
-    if (keyword) params.set("keyword", keyword);
-    const res = await fetch(`${API_BASE}/api/audit/ssh?${params}`, {
-      headers: authHeaders(),
-    });
-    const data = await res.json();
+    const reqId = ++reqRef.current;
+    const res = await fetch(
+      `${API_BASE}/api/audit/ssh?${buildParams(page, pageSize)}`,
+      { headers: authHeaders() },
+    );
+    const data: SshResponse = await res.json();
+    if (reqId !== reqRef.current) return;
+
     if (data?.success) {
       setEntries(data.entries ?? []);
       setStats(data.stats ?? null);
+      setTopOffenders(data.topOffenders ?? []);
+      setTimezone(data.timezone ?? null);
+      setTotal(Number(data.total) || 0);
       setSource(data.source ?? "");
       setMessage(data.message ?? "");
+      // 后端会把越界页码夹回最后一页，跟上它，否则页码和内容对不上
+      if (typeof data.page === "number" && data.page !== page) setPage(data.page);
     } else {
       setMessage(data?.message || "获取 SSH 日志失败");
     }
-  }, [status, keyword]);
+  }, [buildParams, page, pageSize]);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,33 +244,44 @@ export default function SshAuditPage() {
     }
   };
 
-  const handleExport = () => {
-    const blob = new Blob([toCsv(entries)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `SSH登录日志-${formatAbsoluteTime(Date.now()).replace(/[: ]/g, "-")}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  // 导出走一次单独的请求，否则只能导出当前这一页
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/audit/ssh?${buildParams(1, EXPORT_LIMIT)}`,
+        { headers: authHeaders() },
+      );
+      const data: SshResponse = await res.json();
+      const rows = data?.success ? (data.entries ?? []) : null;
+      if (!rows || rows.length === 0) {
+        toast.error(data?.message || "导出失败");
+        return;
+      }
+      const blob = new Blob([toCsv(rows, timezone)], {
+        type: "text/csv;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `SSH登录日志-${formatServerTime(Date.now(), timezone).replace(/[: ]/g, "-")}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      if (total > rows.length) {
+        toast.success(`已导出最近 ${rows.length} 条（共 ${total} 条）`);
+      }
+    } catch {
+      toast.error("导出失败");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const filtersActive = keyword !== "" || status !== ALL;
 
-  /** 失败次数最多的来源 IP，用来一眼看出是否在被爆破 */
-  const topOffenders = useMemo(() => {
-    const counts = new Map<string, { count: number; location: string }>();
-    for (const e of entries) {
-      if (e.success) continue;
-      const prev = counts.get(e.ip);
-      counts.set(e.ip, {
-        count: (prev?.count ?? 0) + 1,
-        location: e.locationText || prev?.location || "",
-      });
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1].count - a[1].count)
-      .slice(0, 5);
-  }, [entries]);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, total);
 
   if (loading) {
     return (
@@ -249,10 +323,14 @@ export default function SshAuditPage() {
             variant="outline"
             size="sm"
             onClick={handleExport}
-            disabled={entries.length === 0}
-            title="导出当前已加载的记录"
+            disabled={exporting || total === 0}
+            title={`导出当前筛选下最近 ${EXPORT_LIMIT} 条`}
           >
-            <Download className="size-3.5" />
+            {exporting ? (
+              <RefreshCw className="size-3.5 animate-spin" />
+            ) : (
+              <Download className="size-3.5" />
+            )}
             导出 CSV
           </Button>
           <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing}>
@@ -310,17 +388,19 @@ export default function SshAuditPage() {
           {topOffenders.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="eyebrow">失败最多的来源</span>
-              {topOffenders.map(([ip, info]) => (
+              {topOffenders.map((offender) => (
                 <button
-                  key={ip}
+                  key={offender.ip}
                   type="button"
-                  onClick={() => setKeywordDraft(ip)}
+                  onClick={() => setKeywordDraft(offender.ip)}
                   className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
-                  title={`筛选 ${ip}`}
+                  title={`筛选 ${offender.ip}`}
                 >
-                  <span className="font-mono">{ip}</span>
-                  {info.location && <span className="text-mute">{info.location}</span>}
-                  <span className="font-mono text-destructive">{info.count}</span>
+                  <span className="font-mono">{offender.ip}</span>
+                  {offender.locationText && (
+                    <span className="text-mute">{offender.locationText}</span>
+                  )}
+                  <span className="font-mono text-destructive">{offender.count}</span>
                 </button>
               ))}
             </div>
@@ -337,7 +417,13 @@ export default function SshAuditPage() {
                 className="h-8 pl-8"
               />
             </div>
-            <Select value={status} onValueChange={setStatus}>
+            <Select
+              value={status}
+              onValueChange={(v) => {
+                setStatus(v);
+                setPage(1);
+              }}
+            >
               <SelectTrigger className="w-32">
                 <SelectValue />
               </SelectTrigger>
@@ -355,6 +441,7 @@ export default function SshAuditPage() {
                   setKeywordDraft("");
                   setKeyword("");
                   setStatus(ALL);
+                  setPage(1);
                 }}
               >
                 <RotateCcw className="size-3.5" />
@@ -374,7 +461,19 @@ export default function SshAuditPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-[130px]">时间</TableHead>
+                        <TableHead
+                          className="w-[180px]"
+                          title={
+                            timezone
+                              ? `服务器时区 ${timezone.name || timezone.label}`
+                              : undefined
+                          }
+                        >
+                          时间
+                          {timezone && (
+                            <span className="ml-1.5 opacity-70">{timezone.label}</span>
+                          )}
+                        </TableHead>
                         <TableHead className="w-[100px]">状态</TableHead>
                         <TableHead className="w-[110px]">用户</TableHead>
                         <TableHead className="w-[150px]">IP 地址</TableHead>
@@ -386,11 +485,11 @@ export default function SshAuditPage() {
                     <TableBody>
                       {entries.map((entry) => (
                         <TableRow key={`${entry.ip}:${entry.timestamp}:${entry.id}`}>
-                          <TableCell
-                            className="font-mono text-xs text-muted-foreground"
-                            title={formatAbsoluteTime(entry.timestamp)}
-                          >
-                            {formatRelativeTime(entry.timestamp, now)}
+                          <TableCell className="font-mono text-xs whitespace-nowrap">
+                            {formatServerTime(entry.timestamp, timezone)}
+                            <div className="text-[11px] text-mute">
+                              {formatRelativeTime(entry.timestamp, now)}
+                            </div>
                           </TableCell>
                           <TableCell>
                             <StatusDot
@@ -428,11 +527,70 @@ export default function SshAuditPage() {
                     </TableBody>
                   </Table>
 
-                  <div className="px-4 pt-3">
+                  {/* 分页。日志动辄几千条，一次铺满页面既拖慢渲染也不好定位 */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-4 pt-3">
                     <span className="font-mono text-[11px] text-mute">
-                      已显示 {entries.length}
-                      {stats ? ` / ${stats.total}` : ""} 条
+                      第 {rangeStart}-{rangeEnd} 条 / 共 {total} 条
                     </span>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={String(pageSize)}
+                        onValueChange={(v) => {
+                          setPageSize(Number(v));
+                          setPage(1);
+                        }}
+                      >
+                        <SelectTrigger size="sm" className="w-28">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PAGE_SIZES.map((size) => (
+                            <SelectItem key={size} value={String(size)}>
+                              每页 {size} 条
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        disabled={page <= 1}
+                        onClick={() => setPage(1)}
+                        aria-label="第一页"
+                      >
+                        <ChevronsLeft className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        disabled={page <= 1}
+                        onClick={() => setPage(page - 1)}
+                        aria-label="上一页"
+                      >
+                        <ChevronLeft className="size-3.5" />
+                      </Button>
+                      <span className="font-mono text-xs whitespace-nowrap text-muted-foreground">
+                        {page} / {pageCount}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        disabled={page >= pageCount}
+                        onClick={() => setPage(page + 1)}
+                        aria-label="下一页"
+                      >
+                        <ChevronRight className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        disabled={page >= pageCount}
+                        onClick={() => setPage(pageCount)}
+                        aria-label="最后一页"
+                      >
+                        <ChevronsRight className="size-3.5" />
+                      </Button>
+                    </div>
                   </div>
                 </>
               )}

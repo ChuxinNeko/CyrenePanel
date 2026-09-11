@@ -13,8 +13,8 @@ import {
 import { logger } from "../logger/index";
 import { fetchNode } from "../nodes/index";
 import { resolveRequestProfile } from "../node-auth/request-profile";
-import { parseSshLogLines } from "../security/ssh-log";
-import { readSshLog } from "../security/ssh-log-source";
+import { parseSshLogLines, type SshLogEntry } from "../security/ssh-log";
+import { readSshLog, type SshLogSource } from "../security/ssh-log-source";
 import { formatLocation, lookupIpLocations } from "../security/ip-location";
 
 export type AuditCategory =
@@ -198,6 +198,43 @@ async function fetchNodeAuditStats(
   return null;
 }
 
+/**
+ * SSH 日志读一次要跑 journalctl 或读掉几 MB 的 auth.log，翻页时每点一下都重来太亏。
+ * 按秒缓存解析结果：连续翻页命中缓存，手动刷新时早就过期了。
+ */
+const SSH_LOG_CACHE_MS = 5000;
+let sshLogCache: { at: number; source: SshLogSource; entries: SshLogEntry[] } | null = null;
+
+function readSshEntries(): { source: SshLogSource; entries: SshLogEntry[] } {
+  const now = Date.now();
+  if (sshLogCache && now - sshLogCache.at < SSH_LOG_CACHE_MS) return sshLogCache;
+  const source = readSshLog();
+  sshLogCache = { at: now, source, entries: parseSshLogLines(source.content) };
+  return sshLogCache;
+}
+
+/**
+ * 服务器时区。日志里的时间是服务器记的，前端按浏览器时区渲染会整体平移几个小时，
+ * 跨时区运维时和 journalctl 的输出对不上，所以把时区一并给出去。
+ */
+function serverTimezone(): { name: string; offsetMinutes: number; label: string } {
+  // getTimezoneOffset 是「UTC 减本地」，取反才是习惯上的东八区为正
+  const offsetMinutes = -new Date().getTimezoneOffset();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const abs = Math.abs(offsetMinutes);
+  let name = "";
+  try {
+    name = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    // 运行时没有完整 ICU 时退回纯偏移，前端会用 offsetMinutes 兜底
+  }
+  return {
+    name,
+    offsetMinutes,
+    label: `UTC${offsetMinutes < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`,
+  };
+}
+
 export const auditRoutes = new Elysia()
   .derive(async ({ jwt, request }: any) => ({ profile: await resolveRequestProfile(jwt, request) }))
 
@@ -304,18 +341,31 @@ export const auditRoutes = new Elysia()
   .get("/api/audit/ssh", async ({ profile, query }: any) => {
     if (!profile) return { success: false, message: "未授权" };
 
-    const limit = Math.min(Math.max(Number(query?.limit) || 200, 1), 1000);
+    // 上限给到 500：页面上最多选 100 条一页，导出时会一次要一大页
+    const pageSize = Math.min(Math.max(Number(query?.pageSize) || 20, 1), 500);
+    const wantPage = Math.max(Number(query?.page) || 1, 1);
     const statusFilter = typeof query?.status === "string" ? query.status.trim() : "";
     const keyword = typeof query?.keyword === "string" ? query.keyword.trim().toLowerCase() : "";
 
-    const source = readSshLog();
+    const timezone = serverTimezone();
+    const { source, entries: all } = readSshEntries();
     if (source.kind === "none") {
-      return { success: true, entries: [], source: source.kind, message: source.message, stats: null };
+      return {
+        success: true,
+        entries: [],
+        source: source.kind,
+        message: source.message,
+        stats: null,
+        total: 0,
+        page: 1,
+        pageSize,
+        topOffenders: [],
+        serverTime: Date.now(),
+        timezone,
+      };
     }
 
-    const all = parseSshLogLines(source.content);
-
-    // 统计基于全量，不受分页 limit 影响
+    // 统计基于全量，不受筛选和分页影响
     const stats = {
       total: all.length,
       success: all.filter((e) => e.success).length,
@@ -334,15 +384,43 @@ export const auditRoutes = new Elysia()
       );
     });
 
-    const page = filtered.slice(0, limit);
-    // 只为当前页出现的 IP 查归属地，且内部按唯一 IP 去重 + 缓存
-    const locations = await lookupIpLocations(page.map((e) => e.ip));
+    // 页码可能越界（换了筛选、或日志滚动后记录变少），夹回最后一页而不是返回空表
+    const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+    const page = Math.min(wantPage, pageCount);
+    const rows = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+    /**
+     * 失败次数最多的来源 IP，用来一眼看出是否在被爆破。
+     * 按全量算而不是按当前页：翻页时这份榜单不该跟着变。
+     */
+    const offenders = new Map<string, number>();
+    for (const entry of all) {
+      if (entry.success) continue;
+      offenders.set(entry.ip, (offenders.get(entry.ip) ?? 0) + 1);
+    }
+    const topIps = [...offenders.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+    // 只为当前页和榜单上的 IP 查归属地，且内部按唯一 IP 去重 + 缓存
+    const locations = await lookupIpLocations([
+      ...rows.map((e) => e.ip),
+      ...topIps.map(([ip]) => ip),
+    ]);
 
     return {
       success: true,
       source: source.kind,
       stats,
-      entries: page.map((entry) => ({
+      total: filtered.length,
+      page,
+      pageSize,
+      serverTime: Date.now(),
+      timezone,
+      topOffenders: topIps.map(([ip, count]) => ({
+        ip,
+        count,
+        locationText: formatLocation(locations[ip] ?? null),
+      })),
+      entries: rows.map((entry) => ({
         ...entry,
         location: locations[entry.ip] ?? null,
         locationText: formatLocation(locations[entry.ip] ?? null),
