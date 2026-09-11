@@ -47,7 +47,8 @@ export function VncViewer({
       }
       if (disposed) return;
 
-      const { default: RFB } = await import("@novnc/novnc/core/rfb.js");
+      // 包 exports 只暴露根入口（映射到 core/rfb.js），不能走子路径
+      const { default: RFB } = await import("@novnc/novnc");
       if (disposed || !hostRef.current) return;
 
       const rfb = new RFB(hostRef.current, url, { shared: true });

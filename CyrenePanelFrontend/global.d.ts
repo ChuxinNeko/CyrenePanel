@@ -11,7 +11,7 @@ declare module "@xterm/xterm/css/xterm.css" {
 declare module "js-yaml";
 
 // noVNC 不带类型声明，这里按用到的接口给一份最小声明
-declare module "@novnc/novnc/core/rfb.js" {
+declare module "@novnc/novnc" {
   interface RFBOptions {
     credentials?: { username?: string; password?: string; target?: string };
     shared?: boolean;
