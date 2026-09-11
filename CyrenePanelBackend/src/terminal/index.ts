@@ -6,7 +6,7 @@ import { nodeCan } from "../node-auth/verifier";
 import { resolveNodePrincipal } from "../node-auth/principal";
 import { consumeTicket, issueTicket, type TicketPurpose } from "./ticket";
 
-const TICKET_PURPOSES: TicketPurpose[] = ["system", "docker-exec", "instance"];
+const TICKET_PURPOSES: TicketPurpose[] = ["system", "docker-exec", "instance", "desktop"];
 
 /**
  * 系统终端 WebSocket 路由
