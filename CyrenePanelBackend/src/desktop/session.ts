@@ -231,10 +231,15 @@ export async function startSession(
       appProc.exited.then(() => teardown());
     }
 
-    // 4) VNC 服务端，只绑本机；-xrandr resize 让分辨率可跟随
+    // 4) VNC 服务端，只绑本机。性能相关：
+    //    -threads    输入/输出多线程，交互延迟明显下降
+    //    (不加 -noxdamage) 让 x11vnc 走 XDAMAGE 事件驱动，只重读变化区域，
+    //                比全屏轮询省大量 CPU、也更跟手；现代 Xvfb 的 XDAMAGE 已可靠
+    //    -defer 8 / -wait 8  更小的合帧间隔，画面更跟手（默认 30ms）
+    //    -nolookup   跳过连接时的反向 DNS
     procs.push(
       spawnProc(
-        ["x11vnc", "-display", `:${display}`, "-rfbport", String(port), "-localhost", "-forever", "-shared", "-nopw", "-noxdamage", "-xrandr", "resize", "-quiet"],
+        ["x11vnc", "-display", `:${display}`, "-rfbport", String(port), "-localhost", "-forever", "-shared", "-nopw", "-threads", "-defer", "8", "-wait", "8", "-nolookup", "-xrandr", "resize", "-quiet"],
         display,
         home,
       ),

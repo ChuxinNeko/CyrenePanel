@@ -4,6 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { buildBackendWsUrl } from "@/hooks/use-backend-port";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ClipboardPaste, Keyboard, Loader2, WifiOff } from "lucide-react";
 
 type ViewerState = "connecting" | "connected" | "disconnected" | "error";
@@ -14,7 +21,16 @@ interface RFBLike {
   clipboardPasteFrom(text: string): void;
   scaleViewport: boolean;
   background: string;
+  qualityLevel: number;
+  compressionLevel: number;
 }
+
+/** 画质档：越靠「流畅」JPEG 压得越狠、带宽越省，广域网下更跟手 */
+const QUALITY_PRESETS: Record<string, { quality: number; compression: number }> = {
+  fast: { quality: 2, compression: 4 },
+  balanced: { quality: 6, compression: 2 },
+  sharp: { quality: 9, compression: 1 },
+};
 
 /**
  * noVNC 画布。把 /api/desktop/vnc 的 RFB-over-WS 渲染成 canvas。
@@ -39,6 +55,9 @@ export function VncViewer({
   const [state, setState] = useState<ViewerState>("connecting");
   const [message, setMessage] = useState("");
   const [clip, setClip] = useState("");
+  const [quality, setQuality] = useState("balanced");
+  // 画质切换要即时生效、又不能触发重连，所以用 ref 传给连接闭包
+  const qualityRef = useRef(quality);
 
   useEffect(() => {
     let disposed = false;
@@ -68,6 +87,9 @@ export function VncViewer({
       const rfb = new RFB(hostRef.current, url, { shared: true }) as unknown as RFBLike;
       rfb.scaleViewport = true;
       rfb.background = "#0b0f19";
+      const preset = QUALITY_PRESETS[qualityRef.current] ?? QUALITY_PRESETS.balanced;
+      rfb.qualityLevel = preset.quality;
+      rfb.compressionLevel = preset.compression;
       rfbRef.current = rfb;
 
       const target = rfb as unknown as EventTarget;
@@ -95,6 +117,18 @@ export function VncViewer({
     };
   }, [sessionId, backendPort, onClosed]);
 
+  // 画质切换即时生效，不重连
+  useEffect(() => {
+    qualityRef.current = quality;
+    const rfb = rfbRef.current;
+    if (!rfb) return;
+    const preset = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.balanced;
+    try {
+      rfb.qualityLevel = preset.quality;
+      rfb.compressionLevel = preset.compression;
+    } catch {}
+  }, [quality]);
+
   const sendClipboard = () => {
     try { rfbRef.current?.clipboardPasteFrom(clip); } catch {}
   };
@@ -117,6 +151,16 @@ export function VncViewer({
             发送到桌面
           </Button>
         </div>
+        <Select value={quality} onValueChange={setQuality}>
+          <SelectTrigger size="sm" className="w-24" title="画质越低越省带宽、越跟手">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="fast">流畅</SelectItem>
+            <SelectItem value="balanced">均衡</SelectItem>
+            <SelectItem value="sharp">高清</SelectItem>
+          </SelectContent>
+        </Select>
         <Button variant="outline" size="sm" onClick={sendCtrlAltDel} disabled={state !== "connected"}>
           <Keyboard className="size-3.5" />
           Ctrl+Alt+Del

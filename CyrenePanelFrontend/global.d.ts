@@ -26,6 +26,10 @@ declare module "@novnc/novnc" {
     background: string;
     clipViewport: boolean;
     focusOnClick: boolean;
+    /** JPEG 画质 0-9，越高越清晰、越占带宽 */
+    qualityLevel: number;
+    /** zlib 压缩力度 0-9 */
+    compressionLevel: number;
     disconnect(): void;
     focus(): void;
     sendCtrlAltDel(): void;
